@@ -14,16 +14,14 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 - [x] Embedded SQLite with sqlite-vec for vector search in a single file — Validated in Phase 1: Foundation
 - [x] Configuration via env vars or TOML file — Validated in Phase 1: Foundation
+- [x] Bundled local embedding model (all-MiniLM-L6-v2 via candle) for zero-config inference — Validated in Phase 2: Embedding
+- [x] Optional OpenAI API fallback for embeddings — Validated in Phase 2: Embedding
 
 ### Active
 
 - [ ] REST API for storing, searching, filtering, and deleting memories
-- [ ] Embedded SQLite with sqlite-vec for vector search in a single file
-- [ ] Bundled local embedding model (all-MiniLM-L6-v2 via candle) for zero-config inference
-- [ ] Optional OpenAI API fallback for embeddings
 - [ ] Multi-agent support via agent_id namespacing
 - [ ] Session-scoped retrieval via session_id grouping
-- [ ] Configuration via env vars or TOML file
 - [ ] Clean README with quickstart, API reference, and examples
 
 ### Out of Scope
@@ -56,17 +54,17 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| candle over ort for inference | Pure Rust, no ONNX Runtime dependency, enables true single-binary | — Pending |
+| candle over ort for inference | Pure Rust, no ONNX Runtime dependency, enables true single-binary | Validated Phase 2 |
 | sqlite-vec over sqlite-vss | sqlite-vss is archived, sqlite-vec is actively maintained | Validated Phase 1 |
 | tokio-rusqlite for async SQLite | Avoids blocking async runtime under concurrent agent requests | Validated Phase 1 |
 | axum for HTTP | Modern, ergonomic, good ecosystem support in Rust | Validated Phase 1 |
 | rusqlite 0.37 (not 0.39) | sqlite-vec 0.1.7 has version conflict with rusqlite 0.39's libsqlite3-sys | Decided Phase 1 |
-| all-MiniLM-L6-v2 as default model | Small (~22MB), fast inference, good semantic similarity quality | — Pending |
+| all-MiniLM-L6-v2 as default model | Small (~22MB), fast inference, good semantic similarity quality | Validated Phase 2 |
 
 ---
 ## Current State
 
-Phase 1 complete — compiling Rust binary with SQLite + sqlite-vec database, WAL mode, layered config (env → TOML → defaults), axum server with health endpoint. 15 tests passing. Next: Phase 2 (Embedding).
+Phase 2 complete — EmbeddingEngine trait with LocalEngine (candle BERT, attention-mask mean pooling, L2 normalization) and OpenAiEngine fallback. Model loads once at startup, shared via Arc. Semantic similarity validated (cosine dog/puppy > dog/database). 20 tests passing. Next: Phase 3 (Service and API).
 
 ---
-*Last updated: 2026-03-19 after Phase 1 completion*
+*Last updated: 2026-03-19 after Phase 2 completion*
