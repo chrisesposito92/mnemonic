@@ -1,0 +1,13 @@
+# Mnemonic Configuration
+# Copy to mnemonic.toml and modify as needed.
+# Environment variables override these values (prefix: MNEMONIC_).
+
+# HTTP server port (env: MNEMONIC_PORT, default: 8080)
+port = 8080
+
+# Path to the SQLite database file (env: MNEMONIC_DB_PATH, default: "./mnemonic.db")
+db_path = "./mnemonic.db"
+
+# Embedding provider: "local" or "openai" (env: MNEMONIC_EMBEDDING_PROVIDER, default: "local")
+# When set to "openai", the OPENAI_API_KEY environment variable must also be set.
+embedding_provider = "local"
