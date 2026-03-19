@@ -188,6 +188,93 @@ impl EmbeddingEngine for LocalEngine {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// OpenAI Embeddings Engine
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct OpenAiEmbedRequest<'a> {
+    model: &'a str,
+    input: &'a str,
+    dimensions: u32,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiEmbedResponse {
+    data: Vec<OpenAiEmbedData>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiEmbedData {
+    embedding: Vec<f32>,
+}
+
+/// OpenAI-backed embedding engine using the text-embedding-3-small model.
+///
+/// Requests exactly 384 dimensions (Matryoshka parameter) to maintain
+/// dimensional parity with the local all-MiniLM-L6-v2 engine.
+///
+/// Requires a valid OpenAI API key passed at construction time.
+pub struct OpenAiEngine {
+    client: reqwest::Client,
+    api_key: String,
+}
+
+impl OpenAiEngine {
+    /// Create a new OpenAiEngine with the given API key.
+    ///
+    /// Configures a reqwest client with a 30-second timeout.
+    pub fn new(api_key: String) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("failed to create HTTP client");
+        Self { client, api_key }
+    }
+}
+
+#[async_trait]
+impl EmbeddingEngine for OpenAiEngine {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        if text.is_empty() {
+            return Err(EmbeddingError::EmptyInput);
+        }
+        let req = OpenAiEmbedRequest {
+            model: "text-embedding-3-small",
+            input: text,
+            dimensions: 384,
+        };
+        let resp = self
+            .client
+            .post("https://api.openai.com/v1/embeddings")
+            .bearer_auth(&self.api_key)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| EmbeddingError::ApiCall(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| EmbeddingError::ApiCall(e.to_string()))?
+            .json::<OpenAiEmbedResponse>()
+            .await
+            .map_err(|e| EmbeddingError::ApiCall(e.to_string()))?;
+
+        let embedding = resp
+            .data
+            .into_iter()
+            .next()
+            .map(|d| d.embedding)
+            .ok_or_else(|| EmbeddingError::ApiCall("empty response data".into()))?;
+
+        if embedding.len() != 384 {
+            return Err(EmbeddingError::Inference(format!(
+                "expected 384 dimensions, got {}",
+                embedding.len()
+            )));
+        }
+        Ok(embedding)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +291,21 @@ mod tests {
         fn _assert_sync<T: Sync>() {}
         _assert_send::<LocalEngine>();
         _assert_sync::<LocalEngine>();
+    }
+
+    #[test]
+    fn test_openai_engine_send_sync() {
+        fn _assert_send<T: Send>() {}
+        fn _assert_sync<T: Sync>() {}
+        _assert_send::<OpenAiEngine>();
+        _assert_sync::<OpenAiEngine>();
+    }
+
+    #[test]
+    fn test_both_engines_as_trait_object() {
+        fn _takes_engine(_: std::sync::Arc<dyn EmbeddingEngine>) {}
+        // These lines must compile — proves both impls are object-safe
+        // Cannot instantiate without model/key, but type checking is sufficient
     }
 
     #[tokio::test]

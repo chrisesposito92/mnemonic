@@ -20,6 +20,7 @@ pub fn init_tracing() {
 pub struct AppState {
     pub db: std::sync::Arc<tokio_rusqlite::Connection>,
     pub config: std::sync::Arc<crate::config::Config>,
+    pub embedding: std::sync::Arc<dyn crate::embedding::EmbeddingEngine>,
 }
 
 /// Constructs the axum Router with all routes wired to AppState.
