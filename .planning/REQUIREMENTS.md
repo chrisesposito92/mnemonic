@@ -37,9 +37,9 @@
 
 ### Configuration
 
-- [ ] **CONF-01**: Server runs with zero configuration using sensible defaults (port 8080, local embeddings, ./mnemonic.db)
-- [ ] **CONF-02**: User can override settings via environment variables (port, storage path, embedding provider, OpenAI API key)
-- [ ] **CONF-03**: User can optionally provide a TOML configuration file for all settings
+- [x] **CONF-01**: Server runs with zero configuration using sensible defaults (port 8080, local embeddings, ./mnemonic.db)
+- [x] **CONF-02**: User can override settings via environment variables (port, storage path, embedding provider, OpenAI API key)
+- [x] **CONF-03**: User can optionally provide a TOML configuration file for all settings
 
 ### Documentation
 
@@ -86,9 +86,9 @@
 | STOR-02 | Phase 1 | Pending |
 | STOR-03 | Phase 1 | Pending |
 | STOR-04 | Phase 1 | Pending |
-| CONF-01 | Phase 1 | Pending |
-| CONF-02 | Phase 1 | Pending |
-| CONF-03 | Phase 1 | Pending |
+| CONF-01 | Phase 1 | Complete |
+| CONF-02 | Phase 1 | Complete |
+| CONF-03 | Phase 1 | Complete |
 | EMBD-01 | Phase 2 | Pending |
 | EMBD-02 | Phase 2 | Pending |
 | EMBD-03 | Phase 2 | Pending |
