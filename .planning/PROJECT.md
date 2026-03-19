@@ -12,7 +12,8 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Validated
 
-(None yet — ship to validate)
+- [x] Embedded SQLite with sqlite-vec for vector search in a single file — Validated in Phase 1: Foundation
+- [x] Configuration via env vars or TOML file — Validated in Phase 1: Foundation
 
 ### Active
 
@@ -56,10 +57,16 @@ Any AI agent can store and semantically search memories out of the box with zero
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | candle over ort for inference | Pure Rust, no ONNX Runtime dependency, enables true single-binary | — Pending |
-| sqlite-vec over sqlite-vss | sqlite-vss is archived, sqlite-vec is actively maintained | — Pending |
-| tokio-rusqlite for async SQLite | Avoids blocking async runtime under concurrent agent requests | — Pending |
-| axum for HTTP | Modern, ergonomic, good ecosystem support in Rust | — Pending |
+| sqlite-vec over sqlite-vss | sqlite-vss is archived, sqlite-vec is actively maintained | Validated Phase 1 |
+| tokio-rusqlite for async SQLite | Avoids blocking async runtime under concurrent agent requests | Validated Phase 1 |
+| axum for HTTP | Modern, ergonomic, good ecosystem support in Rust | Validated Phase 1 |
+| rusqlite 0.37 (not 0.39) | sqlite-vec 0.1.7 has version conflict with rusqlite 0.39's libsqlite3-sys | Decided Phase 1 |
 | all-MiniLM-L6-v2 as default model | Small (~22MB), fast inference, good semantic similarity quality | — Pending |
 
 ---
-*Last updated: 2026-03-19 after initialization*
+## Current State
+
+Phase 1 complete — compiling Rust binary with SQLite + sqlite-vec database, WAL mode, layered config (env → TOML → defaults), axum server with health endpoint. 15 tests passing. Next: Phase 2 (Embedding).
+
+---
+*Last updated: 2026-03-19 after Phase 1 completion*
