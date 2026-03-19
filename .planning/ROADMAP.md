@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. The SQLite file on disk contains a `memories` table with `agent_id`, `session_id`, `embedding_model`, and `created_at` columns after first run
   3. All database operations execute via tokio-rusqlite async closures — no blocking calls on the tokio thread pool
   4. Setting `MNEMONIC_PORT=9090` in the environment causes the server to bind to port 9090; an optional TOML file can override all settings
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 - [ ] 01-01-PLAN.md — Project skeleton, error types, and layered configuration (CONF-01, CONF-02, CONF-03)
@@ -75,7 +75,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 1/3 | In Progress|  |
+| 1. Foundation | 2/3 | In Progress|  |
 | 2. Embedding | 0/? | Not started | - |
 | 3. Service and API | 0/? | Not started | - |
 | 4. Distribution | 0/? | Not started | - |

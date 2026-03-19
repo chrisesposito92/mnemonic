@@ -7,10 +7,10 @@
 
 ### Storage
 
-- [ ] **STOR-01**: Server persists memories in a single SQLite database file with sqlite-vec for vector search
-- [ ] **STOR-02**: Server starts with WAL mode enabled and single-writer connection to prevent SQLITE_BUSY errors under concurrent agent load
-- [ ] **STOR-03**: All database access uses tokio-rusqlite async closures to avoid blocking the tokio runtime
-- [ ] **STOR-04**: Schema tracks `embedding_model` per memory row to prevent vector space mismatch when switching embedding providers
+- [x] **STOR-01**: Server persists memories in a single SQLite database file with sqlite-vec for vector search
+- [x] **STOR-02**: Server starts with WAL mode enabled and single-writer connection to prevent SQLITE_BUSY errors under concurrent agent load
+- [x] **STOR-03**: All database access uses tokio-rusqlite async closures to avoid blocking the tokio runtime
+- [x] **STOR-04**: Schema tracks `embedding_model` per memory row to prevent vector space mismatch when switching embedding providers
 
 ### Embedding
 
@@ -82,10 +82,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STOR-01 | Phase 1 | Pending |
-| STOR-02 | Phase 1 | Pending |
-| STOR-03 | Phase 1 | Pending |
-| STOR-04 | Phase 1 | Pending |
+| STOR-01 | Phase 1 | Complete |
+| STOR-02 | Phase 1 | Complete |
+| STOR-03 | Phase 1 | Complete |
+| STOR-04 | Phase 1 | Complete |
 | CONF-01 | Phase 1 | Complete |
 | CONF-02 | Phase 1 | Complete |
 | CONF-03 | Phase 1 | Complete |
