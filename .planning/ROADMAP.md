@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Project skeleton, SQLite+sqlite-vec storage, and configuration wired up (completed 2026-03-19)
 - [x] **Phase 2: Embedding** - Local all-MiniLM-L6-v2 model via candle with OpenAI fallback (completed 2026-03-19)
-- [ ] **Phase 3: Service and API** - MemoryService orchestrator + axum REST endpoints + multi-agent namespacing
+- [x] **Phase 3: Service and API** - MemoryService orchestrator + axum REST endpoints + multi-agent namespacing (completed 2026-03-19)
 - [ ] **Phase 4: Distribution** - Binary packaging, README, quickstart, and API reference
 
 ## Phase Details
@@ -60,7 +60,7 @@ Plans:
   3. `GET /memories` with filter parameters returns a filtered list; `DELETE /memories/:id` removes the specified memory and returns 404 for a subsequent request on that ID
   4. `GET /health` returns `{"status":"ok"}` with HTTP 200; all endpoints return structured JSON error bodies with appropriate HTTP status codes on failure
   5. Two agents storing memories with the same content but different agent_ids retrieve only their own memories when searching
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 03-01-PLAN.md — MemoryService orchestrator, ApiError type, and request/response types (API-01, API-02, API-03, API-04, API-06, AGNT-01, AGNT-02, AGNT-03)
@@ -86,5 +86,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete   | 2026-03-19 |
 | 2. Embedding | 2/2 | Complete   | 2026-03-19 |
-| 3. Service and API | 2/3 | In Progress|  |
+| 3. Service and API | 3/3 | Complete   | 2026-03-19 |
 | 4. Distribution | 0/? | Not started | - |
