@@ -1675,6 +1675,7 @@ dependencies = [
  "candle-transformers",
  "figment",
  "hf-hub",
+ "http-body-util",
  "reqwest 0.13.2",
  "rusqlite",
  "serde",
@@ -1684,9 +1685,11 @@ dependencies = [
  "tokenizers",
  "tokio",
  "tokio-rusqlite",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zerocopy",
 ]
 
 [[package]]

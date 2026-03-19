@@ -24,6 +24,9 @@ hf-hub = "0.5"
 tokenizers = "0.22"
 async-trait = "0.1"
 reqwest = { version = "0.13", features = ["json"] }
+zerocopy = { version = "0.8", features = ["derive"] }
 
 [dev-dependencies]
 figment = { version = "0.10", features = ["toml", "env", "test"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

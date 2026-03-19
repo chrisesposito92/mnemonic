@@ -64,3 +64,43 @@ impl From<candle_core::Error> for EmbeddingError {
         EmbeddingError::Inference(format!("{}", e))
     }
 }
+
+/// API-layer errors with HTTP status code mapping.
+#[derive(Debug, thiserror::Error)]
+pub enum ApiError {
+    #[error("{0}")]
+    BadRequest(String),
+    #[error("not found")]
+    NotFound,
+    #[error("internal error: {0}")]
+    Internal(#[from] MnemonicError),
+}
+
+impl axum::response::IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, message) = match &self {
+            ApiError::BadRequest(msg) => (axum::http::StatusCode::BAD_REQUEST, msg.clone()),
+            ApiError::NotFound => (axum::http::StatusCode::NOT_FOUND, "not found".to_string()),
+            ApiError::Internal(e) => {
+                tracing::error!(error = %e, "internal server error");
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
+            }
+        };
+        (status, axum::Json(serde_json::json!({"error": message}))).into_response()
+    }
+}
+
+impl From<EmbeddingError> for ApiError {
+    fn from(e: EmbeddingError) -> Self {
+        match e {
+            EmbeddingError::EmptyInput => ApiError::BadRequest("content must not be empty".to_string()),
+            other => ApiError::Internal(MnemonicError::Embedding(other)),
+        }
+    }
+}
+
+impl From<tokio_rusqlite::Error> for ApiError {
+    fn from(e: tokio_rusqlite::Error) -> Self {
+        ApiError::Internal(MnemonicError::Db(DbError::Query(e.to_string())))
+    }
+}
