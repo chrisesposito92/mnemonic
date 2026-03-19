@@ -304,6 +304,34 @@ async fn test_embed_reuse() {
     assert_ne!(first, second, "different inputs should produce different embeddings");
 }
 
+/// EMBD-04: Verifies OpenAiEngine returns a valid 384-dim embedding from the live API.
+/// Ignored by default — requires MNEMONIC_OPENAI_API_KEY env var.
+#[tokio::test]
+#[ignore]
+async fn test_openai_embedding() {
+    use mnemonic::embedding::{OpenAiEngine, EmbeddingEngine};
+
+    let api_key = std::env::var("MNEMONIC_OPENAI_API_KEY")
+        .expect("MNEMONIC_OPENAI_API_KEY must be set to run this test");
+    let engine = OpenAiEngine::new(api_key);
+
+    let embedding = engine.embed("hello world").await
+        .expect("OpenAI embed should succeed");
+    assert_eq!(embedding.len(), 384, "OpenAI embedding should be exactly 384 dimensions");
+
+    // Verify L2 normalization (OpenAI returns normalized vectors)
+    let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!(
+        (norm - 1.0).abs() < 0.05,
+        "L2 norm should be approximately 1.0, got {}",
+        norm
+    );
+
+    // Verify empty input returns error
+    let result = engine.embed("").await;
+    assert!(result.is_err(), "empty input should return an error");
+}
+
 /// Cosine similarity helper for test assertions.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
