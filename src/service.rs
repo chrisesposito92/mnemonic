@@ -34,7 +34,7 @@ pub struct CreateMemoryRequest {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct SearchParams {
-    pub q: String,
+    pub q: Option<String>,
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
     pub tag: Option<String>,
@@ -151,8 +151,13 @@ impl MemoryService {
     }
 
     pub async fn search_memories(&self, params: SearchParams) -> Result<SearchResponse, ApiError> {
-        if params.q.trim().is_empty() {
-            return Err(ApiError::BadRequest("q parameter must not be empty".to_string()));
+        let q = params.q
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if q.is_empty() {
+            return Err(ApiError::BadRequest("q parameter is required".to_string()));
         }
 
         let limit = params.limit.unwrap_or(10).min(100) as i64;
@@ -160,7 +165,7 @@ impl MemoryService {
         let k = if has_filters { (limit * 10).min(1000) } else { limit };
 
         // Embed the query
-        let query_embedding = self.embedding.embed(&params.q).await?;
+        let query_embedding = self.embedding.embed(&q).await?;
         let query_bytes: Vec<u8> = query_embedding.as_bytes().to_vec();
 
         let agent_id = params.agent_id;

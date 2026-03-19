@@ -396,3 +396,342 @@ async fn response_json(response: axum::http::Response<Body>) -> serde_json::Valu
     let body = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&body).unwrap()
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// API Integration Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+/// API-05: GET /health returns 200 with {"status":"ok"}.
+#[tokio::test]
+async fn test_health() {
+    let app = build_test_app().await;
+    let response = app
+        .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["status"], "ok");
+}
+
+/// API-01, API-06: POST /memories returns 201 Created with a full memory object.
+#[tokio::test]
+async fn test_post_memory() {
+    let app = build_test_app().await;
+    let response = app
+        .oneshot(json_request("POST", "/memories", serde_json::json!({
+            "content": "The quick brown fox",
+            "agent_id": "agent-1",
+            "session_id": "sess-1",
+            "tags": ["test", "fox"]
+        })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = response_json(response).await;
+    assert!(json["id"].is_string(), "response must have string id");
+    assert_eq!(json["content"], "The quick brown fox");
+    assert_eq!(json["agent_id"], "agent-1");
+    assert_eq!(json["session_id"], "sess-1");
+    assert_eq!(json["tags"], serde_json::json!(["test", "fox"]));
+    assert_eq!(json["embedding_model"], "mock-model");
+    assert!(json["created_at"].is_string(), "response must have created_at");
+}
+
+/// API-01, API-06: POST /memories with empty content returns 400 with JSON error body.
+#[tokio::test]
+async fn test_post_memory_validation() {
+    let app = build_test_app().await;
+    let response = app
+        .oneshot(json_request("POST", "/memories", serde_json::json!({
+            "content": ""
+        })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert!(json["error"].is_string(), "error response must have error field");
+}
+
+/// API-03, AGNT-01: GET /memories returns paginated list with total count;
+/// agent_id filter returns only that agent's memories.
+#[tokio::test]
+async fn test_list_memories() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_state().await;
+
+    // Insert 3 memories: 2 for agent "a1", 1 for agent "a2"
+    service.create_memory(CreateMemoryRequest {
+        content: "first memory".to_string(),
+        agent_id: Some("a1".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "second memory".to_string(),
+        agent_id: Some("a1".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "third memory".to_string(),
+        agent_id: Some("a2".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // GET /memories?agent_id=a1 -- should return 2
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(Request::get("/memories?agent_id=a1").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["total"], 2, "agent a1 should have 2 memories");
+    assert_eq!(json["memories"].as_array().unwrap().len(), 2);
+
+    // GET /memories -- should return all 3
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(Request::get("/memories").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["total"], 3, "total should be 3 across all agents");
+}
+
+/// API-02: GET /memories/search?q=... returns ranked results with distance field.
+#[tokio::test]
+async fn test_search_memories() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_state().await;
+
+    service.create_memory(CreateMemoryRequest {
+        content: "rust programming language".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "cooking recipes for dinner".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::get("/memories/search?q=rust+programming")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    let memories = json["memories"].as_array().expect("memories should be array");
+    assert!(!memories.is_empty(), "search should return at least one result");
+    // Each result should have a distance field
+    assert!(memories[0]["distance"].is_number(), "each result must have numeric distance");
+    assert!(memories[0]["id"].is_string(), "each result must have id");
+}
+
+/// API-02, API-06: GET /memories/search without q parameter returns 400.
+#[tokio::test]
+async fn test_search_missing_q() {
+    let app = build_test_app().await;
+    let response = app
+        .oneshot(Request::get("/memories/search").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert!(json["error"].is_string(), "error response must have error field");
+}
+
+/// API-04: DELETE /memories/:id returns 200 with deleted memory object;
+/// subsequent GET /memories returns total=0.
+#[tokio::test]
+async fn test_delete_memory() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_state().await;
+
+    let memory = service.create_memory(CreateMemoryRequest {
+        content: "memory to delete".to_string(),
+        agent_id: None,
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    let id = memory.id.clone();
+
+    // DELETE /memories/:id -- should return 200 with deleted object
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/memories/{}", id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["id"], id, "deleted response should contain the memory id");
+    assert_eq!(json["content"], "memory to delete");
+
+    // Verify memory no longer exists via GET /memories
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(Request::get("/memories").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["total"], 0, "total should be 0 after deletion");
+}
+
+/// API-04, API-06: DELETE /memories/:id for nonexistent id returns 404 with JSON error body.
+#[tokio::test]
+async fn test_delete_not_found() {
+    let app = build_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/memories/nonexistent-id-12345")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let json = response_json(response).await;
+    assert!(json["error"].is_string(), "error response must have error field");
+}
+
+/// AGNT-01, AGNT-03: Two agents storing memories with same content retrieve only their own
+/// when filtering by agent_id.
+#[tokio::test]
+async fn test_agent_isolation() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_state().await;
+
+    service.create_memory(CreateMemoryRequest {
+        content: "shared content".to_string(),
+        agent_id: Some("agent-a".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "shared content".to_string(),
+        agent_id: Some("agent-b".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // GET /memories?agent_id=agent-a
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(Request::get("/memories?agent_id=agent-a").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["total"], 1, "agent-a should have exactly 1 memory");
+    let memories = json["memories"].as_array().unwrap();
+    assert_eq!(memories[0]["agent_id"], "agent-a");
+
+    // GET /memories?agent_id=agent-b
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(Request::get("/memories?agent_id=agent-b").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["total"], 1, "agent-b should have exactly 1 memory");
+    let memories = json["memories"].as_array().unwrap();
+    assert_eq!(memories[0]["agent_id"], "agent-b");
+}
+
+/// AGNT-02: Session filter scopes list retrieval to specific session_id.
+#[tokio::test]
+async fn test_session_filter() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_state().await;
+
+    service.create_memory(CreateMemoryRequest {
+        content: "session one memory".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        session_id: Some("s1".to_string()),
+        tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "session two memory".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        session_id: Some("s2".to_string()),
+        tags: None,
+    }).await.unwrap();
+
+    // GET /memories?session_id=s1 should return only the s1 memory
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(Request::get("/memories?session_id=s1").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["total"], 1, "session s1 should have exactly 1 memory");
+    let memories = json["memories"].as_array().unwrap();
+    assert_eq!(memories[0]["session_id"], "s1");
+}
+
+/// AGNT-03: Search with agent_id filter returns only that agent's memories.
+#[tokio::test]
+async fn test_search_agent_filter() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_state().await;
+
+    service.create_memory(CreateMemoryRequest {
+        content: "cats are great pets".to_string(),
+        agent_id: Some("x".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "cats are wonderful animals".to_string(),
+        agent_id: Some("y".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // GET /memories/search?q=cats&agent_id=x -- all results must belong to agent "x"
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::get("/memories/search?q=cats&agent_id=x")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    let memories = json["memories"].as_array().expect("memories should be array");
+    assert!(!memories.is_empty(), "search should return at least one result for agent x");
+    for m in memories {
+        assert_eq!(m["agent_id"], "x", "all search results should belong to agent x");
+    }
+}
