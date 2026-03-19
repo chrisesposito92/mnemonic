@@ -13,6 +13,7 @@ fn test_config() -> mnemonic::config::Config {
         port: 0,
         db_path: ":memory:".to_string(),
         embedding_provider: "local".to_string(),
+        openai_api_key: None,
     }
 }
 
@@ -87,6 +88,7 @@ async fn test_wal_mode() {
         port: 0,
         db_path: db_path.clone(),
         embedding_provider: "local".to_string(),
+        openai_api_key: None,
     };
 
     let conn = mnemonic::db::open(&config).await.unwrap();
