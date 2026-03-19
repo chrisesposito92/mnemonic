@@ -1,6 +1,21 @@
-use std::sync::Once;
+use mnemonic::embedding::{EmbeddingEngine, LocalEngine};
+use std::sync::{Arc, Once, OnceLock};
 
 static INIT: Once = Once::new();
+
+/// Shared LocalEngine instance loaded once for all embedding tests.
+///
+/// Avoids parallel HuggingFace Hub lock contention when multiple tests call
+/// LocalEngine::new() concurrently. The first test to run loads the model;
+/// all subsequent tests reuse the same instance.
+static LOCAL_ENGINE: OnceLock<Arc<LocalEngine>> = OnceLock::new();
+
+fn local_engine() -> Arc<LocalEngine> {
+    Arc::clone(LOCAL_ENGINE.get_or_init(|| {
+        let engine = LocalEngine::new().expect("LocalEngine::new() should succeed");
+        Arc::new(engine)
+    }))
+}
 
 fn setup() {
     INIT.call_once(|| {
@@ -196,4 +211,100 @@ async fn test_db_open_async() {
         .unwrap();
 
     assert_eq!(content, "test content", "inserted content should round-trip correctly");
+}
+
+/// Verifies that LocalEngine::embed returns a 384-dimensional vector.
+/// Requires model to be downloaded (happens on first run).
+#[tokio::test]
+async fn test_local_embedding_384_dimensions() {
+    let engine = tokio::task::spawn_blocking(local_engine).await.unwrap();
+    let embedding = engine
+        .embed("hello world")
+        .await
+        .expect("embed should succeed");
+    assert_eq!(embedding.len(), 384, "embedding should be exactly 384 dimensions");
+}
+
+/// Verifies that the embedding vector is L2-normalized (norm ~= 1.0).
+#[tokio::test]
+async fn test_local_embedding_normalized() {
+    let engine = tokio::task::spawn_blocking(local_engine).await.unwrap();
+    let embedding = engine
+        .embed("test normalization")
+        .await
+        .expect("embed should succeed");
+    let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!(
+        (norm - 1.0).abs() < 0.01,
+        "L2 norm should be approximately 1.0, got {}",
+        norm
+    );
+}
+
+/// Verifies semantic similarity: related words produce higher cosine similarity
+/// than unrelated words. This proves correct pooling and normalization.
+#[tokio::test]
+async fn test_semantic_similarity() {
+    let engine = tokio::task::spawn_blocking(local_engine).await.unwrap();
+
+    let dog = engine.embed("dog").await.unwrap();
+    let puppy = engine.embed("puppy").await.unwrap();
+    let database = engine.embed("database").await.unwrap();
+
+    let sim_related = cosine_similarity(&dog, &puppy);
+    let sim_unrelated = cosine_similarity(&dog, &database);
+
+    assert!(
+        sim_related > sim_unrelated,
+        "cosine similarity of 'dog'/'puppy' ({:.4}) should be greater than 'dog'/'database' ({:.4})",
+        sim_related,
+        sim_unrelated
+    );
+    assert!(
+        sim_related > 0.5,
+        "cosine similarity of 'dog'/'puppy' should be > 0.5, got {:.4}",
+        sim_related
+    );
+    assert!(
+        sim_unrelated < 0.5,
+        "cosine similarity of 'dog'/'database' should be < 0.5, got {:.4}",
+        sim_unrelated
+    );
+}
+
+/// Verifies that calling embed() with empty text returns EmbeddingError::EmptyInput.
+#[tokio::test]
+async fn test_empty_input_error() {
+    let engine = tokio::task::spawn_blocking(local_engine).await.unwrap();
+    let result = engine.embed("").await;
+    assert!(result.is_err(), "empty input should return an error");
+    let err = result.unwrap_err();
+    assert!(
+        format!("{}", err).contains("empty input text"),
+        "error message should mention empty input, got: {}",
+        err
+    );
+}
+
+/// Verifies the engine can be called multiple times without reinitializing.
+#[tokio::test]
+async fn test_embed_reuse() {
+    let engine = tokio::task::spawn_blocking(local_engine).await.unwrap();
+    let first = engine.embed("first call").await.unwrap();
+    let second = engine.embed("second call").await.unwrap();
+    assert_eq!(first.len(), 384);
+    assert_eq!(second.len(), 384);
+    // Embeddings should be different for different inputs
+    assert_ne!(first, second, "different inputs should produce different embeddings");
+}
+
+/// Cosine similarity helper for test assertions.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
 }

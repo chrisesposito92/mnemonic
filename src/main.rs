@@ -2,6 +2,7 @@ use anyhow::Result;
 
 mod config;
 mod db;
+mod embedding;
 mod error;
 mod server;
 
@@ -31,10 +32,40 @@ async fn main() -> Result<()> {
 
     tracing::info!("database initialized (WAL mode)");
 
-    // 5. Start axum server
+    // 5. Initialize embedding engine
+    let embedding: std::sync::Arc<dyn embedding::EmbeddingEngine> =
+        if let Some(ref api_key) = config.openai_api_key {
+            tracing::info!(
+                provider = "openai",
+                model = "text-embedding-3-small",
+                dimensions = 384,
+                "embedding engine ready"
+            );
+            std::sync::Arc::new(embedding::OpenAiEngine::new(api_key.clone()))
+        } else {
+            let start = std::time::Instant::now();
+            tracing::info!(
+                provider = "local",
+                model = "all-MiniLM-L6-v2",
+                "loading embedding model..."
+            );
+            let engine = tokio::task::spawn_blocking(|| {
+                embedding::LocalEngine::new()
+            })
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+            tracing::info!(
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "embedding model loaded"
+            );
+            std::sync::Arc::new(engine)
+        };
+
+    // 6. Start axum server
     let state = server::AppState {
         db: std::sync::Arc::new(conn),
         config: std::sync::Arc::new(config.clone()),
+        embedding,
     };
     server::serve(&config, state).await?;
 
