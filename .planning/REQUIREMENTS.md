@@ -22,18 +22,18 @@
 
 ### API
 
-- [ ] **API-01**: `POST /memories` stores a memory with content, optional agent_id, session_id, and arbitrary tags
-- [ ] **API-02**: `GET /memories/search` performs semantic search via vector similarity with optional agent_id, session_id, tag, and time range filters
-- [ ] **API-03**: `GET /memories` lists memories with structured filtering by agent_id, session_id, tags, and time range
-- [ ] **API-04**: `DELETE /memories/:id` deletes a specific memory
+- [x] **API-01**: `POST /memories` stores a memory with content, optional agent_id, session_id, and arbitrary tags
+- [x] **API-02**: `GET /memories/search` performs semantic search via vector similarity with optional agent_id, session_id, tag, and time range filters
+- [x] **API-03**: `GET /memories` lists memories with structured filtering by agent_id, session_id, tags, and time range
+- [x] **API-04**: `DELETE /memories/:id` deletes a specific memory
 - [ ] **API-05**: `GET /health` returns server readiness status
-- [ ] **API-06**: All endpoints return JSON responses with appropriate HTTP status codes and error messages
+- [x] **API-06**: All endpoints return JSON responses with appropriate HTTP status codes and error messages
 
 ### Multi-Agent
 
-- [ ] **AGNT-01**: Memories are namespaced by agent_id so multiple agents can share a single mnemonic instance without collisions
-- [ ] **AGNT-02**: Memories can be grouped by session_id for conversation-scoped retrieval
-- [ ] **AGNT-03**: Semantic search pre-filters by agent_id before KNN to scope results and maintain performance
+- [x] **AGNT-01**: Memories are namespaced by agent_id so multiple agents can share a single mnemonic instance without collisions
+- [x] **AGNT-02**: Memories can be grouped by session_id for conversation-scoped retrieval
+- [x] **AGNT-03**: Semantic search pre-filters by agent_id before KNN to scope results and maintain performance
 
 ### Configuration
 
@@ -94,15 +94,15 @@
 | EMBD-03 | Phase 2 | Complete |
 | EMBD-04 | Phase 2 | Complete |
 | EMBD-05 | Phase 2 | Complete |
-| API-01 | Phase 3 | Pending |
-| API-02 | Phase 3 | Pending |
-| API-03 | Phase 3 | Pending |
-| API-04 | Phase 3 | Pending |
+| API-01 | Phase 3 | Complete |
+| API-02 | Phase 3 | Complete |
+| API-03 | Phase 3 | Complete |
+| API-04 | Phase 3 | Complete |
 | API-05 | Phase 3 | Pending |
-| API-06 | Phase 3 | Pending |
-| AGNT-01 | Phase 3 | Pending |
-| AGNT-02 | Phase 3 | Pending |
-| AGNT-03 | Phase 3 | Pending |
+| API-06 | Phase 3 | Complete |
+| AGNT-01 | Phase 3 | Complete |
+| AGNT-02 | Phase 3 | Complete |
+| AGNT-03 | Phase 3 | Complete |
 | DOCS-01 | Phase 4 | Pending |
 | DOCS-02 | Phase 4 | Pending |
 | DOCS-03 | Phase 4 | Pending |

@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Phase 3 context gathered
-last_updated: "2026-03-19T21:08:05.289Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-03-19T21:32:34.036Z"
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 8
+  completed_plans: 6
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 02 — embedding
+**Current focus:** Phase 03 — service-and-api
 
 ## Current Position
 
-Phase: 02 (embedding) — COMPLETE
-Plan: 2 of 2 (DONE)
+Phase: 03 (service-and-api) — EXECUTING
+Plan: 2 of 3
 
 ## Performance Metrics
 
@@ -50,6 +50,7 @@ Plan: 2 of 2 (DONE)
 | Phase 01 P03 | 5 | 2 tasks | 3 files |
 | Phase 02-embedding P01 | 2 | 2 tasks | 6 files |
 | Phase 02-embedding P02 | 3 | 2 tasks | 4 files |
+| Phase 03-service-and-api P03-01 | 8 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,9 @@ Recent decisions affecting current work:
 - [Phase 02-02]: OnceLock shared engine in integration tests prevents HF Hub file lock contention during parallel test runs
 - [Phase 02-02]: OpenAiEngine validates response embedding.len() == 384 before returning (mirrors LocalEngine guard)
 - [Phase 02-02]: LocalEngine::new() wrapped in spawn_blocking in main.rs startup to prevent tokio runtime blocking
+- [Phase 03-01]: zerocopy::IntoBytes used to convert Vec<f32> to raw bytes for sqlite-vec MATCH parameter
+- [Phase 03-01]: delete_memory scopes stmt in inner block before c.transaction() — Rust E0502 requires Statement drop before mutable borrow
+- [Phase 03-01]: CTE over-fetch 10x multiplier (capped at 1000) when agent_id/session_id filter present in search_memories
 
 ### Pending Todos
 
@@ -87,6 +91,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T21:08:05.287Z
-Stopped at: Phase 3 context gathered
-Resume file: .planning/phases/03-service-and-api/03-CONTEXT.md
+Last session: 2026-03-19T21:36:00Z
+Stopped at: Completed 03-01-PLAN.md
+Resume file: .planning/phases/03-service-and-api/03-01-SUMMARY.md
