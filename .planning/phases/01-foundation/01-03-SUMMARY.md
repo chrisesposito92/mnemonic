@@ -72,7 +72,7 @@ Each task was committed atomically:
 1. **Task 1: Write integration tests for database requirements** - `cddcca0` (feat)
 2. **Task 2: Create example TOML config file** - `bea3a3c` (feat)
 
-**Plan metadata:** (pending — final docs commit)
+**Plan metadata:** `25a3b8a` (docs: complete plan)
 
 ## Files Created/Modified
 
