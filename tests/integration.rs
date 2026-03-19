@@ -1,5 +1,11 @@
 use mnemonic::embedding::{EmbeddingEngine, LocalEngine};
 use std::sync::{Arc, Once, OnceLock};
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+use mnemonic::server::{AppState, build_router};
+use mnemonic::service::MemoryService;
 
 static INIT: Once = Once::new();
 
@@ -307,4 +313,86 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     dot / (norm_a * norm_b)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// API Integration Test Infrastructure
+// ────────────────────────────────────────────────────────────────────────────
+
+/// MockEmbeddingEngine returns deterministic 384-dim vectors based on a hash
+/// of the input text, enabling fast, reproducible API integration tests
+/// without requiring model downloads.
+struct MockEmbeddingEngine;
+
+#[async_trait::async_trait]
+impl mnemonic::embedding::EmbeddingEngine for MockEmbeddingEngine {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, mnemonic::error::EmbeddingError> {
+        if text.is_empty() {
+            return Err(mnemonic::error::EmbeddingError::EmptyInput);
+        }
+        // Generate a deterministic 384-dim vector from text hash
+        let mut embedding = vec![0.0f32; 384];
+        let bytes = text.as_bytes();
+        for (i, slot) in embedding.iter_mut().enumerate() {
+            let mut hash: u32 = 5381;
+            for &b in bytes {
+                hash = hash.wrapping_mul(33).wrapping_add(b as u32);
+            }
+            hash = hash.wrapping_mul(31).wrapping_add(i as u32);
+            *slot = (hash as f32 % 1000.0) / 1000.0;
+        }
+        // L2 normalize
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in embedding.iter_mut() {
+                *v /= norm;
+            }
+        }
+        Ok(embedding)
+    }
+}
+
+/// Creates shared AppState with an in-memory SQLite DB, MockEmbeddingEngine,
+/// and MemoryService. The returned service Arc allows inserting test data
+/// before routing requests.
+async fn build_test_state() -> (AppState, Arc<MemoryService>) {
+    setup();
+    let config = test_config();
+    let conn = mnemonic::db::open(&config).await.unwrap();
+    let db = Arc::new(conn);
+    let embedding: Arc<dyn mnemonic::embedding::EmbeddingEngine> = Arc::new(MockEmbeddingEngine);
+    let service = Arc::new(MemoryService::new(
+        db.clone(),
+        embedding.clone(),
+        "mock-model".to_string(),
+    ));
+    let state = AppState {
+        db,
+        config: Arc::new(config),
+        embedding,
+        service: service.clone(),
+    };
+    (state, service)
+}
+
+/// Creates a fully wired axum Router backed by a fresh in-memory DB.
+async fn build_test_app() -> axum::Router {
+    let (state, _) = build_test_state().await;
+    build_router(state)
+}
+
+/// Builds a JSON POST/PUT/DELETE request with content-type application/json.
+fn json_request(method: &str, uri: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+/// Consumes an axum response body and deserializes it as JSON.
+async fn response_json(response: axum::http::Response<Body>) -> serde_json::Value {
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&body).unwrap()
 }
