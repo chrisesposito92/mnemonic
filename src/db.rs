@@ -31,7 +31,7 @@ pub async fn open(
         .await
         .map_err(|e| crate::error::DbError::Open(format!("{}", e)))?;
 
-    conn.call(|c| {
+    conn.call(|c| -> Result<(), rusqlite::Error> {
         c.execute_batch(
             "
             PRAGMA journal_mode=WAL;
