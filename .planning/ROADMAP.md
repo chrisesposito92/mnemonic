@@ -60,7 +60,12 @@ Plans:
   3. `GET /memories` with filter parameters returns a filtered list; `DELETE /memories/:id` removes the specified memory and returns 404 for a subsequent request on that ID
   4. `GET /health` returns `{"status":"ok"}` with HTTP 200; all endpoints return structured JSON error bodies with appropriate HTTP status codes on failure
   5. Two agents storing memories with the same content but different agent_ids retrieve only their own memories when searching
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — MemoryService orchestrator, ApiError type, and request/response types (API-01, API-02, API-03, API-04, API-06, AGNT-01, AGNT-02, AGNT-03)
+- [ ] 03-02-PLAN.md — Axum route handlers, AppState wiring, and main.rs MemoryService construction (API-01, API-02, API-03, API-04, API-05, API-06, AGNT-01, AGNT-02, AGNT-03)
+- [ ] 03-03-PLAN.md — API integration tests with MockEmbeddingEngine and oneshot pattern (API-01, API-02, API-03, API-04, API-05, API-06, AGNT-01, AGNT-02, AGNT-03)
 
 ### Phase 4: Distribution
 **Goal**: A shippable binary artifact with documentation that enables any developer to go from download to first stored memory in under 3 commands, with a complete API reference covering every endpoint
@@ -81,5 +86,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete   | 2026-03-19 |
 | 2. Embedding | 2/2 | Complete   | 2026-03-19 |
-| 3. Service and API | 0/? | Not started | - |
+| 3. Service and API | 0/3 | In progress | - |
 | 4. Distribution | 0/? | Not started | - |
