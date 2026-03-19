@@ -17,15 +17,12 @@ Any AI agent can store and semantically search memories out of the box with zero
 - [x] Bundled local embedding model (all-MiniLM-L6-v2 via candle) for zero-config inference — Validated in Phase 2: Embedding
 - [x] Optional OpenAI API fallback for embeddings — Validated in Phase 2: Embedding
 
-### Active
-
-- [ ] Clean README with quickstart, API reference, and examples
-
 ### Validated (cont.)
 
 - [x] REST API for storing, searching, filtering, and deleting memories — Validated in Phase 3: Service and API
 - [x] Multi-agent support via agent_id namespacing — Validated in Phase 3: Service and API
 - [x] Session-scoped retrieval via session_id grouping — Validated in Phase 3: Service and API
+- [x] Clean README with quickstart, API reference, and examples — Validated in Phase 4: Distribution
 
 ### Out of Scope
 
@@ -67,7 +64,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 ---
 ## Current State
 
-Phase 3 complete — Full REST API operational: POST /memories (201), GET /memories/search (KNN with agent_id pre-filter via CTE over-fetch + JOIN), GET /memories (offset/limit pagination), DELETE /memories/:id, GET /health. MemoryService orchestrates embedding + dual-table transactional writes. ApiError with IntoResponse for consistent JSON error formatting. UUID v7 for time-ordered IDs. 21 tests passing (11 new API integration tests via MockEmbeddingEngine + tower oneshot). Next: Phase 4 (Distribution).
+v1.0 milestone complete — All 4 phases delivered. Single Rust binary with embedded SQLite+sqlite-vec storage, local all-MiniLM-L6-v2 embeddings via candle, REST API (5 endpoints), multi-agent namespacing, and comprehensive documentation. 488-line README with 3-command quickstart, full API reference, Python client, and agent tool-use examples. GitHub Actions release workflow for Linux x86_64, macOS x86_64, and macOS aarch64. 21 tests passing. MIT licensed.
 
 ---
-*Last updated: 2026-03-19 after Phase 3 completion*
+*Last updated: 2026-03-19 after Phase 4 completion*
