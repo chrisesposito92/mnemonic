@@ -5,6 +5,7 @@ mod db;
 mod embedding;
 mod error;
 mod server;
+mod service;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -61,11 +62,28 @@ async fn main() -> Result<()> {
             std::sync::Arc::new(engine)
         };
 
-    // 6. Start axum server
+    // 6. Build MemoryService
+    let embedding_model = if config.openai_api_key.is_some() {
+        "text-embedding-3-small".to_string()
+    } else {
+        "all-MiniLM-L6-v2".to_string()
+    };
+
+    let db_arc = std::sync::Arc::new(conn);
+    let service = std::sync::Arc::new(
+        service::MemoryService::new(
+            db_arc.clone(),
+            embedding.clone(),
+            embedding_model,
+        )
+    );
+
+    // 7. Start axum server
     let state = server::AppState {
-        db: std::sync::Arc::new(conn),
+        db: db_arc,
         config: std::sync::Arc::new(config.clone()),
         embedding,
+        service,
     };
     server::serve(&config, state).await?;
 
