@@ -19,10 +19,13 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-- [ ] REST API for storing, searching, filtering, and deleting memories
-- [ ] Multi-agent support via agent_id namespacing
-- [ ] Session-scoped retrieval via session_id grouping
 - [ ] Clean README with quickstart, API reference, and examples
+
+### Validated (cont.)
+
+- [x] REST API for storing, searching, filtering, and deleting memories — Validated in Phase 3: Service and API
+- [x] Multi-agent support via agent_id namespacing — Validated in Phase 3: Service and API
+- [x] Session-scoped retrieval via session_id grouping — Validated in Phase 3: Service and API
 
 ### Out of Scope
 
@@ -64,7 +67,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 ---
 ## Current State
 
-Phase 2 complete — EmbeddingEngine trait with LocalEngine (candle BERT, attention-mask mean pooling, L2 normalization) and OpenAiEngine fallback. Model loads once at startup, shared via Arc. Semantic similarity validated (cosine dog/puppy > dog/database). 20 tests passing. Next: Phase 3 (Service and API).
+Phase 3 complete — Full REST API operational: POST /memories (201), GET /memories/search (KNN with agent_id pre-filter via CTE over-fetch + JOIN), GET /memories (offset/limit pagination), DELETE /memories/:id, GET /health. MemoryService orchestrates embedding + dual-table transactional writes. ApiError with IntoResponse for consistent JSON error formatting. UUID v7 for time-ordered IDs. 21 tests passing (11 new API integration tests via MockEmbeddingEngine + tower oneshot). Next: Phase 4 (Distribution).
 
 ---
-*Last updated: 2026-03-19 after Phase 2 completion*
+*Last updated: 2026-03-19 after Phase 3 completion*
