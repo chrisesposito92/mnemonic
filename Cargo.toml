@@ -17,6 +17,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v7"] }
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+hf-hub = "0.5"
+tokenizers = "0.22"
+async-trait = "0.1"
+reqwest = { version = "0.13", features = ["json"] }
 
 [dev-dependencies]
 figment = { version = "0.10", features = ["toml", "env", "test"] }

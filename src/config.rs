@@ -10,6 +10,7 @@ pub struct Config {
     pub port: u16,
     pub db_path: String,
     pub embedding_provider: String,
+    pub openai_api_key: Option<String>,
 }
 
 impl Default for Config {
@@ -18,6 +19,7 @@ impl Default for Config {
             port: 8080,
             db_path: "./mnemonic.db".to_string(),
             embedding_provider: "local".to_string(),
+            openai_api_key: None,
         }
     }
 }
@@ -52,6 +54,7 @@ mod tests {
             assert_eq!(config.port, 8080);
             assert_eq!(config.db_path, "./mnemonic.db");
             assert_eq!(config.embedding_provider, "local");
+            assert!(config.openai_api_key.is_none());
             Ok(())
         });
     }

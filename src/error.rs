@@ -7,6 +7,9 @@ pub enum MnemonicError {
     #[error("config error: {0}")]
     Config(#[from] ConfigError),
 
+    #[error("embedding error: {0}")]
+    Embedding(#[from] EmbeddingError),
+
     #[error("server error: {0}")]
     Server(String),
 }
@@ -38,4 +41,26 @@ pub enum ConfigError {
 
     #[error("invalid configuration: {0}")]
     Invalid(String),
+}
+
+/// Errors originating from embedding operations.
+#[derive(Debug, thiserror::Error)]
+pub enum EmbeddingError {
+    #[error("failed to load embedding model: {0}")]
+    ModelLoad(String),
+
+    #[error("embedding inference failed: {0}")]
+    Inference(String),
+
+    #[error("embedding API call failed: {0}")]
+    ApiCall(String),
+
+    #[error("empty input text — cannot embed empty string")]
+    EmptyInput,
+}
+
+impl From<candle_core::Error> for EmbeddingError {
+    fn from(e: candle_core::Error) -> Self {
+        EmbeddingError::Inference(format!("{}", e))
+    }
 }
