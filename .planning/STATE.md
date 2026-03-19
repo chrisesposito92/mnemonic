@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: in-progress
-stopped_at: Completed 01-foundation 01-02-PLAN.md
-last_updated: "2026-03-19T20:14:28Z"
+status: unknown
+stopped_at: Completed 01-foundation 01-03-PLAN.md
+last_updated: "2026-03-19T20:21:29.574Z"
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -46,6 +46,7 @@ Plan: 3 of 3
 - Trend: baseline
 
 *Updated after each plan completion*
+| Phase 01 P03 | 5 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -62,6 +63,8 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: figment test feature added as dev-dependency for Jail-based env isolation in config tests
 - [Phase 01-02]: conn.call closure requires explicit `-> Result<(), rusqlite::Error>` return type — tokio-rusqlite generic E cannot be inferred
 - [Phase 01-02]: tracing_subscriber::prelude::* required for SubscriberExt::with() on Registry
+- [Phase 01]: WAL mode test uses temp file DB, not :memory:, because SQLite in-memory databases always use memory journal mode regardless of WAL PRAGMA
+- [Phase 01]: src/lib.rs created as minimal re-export shim so tests/ crate can import mnemonic::db, mnemonic::config as an external crate
 
 ### Pending Todos
 
@@ -75,6 +78,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T20:14:28Z
-Stopped at: Completed 01-foundation 01-02-PLAN.md
+Last session: 2026-03-19T20:21:29.572Z
+Stopped at: Completed 01-foundation 01-03-PLAN.md
 Resume file: None
