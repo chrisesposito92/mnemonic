@@ -14,11 +14,11 @@
 
 ### Embedding
 
-- [ ] **EMBD-01**: Server bundles all-MiniLM-L6-v2 via candle for zero-config local embedding inference (no external API key required)
-- [ ] **EMBD-02**: Embedding pipeline uses attention-mask-weighted mean pooling and L2 normalization (not CLS token)
-- [ ] **EMBD-03**: Embedding model loads once at startup and is shared across requests via Arc
+- [x] **EMBD-01**: Server bundles all-MiniLM-L6-v2 via candle for zero-config local embedding inference (no external API key required)
+- [x] **EMBD-02**: Embedding pipeline uses attention-mask-weighted mean pooling and L2 normalization (not CLS token)
+- [x] **EMBD-03**: Embedding model loads once at startup and is shared across requests via Arc
 - [ ] **EMBD-04**: User can optionally set `OPENAI_API_KEY` env var to use OpenAI embeddings instead of local model
-- [ ] **EMBD-05**: Embedding provider is abstracted behind a trait with local (candle) and OpenAI implementations
+- [x] **EMBD-05**: Embedding provider is abstracted behind a trait with local (candle) and OpenAI implementations
 
 ### API
 
@@ -89,11 +89,11 @@
 | CONF-01 | Phase 1 | Complete |
 | CONF-02 | Phase 1 | Complete |
 | CONF-03 | Phase 1 | Complete |
-| EMBD-01 | Phase 2 | Pending |
-| EMBD-02 | Phase 2 | Pending |
-| EMBD-03 | Phase 2 | Pending |
+| EMBD-01 | Phase 2 | Complete |
+| EMBD-02 | Phase 2 | Complete |
+| EMBD-03 | Phase 2 | Complete |
 | EMBD-04 | Phase 2 | Pending |
-| EMBD-05 | Phase 2 | Pending |
+| EMBD-05 | Phase 2 | Complete |
 | API-01 | Phase 3 | Pending |
 | API-02 | Phase 3 | Pending |
 | API-03 | Phase 3 | Pending |

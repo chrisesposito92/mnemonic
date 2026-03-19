@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Phase 2 context gathered
-last_updated: "2026-03-19T20:29:42.857Z"
+stopped_at: Completed 02-embedding-01-PLAN.md
+last_updated: "2026-03-19T20:52:10.034Z"
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 5
+  completed_plans: 4
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 01 — foundation
+**Current focus:** Phase 02 — embedding
 
 ## Current Position
 
-Phase: 01 (foundation) — EXECUTING
-Plan: 3 of 3
+Phase: 02 (embedding) — EXECUTING
+Plan: 1 of 2
 
 ## Performance Metrics
 
@@ -47,6 +47,7 @@ Plan: 3 of 3
 
 *Updated after each plan completion*
 | Phase 01 P03 | 5 | 2 tasks | 3 files |
+| Phase 02-embedding P01 | 2 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -65,6 +66,9 @@ Recent decisions affecting current work:
 - [Phase 01-02]: tracing_subscriber::prelude::* required for SubscriberExt::with() on Registry
 - [Phase 01]: WAL mode test uses temp file DB, not :memory:, because SQLite in-memory databases always use memory journal mode regardless of WAL PRAGMA
 - [Phase 01]: src/lib.rs created as minimal re-export shim so tests/ crate can import mnemonic::db, mnemonic::config as an external crate
+- [Phase 02-embedding]: Arc<Mutex<LocalEngineInner>> for BertModel+Tokenizer Send+Sync — wraps both in single mutex for spawn_blocking, serializes single-text inference correctly
+- [Phase 02-embedding]: refs/pr/21 revision for all-MiniLM-L6-v2 — guarantees model.safetensors availability per official candle bert example
+- [Phase 02-embedding]: Attention-mask-weighted mean pooling via broadcast_mul+sum+broadcast_div (not CLS token) per candle bert/main.rs
 
 ### Pending Todos
 
@@ -78,6 +82,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T20:29:42.855Z
-Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-embedding/02-CONTEXT.md
+Last session: 2026-03-19T20:52:10.032Z
+Stopped at: Completed 02-embedding-01-PLAN.md
+Resume file: None
