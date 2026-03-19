@@ -26,7 +26,7 @@
 - [x] **API-02**: `GET /memories/search` performs semantic search via vector similarity with optional agent_id, session_id, tag, and time range filters
 - [x] **API-03**: `GET /memories` lists memories with structured filtering by agent_id, session_id, tags, and time range
 - [x] **API-04**: `DELETE /memories/:id` deletes a specific memory
-- [ ] **API-05**: `GET /health` returns server readiness status
+- [x] **API-05**: `GET /health` returns server readiness status
 - [x] **API-06**: All endpoints return JSON responses with appropriate HTTP status codes and error messages
 
 ### Multi-Agent
@@ -98,7 +98,7 @@
 | API-02 | Phase 3 | Complete |
 | API-03 | Phase 3 | Complete |
 | API-04 | Phase 3 | Complete |
-| API-05 | Phase 3 | Pending |
+| API-05 | Phase 3 | Complete |
 | API-06 | Phase 3 | Complete |
 | AGNT-01 | Phase 3 | Complete |
 | AGNT-02 | Phase 3 | Complete |

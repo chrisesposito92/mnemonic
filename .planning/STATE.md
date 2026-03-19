@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-03-19T21:32:34.036Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-03-19T21:36:13.564Z"
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 8
-  completed_plans: 6
+  completed_plans: 7
 ---
 
 # Project State
@@ -51,6 +51,7 @@ Plan: 2 of 3
 | Phase 02-embedding P01 | 2 | 2 tasks | 6 files |
 | Phase 02-embedding P02 | 3 | 2 tasks | 4 files |
 | Phase 03-service-and-api P03-01 | 8 | 2 tasks | 4 files |
+| Phase 03-service-and-api P02 | 1 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,7 @@ Recent decisions affecting current work:
 - [Phase 03-01]: zerocopy::IntoBytes used to convert Vec<f32> to raw bytes for sqlite-vec MATCH parameter
 - [Phase 03-01]: delete_memory scopes stmt in inner block before c.transaction() — Rust E0502 requires Statement drop before mutable borrow
 - [Phase 03-01]: CTE over-fetch 10x multiplier (capped at 1000) when agent_id/session_id filter present in search_memories
+- [Phase 03-service-and-api]: POST /memories returns 201 Created; DELETE returns 200 with deleted object; db_arc shared between MemoryService and AppState
 
 ### Pending Todos
 
@@ -91,6 +93,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T21:36:00Z
-Stopped at: Completed 03-01-PLAN.md
-Resume file: .planning/phases/03-service-and-api/03-01-SUMMARY.md
+Last session: 2026-03-19T21:36:13.562Z
+Stopped at: Completed 03-02-PLAN.md
+Resume file: None
