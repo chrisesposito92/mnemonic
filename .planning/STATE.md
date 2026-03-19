@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Phase 4 context gathered
-last_updated: "2026-03-19T21:59:32.813Z"
+stopped_at: Completed 04-02-PLAN.md (Phase 4 distribution complete)
+last_updated: "2026-03-19T22:15:54.563Z"
 progress:
   total_phases: 4
-  completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
+  completed_phases: 4
+  total_plans: 10
+  completed_plans: 10
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 03 — service-and-api
+**Current focus:** Phase 04 — distribution
 
 ## Current Position
 
-Phase: 03 (service-and-api) — EXECUTING
-Plan: 2 of 3
+Phase: 04 (distribution) — COMPLETE
+Plan: 2 of 2 (complete)
 
 ## Performance Metrics
 
@@ -83,6 +83,7 @@ Recent decisions affecting current work:
 - [Phase 03-service-and-api]: POST /memories returns 201 Created; DELETE returns 200 with deleted object; db_arc shared between MemoryService and AppState
 - [Phase 03-service-and-api]: SearchParams.q made Option<String> so missing q returns 400 via service validation rather than 422 from axum Query extractor
 - [Phase 03-service-and-api]: MockEmbeddingEngine uses deterministic hash-based 384-dim vectors for reproducible tests without model download
+- [Phase 04-distribution]: dtolnay/rust-toolchain@stable used in release workflow (not deprecated actions-rs/toolchain); native cross-compile without cross tool for all three targets
 
 ### Pending Todos
 
@@ -96,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T21:59:32.811Z
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-distribution/04-CONTEXT.md
+Last session: 2026-03-19T22:15:54.561Z
+Stopped at: Completed 04-02-PLAN.md (Phase 4 distribution complete)
+Resume file: None
