@@ -1,6 +1,12 @@
-use axum::{routing::get, Json, Router};
+use axum::{
+    extract::{Path, Query, State},
+    routing::{delete, get, post},
+    Json, Router,
+};
 use serde_json::Value;
 use tracing_subscriber::prelude::*;
+use crate::error::ApiError;
+use crate::service::{CreateMemoryRequest, ListParams, SearchParams};
 
 /// Initializes the tracing subscriber with pretty-printed output and EnvFilter.
 ///
@@ -21,18 +27,58 @@ pub struct AppState {
     pub db: std::sync::Arc<tokio_rusqlite::Connection>,
     pub config: std::sync::Arc<crate::config::Config>,
     pub embedding: std::sync::Arc<dyn crate::embedding::EmbeddingEngine>,
+    pub service: std::sync::Arc<crate::service::MemoryService>,
 }
 
 /// Constructs the axum Router with all routes wired to AppState.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
+        .route("/memories", post(create_memory_handler).get(list_memories_handler))
+        .route("/memories/search", get(search_memories_handler))
+        .route("/memories/{id}", delete(delete_memory_handler))
         .with_state(state)
 }
 
 /// GET /health — returns {"status":"ok"} with HTTP 200.
 async fn health_handler() -> Json<Value> {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+/// POST /memories — creates a new memory and returns 201 Created.
+async fn create_memory_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreateMemoryRequest>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
+    let memory = state.service.create_memory(body).await?;
+    Ok((axum::http::StatusCode::CREATED, Json(serde_json::to_value(memory).unwrap())))
+}
+
+/// GET /memories/search — semantic search returning ranked results with distance.
+async fn search_memories_handler(
+    State(state): State<AppState>,
+    Query(params): Query<SearchParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let response = state.service.search_memories(params).await?;
+    Ok(Json(serde_json::to_value(response).unwrap()))
+}
+
+/// GET /memories — paginated list of memories with optional filters.
+async fn list_memories_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ListParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let response = state.service.list_memories(params).await?;
+    Ok(Json(serde_json::to_value(response).unwrap()))
+}
+
+/// DELETE /memories/:id — deletes a memory by ID and returns the deleted object.
+async fn delete_memory_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let memory = state.service.delete_memory(id).await?;
+    Ok(Json(serde_json::to_value(memory).unwrap()))
 }
 
 /// Binds a TCP listener and serves the axum application.
