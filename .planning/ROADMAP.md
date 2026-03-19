@@ -31,9 +31,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans:** 3/3 plans complete
 
 Plans:
-- [ ] 01-01-PLAN.md — Project skeleton, error types, and layered configuration (CONF-01, CONF-02, CONF-03)
-- [ ] 01-02-PLAN.md — Database module with sqlite-vec, axum server, and main.rs wiring (STOR-01, STOR-02, STOR-03, STOR-04)
-- [ ] 01-03-PLAN.md — Integration tests and example config file (all requirements verified)
+- [x] 01-01-PLAN.md — Project skeleton, error types, and layered configuration (CONF-01, CONF-02, CONF-03)
+- [x] 01-02-PLAN.md — Database module with sqlite-vec, axum server, and main.rs wiring (STOR-01, STOR-02, STOR-03, STOR-04)
+- [x] 01-03-PLAN.md — Integration tests and example config file (all requirements verified)
 
 ### Phase 2: Embedding
 **Goal**: An `EmbeddingEngine` trait with a working `LocalEngine` (candle BERT, masked mean pooling, L2 normalization) that produces semantically valid vectors, loaded once at startup and shared across requests, with an optional `OpenAiEngine` fallback selectable via environment variable
@@ -44,7 +44,11 @@ Plans:
   2. Cosine similarity between embeddings of semantically related sentences (e.g., "dog" and "puppy") is measurably higher than for unrelated sentences (e.g., "dog" and "database") — validates correct pooling and normalization
   3. Setting `OPENAI_API_KEY` causes the server to use OpenAI text-embedding-3-small instead of the local model; the code path is the same trait call
   4. The model is initialized once at startup and reused across all requests — not reloaded per call
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — EmbeddingEngine trait, EmbeddingError types, Config updates, and LocalEngine with candle BERT (EMBD-01, EMBD-02, EMBD-03, EMBD-05)
+- [ ] 02-02-PLAN.md — OpenAiEngine, main.rs wiring, AppState integration, and semantic similarity tests (EMBD-04, EMBD-05)
 
 ### Phase 3: Service and API
 **Goal**: A fully working HTTP API where agents can store, search, list, and delete memories, with namespacing by agent_id and session_id, returning correct JSON responses and HTTP status codes for all success and error cases
@@ -76,6 +80,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete   | 2026-03-19 |
-| 2. Embedding | 0/? | Not started | - |
+| 2. Embedding | 0/2 | Planning complete | - |
 | 3. Service and API | 0/? | Not started | - |
 | 4. Distribution | 0/? | Not started | - |
