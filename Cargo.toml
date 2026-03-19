@@ -2,6 +2,12 @@
 name = "mnemonic"
 version = "0.1.0"
 edition = "2021"
+description = "Framework-agnostic agent memory server — persistent semantic memory via a simple REST API"
+license = "MIT"
+repository = "https://github.com/chrisesposito92/mnemonic"
+homepage = "https://github.com/chrisesposito92/mnemonic"
+keywords = ["agent", "memory", "embeddings", "semantic-search", "llm"]
+categories = ["web-programming::http-server", "database"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
