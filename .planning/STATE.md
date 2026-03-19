@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 02-embedding-01-PLAN.md
-last_updated: "2026-03-19T20:52:10.034Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-03-19T20:56:53Z"
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 5
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -23,8 +23,8 @@ See: .planning/PROJECT.md (updated 2026-03-19)
 
 ## Current Position
 
-Phase: 02 (embedding) — EXECUTING
-Plan: 1 of 2
+Phase: 02 (embedding) — COMPLETE
+Plan: 2 of 2 (DONE)
 
 ## Performance Metrics
 
@@ -39,15 +39,17 @@ Plan: 1 of 2
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-foundation | 2/3 | 6 min | 3 min |
+| 02-embedding | 2/2 | 5 min | 3 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 4 min (01-01), 2 min (01-02)
-- Trend: baseline
+- Last 5 plans: 4 min (01-01), 2 min (01-02), 2 min (02-01), 3 min (02-02)
+- Trend: stable
 
 *Updated after each plan completion*
 | Phase 01 P03 | 5 | 2 tasks | 3 files |
 | Phase 02-embedding P01 | 2 | 2 tasks | 6 files |
+| Phase 02-embedding P02 | 3 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -69,6 +71,9 @@ Recent decisions affecting current work:
 - [Phase 02-embedding]: Arc<Mutex<LocalEngineInner>> for BertModel+Tokenizer Send+Sync — wraps both in single mutex for spawn_blocking, serializes single-text inference correctly
 - [Phase 02-embedding]: refs/pr/21 revision for all-MiniLM-L6-v2 — guarantees model.safetensors availability per official candle bert example
 - [Phase 02-embedding]: Attention-mask-weighted mean pooling via broadcast_mul+sum+broadcast_div (not CLS token) per candle bert/main.rs
+- [Phase 02-02]: OnceLock shared engine in integration tests prevents HF Hub file lock contention during parallel test runs
+- [Phase 02-02]: OpenAiEngine validates response embedding.len() == 384 before returning (mirrors LocalEngine guard)
+- [Phase 02-02]: LocalEngine::new() wrapped in spawn_blocking in main.rs startup to prevent tokio runtime blocking
 
 ### Pending Todos
 
@@ -82,6 +87,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T20:52:10.032Z
-Stopped at: Completed 02-embedding-01-PLAN.md
+Last session: 2026-03-19T20:56:53Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None

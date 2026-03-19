@@ -13,7 +13,7 @@ Mnemonic is built in four phases that follow the dependency graph of the archite
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Project skeleton, SQLite+sqlite-vec storage, and configuration wired up (completed 2026-03-19)
-- [ ] **Phase 2: Embedding** - Local all-MiniLM-L6-v2 model via candle with OpenAI fallback
+- [x] **Phase 2: Embedding** - Local all-MiniLM-L6-v2 model via candle with OpenAI fallback (completed 2026-03-19)
 - [ ] **Phase 3: Service and API** - MemoryService orchestrator + axum REST endpoints + multi-agent namespacing
 - [ ] **Phase 4: Distribution** - Binary packaging, README, quickstart, and API reference
 
@@ -44,7 +44,7 @@ Plans:
   2. Cosine similarity between embeddings of semantically related sentences (e.g., "dog" and "puppy") is measurably higher than for unrelated sentences (e.g., "dog" and "database") — validates correct pooling and normalization
   3. Setting `OPENAI_API_KEY` causes the server to use OpenAI text-embedding-3-small instead of the local model; the code path is the same trait call
   4. The model is initialized once at startup and reused across all requests — not reloaded per call
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 02-01-PLAN.md — EmbeddingEngine trait, EmbeddingError types, Config updates, and LocalEngine with candle BERT (EMBD-01, EMBD-02, EMBD-03, EMBD-05)
@@ -80,6 +80,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete   | 2026-03-19 |
-| 2. Embedding | 1/2 | In Progress|  |
+| 2. Embedding | 2/2 | Complete   | 2026-03-19 |
 | 3. Service and API | 0/? | Not started | - |
 | 4. Distribution | 0/? | Not started | - |
