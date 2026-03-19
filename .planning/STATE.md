@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 04-02-PLAN.md (Phase 4 distribution complete)
-last_updated: "2026-03-19T22:15:54.563Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-19T22:16:55.002Z"
 progress:
   total_phases: 4
   completed_phases: 4
@@ -53,6 +53,7 @@ Plan: 2 of 2 (complete)
 | Phase 03-service-and-api P03-01 | 8 | 2 tasks | 4 files |
 | Phase 03-service-and-api P02 | 1 | 2 tasks | 2 files |
 | Phase 03-service-and-api P03 | 2 | 2 tasks | 2 files |
+| Phase 04-distribution P01 | 5 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,8 @@ Recent decisions affecting current work:
 - [Phase 03-service-and-api]: SearchParams.q made Option<String> so missing q returns 400 via service validation rather than 422 from axum Query extractor
 - [Phase 03-service-and-api]: MockEmbeddingEngine uses deterministic hash-based 384-dim vectors for reproducible tests without model download
 - [Phase 04-distribution]: dtolnay/rust-toolchain@stable used in release workflow (not deprecated actions-rs/toolchain); native cross-compile without cross tool for all three targets
+- [Phase 04-distribution]: MIT License chosen for mnemonic binary server (simplest for CLI tools, confirmed via git remote)
+- [Phase 04-distribution]: cargo install --git URL documented over bare cargo install mnemonic (crate not yet on crates.io)
 
 ### Pending Todos
 
@@ -97,6 +100,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T22:15:54.561Z
-Stopped at: Completed 04-02-PLAN.md (Phase 4 distribution complete)
+Last session: 2026-03-19T22:16:51.915Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None

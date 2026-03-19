@@ -44,8 +44,8 @@
 ### Documentation
 
 - [x] **DOCS-01**: README includes quickstart guide that gets a user from download to first stored memory in under 3 commands
-- [ ] **DOCS-02**: README includes full API reference with request/response examples for every endpoint
-- [ ] **DOCS-03**: README includes usage examples for curl, Python, and at least one agent framework
+- [x] **DOCS-02**: README includes full API reference with request/response examples for every endpoint
+- [x] **DOCS-03**: README includes usage examples for curl, Python, and at least one agent framework
 
 ## v2 Requirements
 
@@ -104,8 +104,8 @@
 | AGNT-02 | Phase 3 | Complete |
 | AGNT-03 | Phase 3 | Complete |
 | DOCS-01 | Phase 4 | Complete |
-| DOCS-02 | Phase 4 | Pending |
-| DOCS-03 | Phase 4 | Pending |
+| DOCS-02 | Phase 4 | Complete |
+| DOCS-03 | Phase 4 | Complete |
 
 **Coverage:**
 - v1 requirements: 24 total

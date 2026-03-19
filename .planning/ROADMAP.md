@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation** - Project skeleton, SQLite+sqlite-vec storage, and configuration wired up (completed 2026-03-19)
 - [x] **Phase 2: Embedding** - Local all-MiniLM-L6-v2 model via candle with OpenAI fallback (completed 2026-03-19)
 - [x] **Phase 3: Service and API** - MemoryService orchestrator + axum REST endpoints + multi-agent namespacing (completed 2026-03-19)
-- [ ] **Phase 4: Distribution** - Binary packaging, README, quickstart, and API reference
+- [x] **Phase 4: Distribution** - Binary packaging, README, quickstart, and API reference (completed 2026-03-19)
 
 ## Phase Details
 
@@ -75,7 +75,7 @@ Plans:
   1. A user following only the README quickstart can download the binary, start the server, and store a memory via curl in 3 commands or fewer
   2. The README API reference documents every endpoint with request parameters, response schema, and a copy-paste curl example
   3. The README includes working usage examples in curl, Python, and at least one agent framework showing realistic agent memory patterns
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 04-01-PLAN.md — Cargo.toml metadata, LICENSE file, and comprehensive README.md (DOCS-01, DOCS-02, DOCS-03)
@@ -91,4 +91,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. Foundation | 3/3 | Complete   | 2026-03-19 |
 | 2. Embedding | 2/2 | Complete   | 2026-03-19 |
 | 3. Service and API | 3/3 | Complete   | 2026-03-19 |
-| 4. Distribution | 1/2 | In Progress|  |
+| 4. Distribution | 2/2 | Complete   | 2026-03-19 |
