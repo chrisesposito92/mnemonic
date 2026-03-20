@@ -282,6 +282,135 @@ async fn test_db_open_idempotent() {
     let _ = std::fs::remove_file(format!("{}-shm", db_path));
 }
 
+/// INFRA-01: Verifies that the api_keys table exists after db::open() with all 7 required columns.
+#[tokio::test]
+async fn test_api_keys_table_created() {
+    setup();
+    let config = test_config();
+    let conn = mnemonic::db::open(&config).await.unwrap();
+
+    let column_names: Vec<String> = conn
+        .call(|c| -> Result<Vec<String>, rusqlite::Error> {
+            let mut stmt = c.prepare("PRAGMA table_info(api_keys)")?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(names)
+        })
+        .await
+        .unwrap();
+
+    let expected_columns = [
+        "id", "name", "display_id", "hashed_key",
+        "agent_id", "created_at", "revoked_at",
+    ];
+
+    for col in &expected_columns {
+        assert!(
+            column_names.iter().any(|c| c == col),
+            "api_keys table should have column '{}', found: {:?}",
+            col,
+            column_names
+        );
+    }
+
+    assert_eq!(column_names.len(), 7, "api_keys table should have exactly 7 columns");
+}
+
+/// INFRA-01: Verifies that idx_api_keys_agent_id index exists.
+/// Note: hashed_key has a UNIQUE constraint which creates an implicit auto-index
+/// (named sqlite_autoindex_api_keys_1), so we only check the explicit agent_id index.
+#[tokio::test]
+async fn test_api_keys_indexes() {
+    setup();
+    let config = test_config();
+    let conn = mnemonic::db::open(&config).await.unwrap();
+
+    let index_names: Vec<String> = conn
+        .call(|c| -> Result<Vec<String>, rusqlite::Error> {
+            let mut stmt = c.prepare("PRAGMA index_list(api_keys)")?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(names)
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        index_names.iter().any(|n| n == "idx_api_keys_agent_id"),
+        "api_keys should have idx_api_keys_agent_id index, found: {:?}",
+        index_names
+    );
+
+    // Verify the UNIQUE constraint auto-index exists for hashed_key
+    assert!(
+        index_names.iter().any(|n| n.contains("autoindex") || n == "sqlite_autoindex_api_keys_1"),
+        "api_keys should have an auto-index from the UNIQUE constraint on hashed_key, found: {:?}",
+        index_names
+    );
+}
+
+/// INFRA-01: Verifies that db::open() with api_keys DDL is idempotent — runs twice without error.
+#[tokio::test]
+async fn test_api_keys_migration_idempotent() {
+    setup();
+    let tmp_dir = std::env::temp_dir();
+    let db_file = tmp_dir.join(format!("mnemonic_test_api_keys_idempotent_{}.db", std::process::id()));
+    let db_path = db_file.to_str().unwrap().to_string();
+
+    let config = mnemonic::config::Config {
+        port: 0,
+        db_path: db_path.clone(),
+        embedding_provider: "local".to_string(),
+        openai_api_key: None,
+        ..Default::default()
+    };
+
+    // First open — creates api_keys table
+    let conn1 = mnemonic::db::open(&config).await.unwrap();
+    drop(conn1);
+
+    // Second open — must not error (CREATE TABLE IF NOT EXISTS)
+    let conn2 = mnemonic::db::open(&config).await.unwrap();
+    drop(conn2);
+
+    // Clean up
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", db_path));
+    let _ = std::fs::remove_file(format!("{}-shm", db_path));
+}
+
+/// INFRA-03: count_active_keys() returns 0 on a fresh database (open mode).
+#[tokio::test]
+async fn test_count_active_keys_empty_db() {
+    setup();
+    let config = test_config();
+    let conn = Arc::new(mnemonic::db::open(&config).await.unwrap());
+    let key_service = mnemonic::auth::KeyService::new(conn);
+    let count = key_service.count_active_keys().await.unwrap();
+    assert_eq!(count, 0, "empty DB should report 0 active keys (open mode)");
+}
+
+/// D-07, D-08: ApiError::Unauthorized produces 401 with structured JSON body.
+#[tokio::test]
+async fn test_unauthorized_response_shape() {
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt;
+
+    let error = mnemonic::error::ApiError::Unauthorized("test reason".to_string());
+    let response = error.into_response();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["error"], "unauthorized");
+    assert_eq!(json["auth_mode"], "active");
+    assert_eq!(json["hint"], "Provide Authorization: Bearer mnk_...");
+}
+
 /// Verifies that db::open() works in an async context and supports insert + query via conn.call().
 #[tokio::test]
 async fn test_db_open_async() {
@@ -492,9 +621,11 @@ async fn build_test_state() -> (AppState, Arc<MemoryService>) {
     let compaction = Arc::new(CompactionService::new(
         db.clone(), embedding.clone(), None, "mock-model".to_string(),
     ));
+    let key_service = Arc::new(mnemonic::auth::KeyService::new(db.clone()));
     let state = AppState {
         service: service.clone(),
         compaction,
+        key_service,
     };
     (state, service)
 }
@@ -1177,9 +1308,11 @@ async fn build_test_compact_state() -> (AppState, Arc<mnemonic::service::MemoryS
     let compaction = Arc::new(CompactionService::new(
         db.clone(), embedding.clone(), None, "mock-model".to_string(),
     ));
+    let key_service = Arc::new(mnemonic::auth::KeyService::new(db.clone()));
     let state = AppState {
         service: service.clone(),
         compaction,
+        key_service,
     };
     (state, service)
 }
