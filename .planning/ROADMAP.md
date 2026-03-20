@@ -52,7 +52,9 @@ Plans:
   2. All memory content in LLM prompts is wrapped in explicit data-framing delimiters — raw content never reaches the prompt template directly
   3. If the LLM call times out or returns an error, the engine returns an Err that CompactionService can catch and fall back from — it does not panic
   4. MockSummarizer returns deterministic output without any network calls, enabling unit tests with zero external dependencies
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 07-01-PLAN.md — SummarizationEngine trait + OpenAiSummarizer + MockSummarizer + unit tests + main.rs wiring
 
 ### Phase 8: Compaction Core
 **Goal**: CompactionService implements the full compaction pipeline — fetch, cluster, synthesize, atomic write — and dry_run mode returns proposed clusters without modifying any data
@@ -62,7 +64,7 @@ Plans:
   1. Given an agent's memories, CompactionService identifies clusters where cosine similarity exceeds the configured threshold (default 0.85) and groups them for merge
   2. A merged memory inherits the tag union of all source memories, the earliest created_at timestamp, and combined content — verified by assertion
   3. The merge write is atomic: the new memory is inserted and source memories are deleted within a single SQLite transaction; a simulated failure between insert and delete leaves the database consistent (no data lost, no orphans)
-  4. When max_candidates is set, the clustering algorithm caps the candidate set and returns without processing beyond the limit — preventing O(n²) on large memory sets
+  4. When max_candidates is set, the clustering algorithm caps the candidate set and returns without processing beyond the limit — preventing O(n^2) on large memory sets
 **Plans**: TBD
 
 ### Phase 9: HTTP Integration
@@ -85,7 +87,7 @@ Plans:
 | 3. Service and API | v1.0 | 3/3 | Complete | 2026-03-19 |
 | 4. Distribution | v1.0 | 2/2 | Complete | 2026-03-19 |
 | 5. Config Cleanup | v1.0 | 1/1 | Complete | 2026-03-20 |
-| 6. Foundation | 2/2 | Complete   | 2026-03-20 | - |
-| 7. Summarization Engine | v1.1 | 0/? | Not started | - |
+| 6. Foundation | v1.1 | 2/2 | Complete | 2026-03-20 |
+| 7. Summarization Engine | v1.1 | 0/1 | Planned | - |
 | 8. Compaction Core | v1.1 | 0/? | Not started | - |
 | 9. HTTP Integration | v1.1 | 0/? | Not started | - |
