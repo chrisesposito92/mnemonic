@@ -25,8 +25,8 @@ Any AI agent can store and semantically search memories out of the box with zero
 ### Active
 
 - [ ] Agent-triggered memory compaction via POST /memories/compact endpoint
-- [ ] Algorithmic deduplication via vector similarity clustering (no LLM required)
-- [ ] Metadata merge for deduplicated memory clusters
+- [x] Algorithmic deduplication via vector similarity clustering (no LLM required) — Validated in Phase 8: Compaction Core
+- [x] Metadata merge for deduplicated memory clusters — Validated in Phase 8: Compaction Core
 - [x] LLM-powered summarization of similar memory clusters (opt-in, requires LLM config) — Validated in Phase 7: Summarization Engine
 - [x] Configurable LLM provider following existing embedding_provider pattern — Validated in Phase 6: Foundation
 - [ ] Time-based weighting parameter for age-aware compaction aggressiveness
@@ -47,8 +47,9 @@ Any AI agent can store and semantically search memories out of the box with zero
 Shipped v1.0 with 1,932 lines of Rust code across 5 phases (11 plans).
 Phase 6 complete — LLM config fields, schema migrations (source_ids, compact_runs), LlmError types added.
 Phase 7 complete — SummarizationEngine trait, OpenAiSummarizer (prompt-injection-resistant via XML delimiters), MockSummarizer, wired in main.rs.
+Phase 8 complete — CompactionService with greedy pairwise clustering, metadata merge, atomic SQLite transactions, dry_run mode, Tier 1/Tier 2 content synthesis with LLM fallback, compact_runs audit logging.
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2).
-25 unit tests + 23 integration tests passing, zero compiler warnings. MIT licensed.
+35 unit tests + 29 integration tests passing, zero compiler warnings. MIT licensed.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required.
 
@@ -90,4 +91,4 @@ Single-binary distribution — no Python, no Docker, no external services requir
 - Time-based weighting parameter for age-aware compaction
 
 ---
-*Last updated: 2026-03-20 after Phase 7 (Summarization Engine) completed*
+*Last updated: 2026-03-20 after Phase 8 (Compaction Core) completed*
