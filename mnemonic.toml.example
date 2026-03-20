@@ -9,5 +9,8 @@ port = 8080
 db_path = "./mnemonic.db"
 
 # Embedding provider: "local" or "openai" (env: MNEMONIC_EMBEDDING_PROVIDER, default: "local")
-# When set to "openai", the OPENAI_API_KEY environment variable must also be set.
 embedding_provider = "local"
+
+# OpenAI API key (env: MNEMONIC_OPENAI_API_KEY)
+# Required when embedding_provider = "openai". Not used for local provider.
+# openai_api_key = "sk-..."

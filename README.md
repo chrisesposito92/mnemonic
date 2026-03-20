@@ -71,7 +71,7 @@ All configuration is optional. Mnemonic works with zero configuration.
 | `MNEMONIC_PORT` | `8080` | TCP port to listen on |
 | `MNEMONIC_DB_PATH` | `./mnemonic.db` | Path to SQLite database file |
 | `MNEMONIC_EMBEDDING_PROVIDER` | `local` | Embedding provider: `local` or `openai` |
-| `MNEMONIC_OPENAI_API_KEY` | — | OpenAI API key (setting this switches provider to OpenAI) |
+| `MNEMONIC_OPENAI_API_KEY` | — | OpenAI API key (required when `MNEMONIC_EMBEDDING_PROVIDER=openai`) |
 | `MNEMONIC_CONFIG_PATH` | `./mnemonic.toml` | Path to optional TOML configuration file |
 
 **Precedence:** env vars > TOML file > compiled defaults.
@@ -81,6 +81,8 @@ All configuration is optional. Mnemonic works with zero configuration.
 ```toml
 port = 9090
 db_path = "/data/mnemonic.db"
+embedding_provider = "local"
+# openai_api_key = "sk-..."
 ```
 
 Set `MNEMONIC_CONFIG_PATH` to point to a different TOML file location.
