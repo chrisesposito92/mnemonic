@@ -2,14 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Authentication / API Keys
-status: ready-to-plan
-stopped_at: null
-last_updated: "2026-03-20T18:00:00.000Z"
+status: planning
+stopped_at: Phase 10 context gathered
+last_updated: "2026-03-20T18:48:42.130Z"
+last_activity: 2026-03-20 — Roadmap created for v1.2
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -44,6 +46,7 @@ Progress: [░░░░░░░░░░] 0% (v1.2)
 See PROJECT.md Key Decisions table for complete log.
 
 Recent decisions affecting v1.2:
+
 - Use BLAKE3 (not SHA-256) for key hashing — faster, pure Rust, simpler API
 - Use `constant_time_eq::constant_time_eq_32()` for key comparison — never `==` on key values
 - Scope enforcement at handler layer (not service layer) — services remain auth-unaware
@@ -61,6 +64,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-20
-Stopped at: Roadmap created, ready to plan Phase 10
-Resume file: None
+Last session: 2026-03-20T18:48:42.128Z
+Stopped at: Phase 10 context gathered
+Resume file: .planning/phases/10-auth-schema-foundation/10-CONTEXT.md
