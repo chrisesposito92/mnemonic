@@ -6,6 +6,7 @@ mod embedding;
 mod error;
 mod server;
 mod service;
+mod summarization;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -65,6 +66,28 @@ async fn main() -> Result<()> {
                 );
                 std::sync::Arc::new(embedding::OpenAiEngine::new(api_key.clone()))
             }
+            _ => unreachable!(), // validate_config rejects unknown providers
+        };
+
+    // 5b. Initialize LLM summarization engine (optional)
+    let _llm_engine: Option<std::sync::Arc<dyn summarization::SummarizationEngine>> =
+        match config.llm_provider.as_deref() {
+            Some("openai") => {
+                let api_key = config.llm_api_key.as_ref().unwrap(); // safe: validate_config passed
+                let base_url = config.llm_base_url.clone()
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+                let model = config.llm_model.clone()
+                    .unwrap_or_else(|| "gpt-4o-mini".to_string());
+                tracing::info!(
+                    provider = "openai",
+                    model = %model,
+                    "LLM summarization engine ready"
+                );
+                Some(std::sync::Arc::new(
+                    summarization::OpenAiSummarizer::new(api_key.clone(), base_url, model)
+                ))
+            }
+            None => None,
             _ => unreachable!(), // validate_config rejects unknown providers
         };
 
