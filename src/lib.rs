@@ -4,3 +4,4 @@ pub mod embedding;
 pub mod error;
 pub mod server;
 pub mod service;
+pub mod summarization;
