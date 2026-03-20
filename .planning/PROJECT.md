@@ -27,7 +27,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 - [ ] Agent-triggered memory compaction via POST /memories/compact endpoint
 - [ ] Algorithmic deduplication via vector similarity clustering (no LLM required)
 - [ ] Metadata merge for deduplicated memory clusters
-- [ ] LLM-powered summarization of similar memory clusters (opt-in, requires LLM config)
+- [x] LLM-powered summarization of similar memory clusters (opt-in, requires LLM config) — Validated in Phase 7: Summarization Engine
 - [x] Configurable LLM provider following existing embedding_provider pattern — Validated in Phase 6: Foundation
 - [ ] Time-based weighting parameter for age-aware compaction aggressiveness
 
@@ -46,8 +46,9 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 Shipped v1.0 with 1,932 lines of Rust code across 5 phases (11 plans).
 Phase 6 complete — LLM config fields, schema migrations (source_ids, compact_runs), LlmError types added.
+Phase 7 complete — SummarizationEngine trait, OpenAiSummarizer (prompt-injection-resistant via XML delimiters), MockSummarizer, wired in main.rs.
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2).
-23 tests passing, zero compiler warnings (1 expected dead_code warning for LlmError). MIT licensed.
+25 unit tests + 23 integration tests passing, zero compiler warnings. MIT licensed.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required.
 
@@ -89,4 +90,4 @@ Single-binary distribution — no Python, no Docker, no external services requir
 - Time-based weighting parameter for age-aware compaction
 
 ---
-*Last updated: 2026-03-20 after Phase 6 (Foundation) completed*
+*Last updated: 2026-03-20 after Phase 7 (Summarization Engine) completed*
