@@ -33,7 +33,7 @@
 
 **Milestone Goal:** Add optional API key authentication so mnemonic can be safely deployed on a network — scoped to agent namespaces, enforced in middleware, off by default for local dev.
 
-- [ ] **Phase 10: Auth Schema Foundation** - DB table, error variant, and module skeleton that all auth logic builds on
+- [x] **Phase 10: Auth Schema Foundation** - DB table, error variant, and module skeleton that all auth logic builds on (completed 2026-03-20)
 - [ ] **Phase 11: KeyService Core** - Business logic for key creation, listing, revocation, validation, and secure hashing
 - [ ] **Phase 12: Auth Middleware** - Axum middleware that enforces authentication and injects AuthContext into requests
 - [ ] **Phase 13: HTTP Wiring and REST Key Endpoints** - Attach middleware to router, add key management REST endpoints, enforce scope at handler layer
@@ -50,10 +50,10 @@
   2. Server startup log prints whether it is running in open mode or authenticated mode
   3. An HTTP response for an unauthorized request returns 401 with a structured JSON body (not a generic 500)
   4. `pub mod auth` is declared in `lib.rs` and the project compiles with zero warnings
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [x] 10-01-PLAN.md — Schema DDL, Unauthorized error variant, auth module skeleton
-- [ ] 10-02-PLAN.md — AppState wiring, startup auth-mode log, integration tests
+- [x] 10-02-PLAN.md — AppState wiring, startup auth-mode log, integration tests
 
 ### Phase 11: KeyService Core
 **Goal**: Admin can create, list, and revoke API keys with secure hashing — and keys can be validated without exposing the raw token
@@ -115,7 +115,7 @@ Plans:
 | 7. Summarization Engine | v1.1 | 1/1 | Complete | 2026-03-20 |
 | 8. Compaction Core | v1.1 | 2/2 | Complete | 2026-03-20 |
 | 9. HTTP Integration | v1.1 | 1/1 | Complete | 2026-03-20 |
-| 10. Auth Schema Foundation | v1.2 | 1/2 | In Progress|  |
+| 10. Auth Schema Foundation | v1.2 | 2/2 | Complete   | 2026-03-20 |
 | 11. KeyService Core | v1.2 | 0/? | Not started | - |
 | 12. Auth Middleware | v1.2 | 0/? | Not started | - |
 | 13. HTTP Wiring and REST Key Endpoints | v1.2 | 0/? | Not started | - |

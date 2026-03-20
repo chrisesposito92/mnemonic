@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Authentication / API Keys
 status: unknown
-stopped_at: Completed 10-01-PLAN.md
-last_updated: "2026-03-20T19:50:30.080Z"
+stopped_at: Completed 10-02-PLAN.md
+last_updated: "2026-03-20T19:55:32.948Z"
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -48,6 +48,8 @@ Recent decisions affecting v1.2:
 - Open mode = COUNT of active keys per request, no startup flag — handles key creation/revocation live
 - [Phase 10]: Used per-item #[allow(dead_code)] on Unauthorized variant and auth.rs structs (not module-level) to suppress Phase 10 dead code warnings
 - [Phase 10]: Refactored ApiError::IntoResponse to per-variant body handling (Option A) to accommodate richer 401 response body with auth_mode and hint fields
+- [Phase 10]: Per-item #[allow(dead_code)] on key_service field (AppState) and KeyService stub methods — no module-level suppression
+- [Phase 10]: Bare module paths in main.rs for auth (auth::KeyService) matching compaction/service pattern
 
 ### Pending Todos
 
@@ -60,6 +62,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-20T19:50:30.078Z
-Stopped at: Completed 10-01-PLAN.md
+Last session: 2026-03-20T19:55:32.946Z
+Stopped at: Completed 10-02-PLAN.md
 Resume file: None
