@@ -1,10 +1,11 @@
 ---
 phase: 05
 slug: config-cleanup
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: complete
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-19
+audited: 2026-03-19
 ---
 
 # Phase 05 — Validation Strategy
@@ -38,13 +39,13 @@ created: 2026-03-19
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 05-01-01 | 01 | 1 | CONF-02 | unit | `cargo test --lib config::tests::test_validate_config_openai_no_key` | ❌ W0 | ⬜ pending |
-| 05-01-02 | 01 | 1 | CONF-02 | unit | `cargo test --lib config::tests::test_validate_config_unknown_provider` | ❌ W0 | ⬜ pending |
-| 05-01-03 | 01 | 1 | CONF-02 | unit | `cargo test --lib config::tests::test_config_defaults` | ✅ | ⬜ pending |
-| 05-01-04 | 01 | 1 | CONF-03 | build check | `grep openai_api_key mnemonic.toml.example` | ✅ after fix | ⬜ pending |
-| 05-01-05 | 01 | 1 | EMBD-04 | integration | `cargo test -- --ignored test_openai_embedding` | ✅ existing | ⬜ pending |
-| 05-01-06 | 01 | 1 | (all) | build gate | `cargo build 2>&1 \| grep warning` | N/A | ⬜ pending |
-| 05-01-07 | 01 | 1 | (all) | regression | `cargo test` | ✅ | ⬜ pending |
+| 05-01-01 | 01 | 1 | CONF-02 | unit | `cargo test --lib config::tests::test_validate_config_openai_no_key` | ✅ | ✅ green |
+| 05-01-02 | 01 | 1 | CONF-02 | unit | `cargo test --lib config::tests::test_validate_config_unknown_provider` | ✅ | ✅ green |
+| 05-01-03 | 01 | 1 | CONF-02 | unit | `cargo test --lib config::tests::test_config_defaults` | ✅ | ✅ green |
+| 05-01-04 | 01 | 1 | CONF-03 | build check | `grep openai_api_key mnemonic.toml.example` | ✅ | ✅ green |
+| 05-01-05 | 01 | 1 | EMBD-04 | integration | `cargo test -- --ignored test_openai_embedding` | ✅ | ✅ green |
+| 05-01-06 | 01 | 1 | (all) | build gate | `cargo build 2>&1 \| grep warning` | ✅ | ✅ green |
+| 05-01-07 | 01 | 1 | (all) | regression | `cargo test` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -52,9 +53,9 @@ created: 2026-03-19
 
 ## Wave 0 Requirements
 
-- [ ] `src/config.rs` — add `validate_config()` function + unit tests for: (a) `embedding_provider=openai` + no key → error, (b) `embedding_provider=unknown` → error, (c) `embedding_provider=local` + no key → ok. Uses `figment::Jail` pattern already established.
+- [x] `src/config.rs` — `validate_config()` function exists with 4 unit tests: openai_no_key, unknown_provider, local_ok, openai_with_key. All pass.
 
-*Existing infrastructure covers all other phase requirements.*
+*All Wave 0 requirements fulfilled during phase execution.*
 
 ---
 
@@ -68,11 +69,23 @@ created: 2026-03-19
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s (full suite: ~8s)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** passed
+
+---
+
+## Validation Audit 2026-03-19
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+
+All 7 verification items confirmed green. 9 config unit tests pass, 21 integration tests pass, zero compiler warnings. Phase is Nyquist-compliant.

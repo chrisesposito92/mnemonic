@@ -76,7 +76,7 @@ Each task was committed atomically:
 1. **Task 1: Wire embedding_provider config, add validation, remove dead code** - `9038cdc` (feat)
 2. **Task 2: Update mnemonic.toml.example and README config table** - `85f93c7` (feat)
 
-**Plan metadata:** TBD (docs: complete plan)
+**Plan metadata:** `6ce6529` (docs: complete plan)
 
 ## Files Created/Modified
 - `src/config.rs` - Added `validate_config()` function + 4 unit tests
