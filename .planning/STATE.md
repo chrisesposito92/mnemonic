@@ -2,16 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Authentication / API Keys
-status: planning
-stopped_at: Phase 10 context gathered
-last_updated: "2026-03-20T18:48:42.130Z"
-last_activity: 2026-03-20 — Roadmap created for v1.2
+status: unknown
+stopped_at: Completed 10-01-PLAN.md
+last_updated: "2026-03-20T19:50:30.080Z"
 progress:
   total_phases: 5
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 2
+  completed_plans: 1
 ---
 
 # Project State
@@ -21,16 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 10 — Auth Schema Foundation
+**Current focus:** Phase 10 — auth-schema-foundation
 
 ## Current Position
 
-Phase: 10 of 14 (Auth Schema Foundation)
-Plan: — (not yet planned)
-Status: Ready to plan
-Last activity: 2026-03-20 — Roadmap created for v1.2
-
-Progress: [░░░░░░░░░░] 0% (v1.2)
+Phase: 10 (auth-schema-foundation) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -52,6 +46,8 @@ Recent decisions affecting v1.2:
 - Scope enforcement at handler layer (not service layer) — services remain auth-unaware
 - `route_layer()` not `layer()` for middleware — prevents 401 on unmatched routes
 - Open mode = COUNT of active keys per request, no startup flag — handles key creation/revocation live
+- [Phase 10]: Used per-item #[allow(dead_code)] on Unauthorized variant and auth.rs structs (not module-level) to suppress Phase 10 dead code warnings
+- [Phase 10]: Refactored ApiError::IntoResponse to per-variant body handling (Option A) to accommodate richer 401 response body with auth_mode and hint fields
 
 ### Pending Todos
 
@@ -64,6 +60,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-20T18:48:42.128Z
-Stopped at: Phase 10 context gathered
-Resume file: .planning/phases/10-auth-schema-foundation/10-CONTEXT.md
+Last session: 2026-03-20T19:50:30.078Z
+Stopped at: Completed 10-01-PLAN.md
+Resume file: None

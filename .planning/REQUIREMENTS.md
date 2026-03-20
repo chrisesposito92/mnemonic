@@ -24,7 +24,7 @@ Requirements for API key authentication milestone. Each maps to roadmap phases.
 
 ### Infrastructure
 
-- [ ] **INFRA-01**: api_keys table is created via idempotent SQLite migration on startup
+- [x] **INFRA-01**: api_keys table is created via idempotent SQLite migration on startup
 - [ ] **INFRA-02**: Key hashes use BLAKE3 with constant-time comparison to prevent timing attacks
 - [ ] **INFRA-03**: Server startup log announces whether running in open or authenticated mode
 
@@ -71,7 +71,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AUTH-03 | Phase 12 | Pending |
 | AUTH-04 | Phase 13 | Pending |
 | AUTH-05 | Phase 12 | Pending |
-| INFRA-01 | Phase 10 | Pending |
+| INFRA-01 | Phase 10 | Complete |
 | INFRA-02 | Phase 11 | Pending |
 | INFRA-03 | Phase 10 | Pending |
 | CLI-01 | Phase 14 | Pending |

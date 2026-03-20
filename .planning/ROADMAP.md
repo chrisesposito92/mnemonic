@@ -50,9 +50,9 @@
   2. Server startup log prints whether it is running in open mode or authenticated mode
   3. An HTTP response for an unauthorized request returns 401 with a structured JSON body (not a generic 500)
   4. `pub mod auth` is declared in `lib.rs` and the project compiles with zero warnings
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
-- [ ] 10-01-PLAN.md — Schema DDL, Unauthorized error variant, auth module skeleton
+- [x] 10-01-PLAN.md — Schema DDL, Unauthorized error variant, auth module skeleton
 - [ ] 10-02-PLAN.md — AppState wiring, startup auth-mode log, integration tests
 
 ### Phase 11: KeyService Core
@@ -115,7 +115,7 @@ Plans:
 | 7. Summarization Engine | v1.1 | 1/1 | Complete | 2026-03-20 |
 | 8. Compaction Core | v1.1 | 2/2 | Complete | 2026-03-20 |
 | 9. HTTP Integration | v1.1 | 1/1 | Complete | 2026-03-20 |
-| 10. Auth Schema Foundation | v1.2 | 0/2 | Planning complete | - |
+| 10. Auth Schema Foundation | v1.2 | 1/2 | In Progress|  |
 | 11. KeyService Core | v1.2 | 0/? | Not started | - |
 | 12. Auth Middleware | v1.2 | 0/? | Not started | - |
 | 13. HTTP Wiring and REST Key Endpoints | v1.2 | 0/? | Not started | - |
