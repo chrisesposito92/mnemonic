@@ -41,6 +41,46 @@
 
 ---
 
+## Milestone: v1.1 — Memory Compaction
+
+**Shipped:** 2026-03-20
+**Phases:** 4 | **Plans:** 6
+
+### What Was Built
+- LLM config + validation foundation with LlmError types (mirrors embedding_provider pattern)
+- SummarizationEngine trait with prompt-injection-resistant OpenAiSummarizer (XML delimiters)
+- CompactionService with greedy pairwise vector clustering and atomic SQLite merge transactions
+- Tier 1 (algorithmic) / Tier 2 (LLM) content synthesis with automatic fallback
+- POST /memories/compact endpoint with dry_run, agent isolation, and old-to-new ID mapping
+- compact_runs audit table for compaction history tracking
+
+### What Worked
+- Mirroring existing patterns (SummarizationEngine = EmbeddingEngine, CompactionService = peer of MemoryService) kept architecture consistent and review fast
+- Phase sequencing (config -> engine -> service -> HTTP) meant each phase had stable inputs; no cross-phase rework
+- MockSummarizer enabled deterministic compaction integration tests without LLM dependency
+- Milestone audit (12/12 requirements, 12/12 integration checks, 6/6 flows) confirmed complete coverage before shipping
+- SQLite error-swallowing pattern for idempotent migrations solved ALTER TABLE limitation cleanly
+
+### What Was Inefficient
+- None significant — v1.1 was a clean 4-phase execution in a single day with zero rework
+
+### Patterns Established
+- XML delimiters for prompt injection prevention in all LLM-facing prompts
+- Error-swallowing pattern for SQLite idempotent schema migration (extended_code==1)
+- Greedy first-match clustering via 4-arm match on cluster_id pairs
+- Separate build_test_compact_state() helper to isolate compaction test setup
+
+### Key Lessons
+1. Trait mirroring (new engine trait = existing engine pattern) reduces design decisions and review friction to near-zero
+2. Tiered feature delivery (Tier 1 works for everyone, Tier 2 opt-in) prevents LLM dependency from blocking core functionality
+3. Keeping CompactionService as a peer (not child) of MemoryService avoids coupling and simplifies AppState wiring
+
+### Cost Observations
+- Model mix: balanced profile throughout
+- Notable: entire v1.1 delivered same day as v1.0 completion — 4 phases in ~4 hours
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -48,13 +88,16 @@
 | Milestone | Phases | Plans | Key Change |
 |-----------|--------|-------|------------|
 | v1.0 | 5 | 11 | Baseline — established GSD workflow with audit-driven gap closure |
+| v1.1 | 4 | 6 | Pattern mirroring reduced design overhead; tiered delivery (Tier 1/2) |
 
 ### Cumulative Quality
 
 | Milestone | Tests | Zero Warnings | Nyquist |
 |-----------|-------|---------------|---------|
 | v1.0 | 30 | Yes | COMPLIANT |
+| v1.1 | 68 (35 unit + 33 integration) | Yes | COMPLIANT |
 
 ### Top Lessons (Verified Across Milestones)
 
 1. Milestone audits before shipping catch integration gaps that per-phase verification misses
+2. Mirror existing trait patterns when adding new engines — consistent architecture and near-zero design friction (validated v1.0 EmbeddingEngine -> v1.1 SummarizationEngine)

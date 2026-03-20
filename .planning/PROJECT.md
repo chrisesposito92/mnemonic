@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A single Rust binary that gives any AI agent persistent memory via a simple REST API. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
+A single Rust binary that gives any AI agent persistent memory via a simple REST API — including agent-triggered memory compaction with optional LLM summarization. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
 
 ## Core Value
 
@@ -21,14 +21,21 @@ Any AI agent can store and semantically search memories out of the box with zero
 - Session-scoped retrieval via session_id grouping — v1.0
 - Comprehensive README with quickstart, API reference, curl/Python/agent examples — v1.0
 - GitHub Actions cross-platform release workflow (linux-x86_64, macos-x86_64, macos-aarch64) — v1.0
+- Agent-triggered memory compaction via POST /memories/compact endpoint — v1.1
+- Algorithmic deduplication via vector similarity clustering (no LLM required) — v1.1
+- Metadata merge for deduplicated memory clusters (tags union, earliest timestamp, combined content) — v1.1
+- LLM-powered summarization of similar memory clusters (opt-in, requires LLM config) — v1.1
+- Configurable LLM provider following existing embedding_provider pattern — v1.1
+- Prompt-injection-resistant LLM summarization with structured delimiters — v1.1
+- LLM fallback to algorithmic merge on failure — v1.1
+- Atomic compaction writes (insert new + delete sources in single transaction) — v1.1
+- Max candidates limit to prevent O(n^2) on large memory sets — v1.1
+- Dry-run compaction preview (no data mutation) — v1.1
+- Compaction response with old-to-new ID mapping for stale cache updates — v1.1
+- Multi-agent namespace isolation during compaction — v1.1
 
 ### Active
 
-- [x] Agent-triggered memory compaction via POST /memories/compact endpoint — Validated in Phase 9: HTTP Integration
-- [x] Algorithmic deduplication via vector similarity clustering (no LLM required) — Validated in Phase 8: Compaction Core
-- [x] Metadata merge for deduplicated memory clusters — Validated in Phase 8: Compaction Core
-- [x] LLM-powered summarization of similar memory clusters (opt-in, requires LLM config) — Validated in Phase 7: Summarization Engine
-- [x] Configurable LLM provider following existing embedding_provider pattern — Validated in Phase 6: Foundation
 - [ ] Time-based weighting parameter for age-aware compaction aggressiveness
 
 ### Out of Scope
@@ -41,16 +48,15 @@ Any AI agent can store and semantically search memories out of the box with zero
 - gRPC support — doubles interface surface; REST sufficient for all reviewed use cases
 - Memory decay / TTL — surprising behavior that silently loses data
 - Multi-node / distributed mode — SQLite not designed for multi-writer distributed use
+- Session-scoped compaction — agent_id scoping sufficient; session_id adds complexity
+- DBSCAN/HDBSCAN clustering — overkill for N<500; greedy pairwise with single threshold is simpler and sufficient
 
 ## Context
 
-Shipped v1.0 with 1,932 lines of Rust code across 5 phases (11 plans).
-Phase 6 complete — LLM config fields, schema migrations (source_ids, compact_runs), LlmError types added.
-Phase 7 complete — SummarizationEngine trait, OpenAiSummarizer (prompt-injection-resistant via XML delimiters), MockSummarizer, wired in main.rs.
-Phase 8 complete — CompactionService with greedy pairwise clustering, metadata merge, atomic SQLite transactions, dry_run mode, Tier 1/Tier 2 content synthesis with LLM fallback, compact_runs audit logging.
-Phase 9 complete — POST /memories/compact wired into HTTP layer with input validation (agent_id, threshold, max_candidates), 4 HTTP-layer integration tests covering basic compact, dry-run, agent isolation, and validation errors.
-Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2).
+Shipped v1.1 with 3,678 lines of Rust code across 9 phases (17 plans total: 11 in v1.0 + 6 in v1.1).
+Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP).
 35 unit tests + 33 integration tests passing, zero compiler warnings. MIT licensed.
+6 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, GET /health.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required.
 
@@ -78,18 +84,14 @@ Single-binary distribution — no Python, no Docker, no external services requir
 | CTE over-fetch 10x for filtered KNN search | agent_id/session_id filter applied post-KNN; over-fetch ensures enough results | Good — v1.0 |
 | validate_config() at startup | Gates startup on valid provider+key combinations; prevents silent surprises | Good — v1.0 |
 | MockEmbeddingEngine with deterministic hash vectors | Reproducible API integration tests without 90MB model download | Good — v1.0 |
+| reqwest for LLM HTTP (not async-openai) | async-openai conflicts with reqwest 0.13; raw HTTP simpler for single endpoint | Good — v1.1 |
+| SummarizationEngine mirrors EmbeddingEngine trait pattern | Consistent architecture; MockSummarizer enables deterministic tests | Good — v1.1 |
+| XML delimiters for prompt injection prevention | System message contains only instructions; user data wrapped in <memory> tags | Good — v1.1 |
+| CompactionService as peer of MemoryService in AppState | No nested hierarchy; shares db_arc and embedding via Arc | Good — v1.1 |
+| Greedy pairwise clustering (not DBSCAN) | Simple, predictable, O(n*max_candidates) with cap; sufficient for N<500 | Good — v1.1 |
+| Cosine similarity = dot product (pre-normalized) | EmbeddingEngine guarantees L2 norm; avoids redundant normalization | Good — v1.1 |
+| SQLite error-swallowing for idempotent migration | ALTER TABLE ADD COLUMN IF NOT EXISTS unsupported; catch extended_code==1 | Good — v1.1 |
+| POST /memories/compact returns 200 (not 201) | Compaction mutates data but does not create a new addressable resource | Good — v1.1 |
 
 ---
-
-## Current Milestone: v1.1 Memory Summarization / Compaction
-
-**Goal:** Add agent-triggered memory compaction with algorithmic dedup baseline and optional LLM-powered summarization.
-
-**Target features:**
-- POST /memories/compact endpoint (agent-triggered, no background magic)
-- Tier 1: Vector similarity deduplication + metadata merge (works for everyone)
-- Tier 2: LLM cluster-and-consolidate summarization (opt-in when LLM configured)
-- Time-based weighting parameter for age-aware compaction
-
----
-*Last updated: 2026-03-20 after Phase 9 (HTTP Integration) completed*
+*Last updated: 2026-03-20 after v1.1 milestone*

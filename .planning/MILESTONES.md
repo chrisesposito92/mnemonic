@@ -1,5 +1,33 @@
 # Milestones
 
+## v1.1 Memory Compaction (Shipped: 2026-03-20)
+
+**Phases completed:** 4 phases, 6 plans, 11 tasks
+
+**Key accomplishments:**
+
+- Config struct extended with 4 LLM Option<String> fields, validate_config() gains independent LLM validation block, and LlmError enum with 3 variants wired into MnemonicError via #[from]
+- source_ids column and compact_runs audit table added to SQLite schema with idempotent migration, verified by 3 new integration tests (23 total passing)
+- SummarizationEngine trait with OpenAiSummarizer (XML-delimited prompt injection prevention, typed error mapping via reqwest) and MockSummarizer (deterministic), wired into main.rs as optional engine
+- Greedy-pairwise vector clustering with atomic SQLite merge transaction, Tier 1/2 content synthesis, dry_run audit mode, and 10 pure-function unit tests — all wired to main.rs via shared db_arc and embedding
+- 6 integration tests verifying CompactionService end-to-end: atomic write + source deletion, dry_run no-op, agent namespace isolation, max_candidates truncation, and MockSummarizer Tier 2 LLM path
+- POST /memories/compact endpoint exposing CompactionService via axum with input validation and 4 HTTP-layer integration tests covering all API-01 through API-04 requirements
+
+**Delivered:** Agent-triggered memory compaction with algorithmic dedup baseline (Tier 1) and optional LLM-powered summarization (Tier 2) — no background magic, no LLM required.
+
+**Stats:**
+
+- Lines of Rust: 3,678 (total)
+- Lines changed: +7,533 / -83
+- Commits: 47
+- Timeline: 2026-03-20 (1 day)
+- Tests: 68 (35 unit + 33 integration), zero compiler warnings
+- Requirements: 12/12 satisfied
+- Nyquist: COMPLIANT (all 4 phases)
+- Git range: feat(06-01) → docs(v1.1)
+
+---
+
 ## v1.0 MVP (Shipped: 2026-03-20)
 
 **Phases completed:** 5 phases, 11 plans, 0 tasks
@@ -16,6 +44,7 @@
 6. Config validation (validate_config()) and dead code cleanup closing all v1.0 audit integration gaps
 
 **Stats:**
+
 - Lines of Rust: 1,932
 - Files modified: 69
 - Timeline: 2026-03-19 → 2026-03-20 (1 day)
