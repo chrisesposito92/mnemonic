@@ -68,12 +68,6 @@ pub struct Memory {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct SearchResult {
-    pub memory: Memory,
-    pub distance: f64,
-}
-
-#[derive(Debug, serde::Serialize)]
 pub struct ListResponse {
     pub memories: Vec<Memory>,
     pub total: u64,

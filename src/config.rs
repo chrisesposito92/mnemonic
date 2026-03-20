@@ -24,6 +24,28 @@ impl Default for Config {
     }
 }
 
+/// Validates business-rule constraints that cannot be expressed in the type system.
+/// Call after load_config() succeeds, before any I/O.
+pub fn validate_config(config: &Config) -> anyhow::Result<()> {
+    match config.embedding_provider.as_str() {
+        "local" => Ok(()),
+        "openai" => {
+            if config.openai_api_key.is_none() {
+                anyhow::bail!(
+                    "embedding_provider is \"openai\" but MNEMONIC_OPENAI_API_KEY is not set"
+                );
+            }
+            Ok(())
+        }
+        other => {
+            anyhow::bail!(
+                "unknown embedding_provider {:?}: expected \"local\" or \"openai\"",
+                other
+            );
+        }
+    }
+}
+
 /// Loads configuration from defaults, optional TOML file, and environment variables.
 ///
 /// Precedence (highest to lowest):
@@ -100,5 +122,42 @@ mod tests {
             assert_eq!(config.embedding_provider, "local");
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_validate_config_openai_no_key() {
+        let config = Config {
+            embedding_provider: "openai".to_string(),
+            openai_api_key: None,
+            ..Config::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.to_string().contains("MNEMONIC_OPENAI_API_KEY"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_validate_config_unknown_provider() {
+        let config = Config {
+            embedding_provider: "postgres".to_string(),
+            ..Config::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.to_string().contains("unknown embedding_provider"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_validate_config_local_ok() {
+        let config = Config::default(); // embedding_provider defaults to "local"
+        validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn test_validate_config_openai_with_key() {
+        let config = Config {
+            embedding_provider: "openai".to_string(),
+            openai_api_key: Some("sk-test".to_string()),
+            ..Config::default()
+        };
+        validate_config(&config).unwrap();
     }
 }

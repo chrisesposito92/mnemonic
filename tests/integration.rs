@@ -395,9 +395,6 @@ async fn build_test_state() -> (AppState, Arc<MemoryService>) {
         "mock-model".to_string(),
     ));
     let state = AppState {
-        db,
-        config: Arc::new(config),
-        embedding,
         service: service.clone(),
     };
     (state, service)

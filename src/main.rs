@@ -18,6 +18,7 @@ async fn main() -> Result<()> {
     // 3. Load config (defaults -> TOML -> env vars)
     let config = config::load_config()
         .map_err(|e| anyhow::anyhow!(e))?;
+    config::validate_config(&config)?;
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -35,38 +36,42 @@ async fn main() -> Result<()> {
 
     // 5. Initialize embedding engine
     let embedding: std::sync::Arc<dyn embedding::EmbeddingEngine> =
-        if let Some(ref api_key) = config.openai_api_key {
-            tracing::info!(
-                provider = "openai",
-                model = "text-embedding-3-small",
-                dimensions = 384,
-                "embedding engine ready"
-            );
-            std::sync::Arc::new(embedding::OpenAiEngine::new(api_key.clone()))
-        } else {
-            let start = std::time::Instant::now();
-            tracing::info!(
-                provider = "local",
-                model = "all-MiniLM-L6-v2",
-                "loading embedding model..."
-            );
-            let engine = tokio::task::spawn_blocking(|| {
-                embedding::LocalEngine::new()
-            })
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
-            tracing::info!(
-                elapsed_ms = start.elapsed().as_millis() as u64,
-                "embedding model loaded"
-            );
-            std::sync::Arc::new(engine)
+        match config.embedding_provider.as_str() {
+            "local" => {
+                let start = std::time::Instant::now();
+                tracing::info!(
+                    provider = "local",
+                    model = "all-MiniLM-L6-v2",
+                    "loading embedding model..."
+                );
+                let engine = tokio::task::spawn_blocking(|| {
+                    embedding::LocalEngine::new()
+                })
+                .await?
+                .map_err(|e| anyhow::anyhow!(e))?;
+                tracing::info!(
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    "embedding model loaded"
+                );
+                std::sync::Arc::new(engine)
+            }
+            "openai" => {
+                let api_key = config.openai_api_key.as_ref().unwrap(); // safe: validate_config passed
+                tracing::info!(
+                    provider = "openai",
+                    model = "text-embedding-3-small",
+                    dimensions = 384,
+                    "embedding engine ready"
+                );
+                std::sync::Arc::new(embedding::OpenAiEngine::new(api_key.clone()))
+            }
+            _ => unreachable!(), // validate_config rejects unknown providers
         };
 
     // 6. Build MemoryService
-    let embedding_model = if config.openai_api_key.is_some() {
-        "text-embedding-3-small".to_string()
-    } else {
-        "all-MiniLM-L6-v2".to_string()
+    let embedding_model = match config.embedding_provider.as_str() {
+        "openai" => "text-embedding-3-small".to_string(),
+        _        => "all-MiniLM-L6-v2".to_string(),
     };
 
     let db_arc = std::sync::Arc::new(conn);
@@ -80,9 +85,6 @@ async fn main() -> Result<()> {
 
     // 7. Start axum server
     let state = server::AppState {
-        db: db_arc,
-        config: std::sync::Arc::new(config.clone()),
-        embedding,
         service,
     };
     server::serve(&config, state).await?;

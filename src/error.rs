@@ -9,9 +9,6 @@ pub enum MnemonicError {
 
     #[error("embedding error: {0}")]
     Embedding(#[from] EmbeddingError),
-
-    #[error("server error: {0}")]
-    Server(String),
 }
 
 /// Errors originating from database operations.
@@ -38,9 +35,6 @@ impl From<tokio_rusqlite::Error> for DbError {
 pub enum ConfigError {
     #[error("failed to load configuration: {0}")]
     Load(String),
-
-    #[error("invalid configuration: {0}")]
-    Invalid(String),
 }
 
 /// Errors originating from embedding operations.

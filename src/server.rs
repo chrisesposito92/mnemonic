@@ -24,9 +24,6 @@ pub fn init_tracing() {
 /// Shared application state passed to all axum handlers.
 #[derive(Clone)]
 pub struct AppState {
-    pub db: std::sync::Arc<tokio_rusqlite::Connection>,
-    pub config: std::sync::Arc<crate::config::Config>,
-    pub embedding: std::sync::Arc<dyn crate::embedding::EmbeddingEngine>,
     pub service: std::sync::Arc<crate::service::MemoryService>,
 }
 
