@@ -24,9 +24,9 @@ Requirements for memory summarization / compaction. Each maps to roadmap phases.
 ### LLM Summarization (Tier 2)
 
 - [x] **LLM-01**: User can configure LLM provider via llm_provider and llm_api_key (mirrors embedding_provider pattern)
-- [ ] **LLM-02**: When LLM is configured, compaction consolidates memory clusters into rich summaries via LLM
-- [ ] **LLM-03**: LLM prompts use structured delimiters to prevent prompt injection from memory content
-- [ ] **LLM-04**: If LLM call fails, system falls back to Tier 1 algorithmic merge instead of erroring
+- [x] **LLM-02**: When LLM is configured, compaction consolidates memory clusters into rich summaries via LLM
+- [x] **LLM-03**: LLM prompts use structured delimiters to prevent prompt injection from memory content
+- [x] **LLM-04**: If LLM call fails, system falls back to Tier 1 algorithmic merge instead of erroring
 
 ## Future Requirements
 
@@ -73,9 +73,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DEDUP-03 | Phase 8 | Pending |
 | DEDUP-04 | Phase 8 | Pending |
 | LLM-01 | Phase 6 | Complete |
-| LLM-02 | Phase 7 | Pending |
-| LLM-03 | Phase 7 | Pending |
-| LLM-04 | Phase 7 | Pending |
+| LLM-02 | Phase 7 | Complete |
+| LLM-03 | Phase 7 | Complete |
+| LLM-04 | Phase 7 | Complete |
 
 **Coverage:**
 - v1.1 requirements: 12 total

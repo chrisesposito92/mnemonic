@@ -23,7 +23,7 @@
 **Milestone Goal:** Add agent-triggered memory compaction with algorithmic dedup baseline and optional LLM-powered summarization — no background magic, no LLM required for Tier 1.
 
 - [x] **Phase 6: Foundation** - Config extensions (llm_provider, llm_api_key) and schema additions (source_ids column, compact_runs table) (completed 2026-03-20)
-- [ ] **Phase 7: Summarization Engine** - SummarizationEngine trait, OpenAiSummarizer, prompt injection prevention, LLM fallback behavior
+- [x] **Phase 7: Summarization Engine** - SummarizationEngine trait, OpenAiSummarizer, prompt injection prevention, LLM fallback behavior (completed 2026-03-20)
 - [ ] **Phase 8: Compaction Core** - CompactionService with greedy pairwise clustering, metadata merge, atomic write, dry_run mode
 - [ ] **Phase 9: HTTP Integration** - POST /memories/compact endpoint wired into AppState with full integration tests
 
@@ -52,7 +52,7 @@ Plans:
   2. All memory content in LLM prompts is wrapped in explicit data-framing delimiters — raw content never reaches the prompt template directly
   3. If the LLM call times out or returns an error, the engine returns an Err that CompactionService can catch and fall back from — it does not panic
   4. MockSummarizer returns deterministic output without any network calls, enabling unit tests with zero external dependencies
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 07-01-PLAN.md — SummarizationEngine trait + OpenAiSummarizer + MockSummarizer + unit tests + main.rs wiring
 
@@ -88,6 +88,6 @@ Plans:
 | 4. Distribution | v1.0 | 2/2 | Complete | 2026-03-19 |
 | 5. Config Cleanup | v1.0 | 1/1 | Complete | 2026-03-20 |
 | 6. Foundation | v1.1 | 2/2 | Complete | 2026-03-20 |
-| 7. Summarization Engine | v1.1 | 0/1 | Planned | - |
+| 7. Summarization Engine | 1/1 | Complete   | 2026-03-20 | - |
 | 8. Compaction Core | v1.1 | 0/? | Not started | - |
 | 9. HTTP Integration | v1.1 | 0/? | Not started | - |
