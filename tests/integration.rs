@@ -464,8 +464,12 @@ async fn build_test_state() -> (AppState, Arc<MemoryService>) {
         embedding.clone(),
         "mock-model".to_string(),
     ));
+    let compaction = Arc::new(CompactionService::new(
+        db.clone(), embedding.clone(), None, "mock-model".to_string(),
+    ));
     let state = AppState {
         service: service.clone(),
+        compaction,
     };
     (state, service)
 }
@@ -1128,4 +1132,266 @@ async fn test_compact_with_mock_summarizer() {
         "merged content should come from MockSummarizer, got: {}",
         list.memories[0].content
     );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// HTTP-layer compaction tests (Phase 9)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Creates AppState with CompactionService for HTTP-layer compaction tests.
+/// Returns (AppState, MemoryService) so tests can seed data and route HTTP requests.
+async fn build_test_compact_state() -> (AppState, Arc<mnemonic::service::MemoryService>) {
+    setup();
+    let config = test_config();
+    let conn = mnemonic::db::open(&config).await.unwrap();
+    let db = Arc::new(conn);
+    let embedding: Arc<dyn mnemonic::embedding::EmbeddingEngine> = Arc::new(MockEmbeddingEngine);
+    let service = Arc::new(mnemonic::service::MemoryService::new(
+        db.clone(), embedding.clone(), "mock-model".to_string(),
+    ));
+    let compaction = Arc::new(CompactionService::new(
+        db.clone(), embedding.clone(), None, "mock-model".to_string(),
+    ));
+    let state = AppState {
+        service: service.clone(),
+        compaction,
+    };
+    (state, service)
+}
+
+/// API-01, API-03, API-04: POST /memories/compact returns 200 with run_id, clusters_found,
+/// memories_merged, memories_created, id_mapping, and truncated fields.
+#[tokio::test]
+async fn test_compact_http_basic() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_compact_state().await;
+
+    // Seed 2 identical-content memories (MockEmbeddingEngine produces same vector -> cosine sim = 1.0)
+    let m1 = service.create_memory(CreateMemoryRequest {
+        content: "the cat sat on the mat".to_string(),
+        agent_id: Some("agent-http".to_string()),
+        session_id: None,
+        tags: Some(vec!["animal".to_string()]),
+    }).await.unwrap();
+    let m2 = service.create_memory(CreateMemoryRequest {
+        content: "the cat sat on the mat".to_string(),
+        agent_id: Some("agent-http".to_string()),
+        session_id: None,
+        tags: Some(vec!["pet".to_string()]),
+    }).await.unwrap();
+
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(json_request("POST", "/memories/compact", serde_json::json!({
+            "agent_id": "agent-http",
+            "threshold": 0.5
+        })))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+
+    // API-01: run_id present
+    assert!(json["run_id"].is_string(), "response must have string run_id");
+    // API-03: stats present
+    assert_eq!(json["clusters_found"], 1);
+    assert_eq!(json["memories_merged"], 2);
+    assert_eq!(json["memories_created"], 1);
+    // API-04: id_mapping present with source_ids and new_id
+    let mapping = &json["id_mapping"][0];
+    let source_ids: Vec<String> = mapping["source_ids"].as_array().unwrap()
+        .iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    assert!(source_ids.contains(&m1.id), "source_ids must contain m1");
+    assert!(source_ids.contains(&m2.id), "source_ids must contain m2");
+    assert!(mapping["new_id"].is_string(), "new_id must be present in non-dry-run");
+    // truncated field present
+    assert!(json["truncated"].is_boolean(), "response must have boolean truncated field");
+}
+
+/// API-02: POST /memories/compact with dry_run=true returns 200 with cluster preview,
+/// and GET /memories confirms no data was modified.
+#[tokio::test]
+async fn test_compact_http_dry_run() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_compact_state().await;
+
+    // Seed 2 identical-content memories
+    service.create_memory(CreateMemoryRequest {
+        content: "identical content for http dry run".to_string(),
+        agent_id: Some("agent-dry-http".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "identical content for http dry run".to_string(),
+        agent_id: Some("agent-dry-http".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // POST compact with dry_run=true
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(json_request("POST", "/memories/compact", serde_json::json!({
+            "agent_id": "agent-dry-http",
+            "threshold": 0.5,
+            "dry_run": true
+        })))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["clusters_found"], 1);
+    assert_eq!(json["memories_merged"], 2);
+    assert_eq!(json["memories_created"], 0, "dry_run must not create memories");
+    // new_id should be null in dry_run
+    assert!(json["id_mapping"][0]["new_id"].is_null(), "new_id must be null in dry_run");
+
+    // Verify DB unchanged via GET /memories
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::get("/memories?agent_id=agent-dry-http")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["total"], 2, "dry_run must not modify memory count");
+}
+
+/// API-01: Compacting Agent A's memories via HTTP leaves Agent B's memories untouched.
+#[tokio::test]
+async fn test_compact_http_agent_isolation() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, service) = build_test_compact_state().await;
+
+    // Seed identical memories for Agent A
+    service.create_memory(CreateMemoryRequest {
+        content: "shared fact via http test".to_string(),
+        agent_id: Some("http-agent-A".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "shared fact via http test".to_string(),
+        agent_id: Some("http-agent-A".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // Seed memory for Agent B
+    service.create_memory(CreateMemoryRequest {
+        content: "agent B private http memory".to_string(),
+        agent_id: Some("http-agent-B".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // Compact Agent A via HTTP
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(json_request("POST", "/memories/compact", serde_json::json!({
+            "agent_id": "http-agent-A",
+            "threshold": 0.5
+        })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["clusters_found"], 1);
+
+    // Verify Agent B is untouched via GET /memories
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::get("/memories?agent_id=http-agent-B")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["total"], 1, "Agent B must have exactly 1 memory — untouched by Agent A compaction");
+    assert_eq!(json["memories"][0]["content"], "agent B private http memory");
+}
+
+/// Validation: empty agent_id returns 400, threshold out of range returns 400,
+/// max_candidates=0 returns 400.
+#[tokio::test]
+async fn test_compact_http_validation() {
+    let (state, _) = build_test_compact_state().await;
+
+    // Empty agent_id -> 400
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(json_request("POST", "/memories/compact", serde_json::json!({
+            "agent_id": "",
+            "threshold": 0.5
+        })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "agent_id must not be empty");
+
+    // Whitespace-only agent_id -> 400
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(json_request("POST", "/memories/compact", serde_json::json!({
+            "agent_id": "   ",
+            "threshold": 0.5
+        })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "agent_id must not be empty");
+
+    // Threshold > 1.0 -> 400
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(json_request("POST", "/memories/compact", serde_json::json!({
+            "agent_id": "agent-1",
+            "threshold": 1.5
+        })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "threshold must be between 0.0 and 1.0");
+
+    // Threshold < 0.0 -> 400
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(json_request("POST", "/memories/compact", serde_json::json!({
+            "agent_id": "agent-1",
+            "threshold": -0.1
+        })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "threshold must be between 0.0 and 1.0");
+
+    // max_candidates = 0 -> 400
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(json_request("POST", "/memories/compact", serde_json::json!({
+            "agent_id": "agent-1",
+            "max_candidates": 0
+        })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "max_candidates must be greater than 0");
 }
