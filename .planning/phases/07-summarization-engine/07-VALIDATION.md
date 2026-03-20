@@ -1,10 +1,11 @@
 ---
 phase: 7
 slug: summarization-engine
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: complete
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-20
+audited: 2026-03-20
 ---
 
 # Phase 7 — Validation Strategy
@@ -38,18 +39,30 @@ created: 2026-03-20
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 07-01-01 | 01 | 1 | LLM-02 | unit | `cargo test --lib summarization::tests` | ❌ W0 | ⬜ pending |
-| 07-01-02 | 01 | 1 | LLM-03 | unit | `cargo test --lib summarization::tests` | ❌ W0 | ⬜ pending |
-| 07-01-03 | 01 | 1 | LLM-04 | unit | `cargo test --lib summarization::tests` | ❌ W0 | ⬜ pending |
+| 07-01-01 | 01 | 1 | LLM-02 | unit | `cargo test -p mnemonic summarization` | src/summarization.rs | ✅ green |
+| 07-01-02 | 01 | 1 | LLM-03 | unit | `cargo test -p mnemonic summarization` | src/summarization.rs | ✅ green |
+| 07-01-03 | 01 | 1 | LLM-04 | build | `cargo build` | src/main.rs | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
 ---
 
+## Test Coverage Detail
+
+| Requirement | Tests | Covers |
+|-------------|-------|--------|
+| LLM-02 (SummarizationEngine + OpenAiSummarizer) | `test_trait_object_compiles`, `test_openai_summarizer_send_sync`, `test_prompt_structure` | Trait object safety, Send+Sync bounds, XML prompt structure |
+| LLM-03 (MockSummarizer) | `test_mock_summarizer_send_sync`, `test_mock_summarizer_output`, `test_mock_summarizer_single_input`, `test_mock_summarizer_empty_returns_err` | Send+Sync, deterministic output, single input, empty input guard |
+| LLM-04 (main.rs wiring) | `cargo build` (compile-time verification) | Engine init compiles, type-checks against SummarizationEngine trait |
+
+**Total: 7 unit tests + 1 build verification = 8 automated checks**
+
+---
+
 ## Wave 0 Requirements
 
-- [ ] `src/summarization.rs` — new module with SummarizationEngine trait + implementations
-- [ ] Tests within `src/summarization.rs` — unit tests for trait, mock, object safety
+- [x] `src/summarization.rs` — new module with SummarizationEngine trait + implementations
+- [x] Tests within `src/summarization.rs` — unit tests for trait, mock, object safety
 
 *Existing test infrastructure (cargo test) covers all phase requirements.*
 
@@ -65,11 +78,21 @@ created: 2026-03-20
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** passed
+
+---
+
+## Validation Audit 2026-03-20
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
