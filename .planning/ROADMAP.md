@@ -93,12 +93,15 @@ Plans:
   3. `cargo build 2>&1 | grep warning` produces zero compiler warnings (dead code removed)
   4. All existing tests continue to pass
 
-Plans: 0/0 plans complete
+**Plans:** 1 plan
+
+Plans:
+- [ ] 05-01-PLAN.md — Wire embedding_provider into engine selection, add validate_config(), remove dead code, update example config and README (CONF-02, CONF-03, EMBD-04)
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -106,4 +109,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 2. Embedding | 2/2 | Complete   | 2026-03-19 |
 | 3. Service and API | 3/3 | Complete   | 2026-03-19 |
 | 4. Distribution | 2/2 | Complete   | 2026-03-19 |
-| 5. Config & Embedding Provider Cleanup | 0/0 | Pending | — |
+| 5. Config & Embedding Provider Cleanup | 0/1 | Pending | — |
