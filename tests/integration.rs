@@ -227,6 +227,31 @@ async fn test_compact_runs_exists() {
     assert_eq!(column_names.len(), 10, "compact_runs table should have exactly 10 columns");
 }
 
+/// Verifies that idx_compact_runs_agent_id index exists on the compact_runs table after db::open().
+#[tokio::test]
+async fn test_compact_runs_agent_id_index() {
+    setup();
+    let config = test_config();
+    let conn = mnemonic::db::open(&config).await.unwrap();
+
+    let index_names: Vec<String> = conn
+        .call(|c| -> Result<Vec<String>, rusqlite::Error> {
+            let mut stmt = c.prepare("PRAGMA index_list(compact_runs)")?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(names)
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        index_names.iter().any(|n| n == "idx_compact_runs_agent_id"),
+        "compact_runs table should have idx_compact_runs_agent_id index, found: {:?}",
+        index_names
+    );
+}
+
 /// Verifies that db::open() is idempotent — calling twice on the same database produces no error.
 #[tokio::test]
 async fn test_db_open_idempotent() {
