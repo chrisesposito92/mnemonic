@@ -24,11 +24,17 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-(None — define in next milestone)
+- [ ] Agent-triggered memory compaction via POST /memories/compact endpoint
+- [ ] Algorithmic deduplication via vector similarity clustering (no LLM required)
+- [ ] Metadata merge for deduplicated memory clusters
+- [ ] LLM-powered summarization of similar memory clusters (opt-in, requires LLM config)
+- [ ] Configurable LLM provider following existing embedding_provider pattern
+- [ ] Time-based weighting parameter for age-aware compaction aggressiveness
 
 ### Out of Scope
 
-- Memory summarization / compaction — requires LLM calls, conflicts with zero-config offline value
+- Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
+- Automatic background compaction — agent stays in control, no silent data mutation
 - Authentication / API keys — premature for embeddable local tool; run behind reverse proxy
 - Pluggable storage backends (Qdrant, Postgres) — single-file SQLite is a feature, not a limitation
 - Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
@@ -71,4 +77,15 @@ Single-binary distribution — no Python, no Docker, no external services requir
 
 ---
 
-*Last updated: 2026-03-20 after v1.0 milestone*
+## Current Milestone: v1.1 Memory Summarization / Compaction
+
+**Goal:** Add agent-triggered memory compaction with algorithmic dedup baseline and optional LLM-powered summarization.
+
+**Target features:**
+- POST /memories/compact endpoint (agent-triggered, no background magic)
+- Tier 1: Vector similarity deduplication + metadata merge (works for everyone)
+- Tier 2: LLM cluster-and-consolidate summarization (opt-in when LLM configured)
+- Time-based weighting parameter for age-aware compaction
+
+---
+*Last updated: 2026-03-20 after v1.1 milestone started*
