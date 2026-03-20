@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Phase 8 (CompactionService) will consume these items
-
 use async_trait::async_trait;
 use crate::error::LlmError;
 

@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+mod compaction;
 mod config;
 mod db;
 mod embedding;
@@ -70,7 +71,7 @@ async fn main() -> Result<()> {
         };
 
     // 5b. Initialize LLM summarization engine (optional)
-    let _llm_engine: Option<std::sync::Arc<dyn summarization::SummarizationEngine>> =
+    let llm_engine: Option<std::sync::Arc<dyn summarization::SummarizationEngine>> =
         match config.llm_provider.as_deref() {
             Some("openai") => {
                 let api_key = config.llm_api_key.as_ref().unwrap(); // safe: validate_config passed
@@ -102,7 +103,17 @@ async fn main() -> Result<()> {
         service::MemoryService::new(
             db_arc.clone(),
             embedding.clone(),
-            embedding_model,
+            embedding_model.clone(),
+        )
+    );
+
+    // 6b. Build CompactionService
+    let _compaction_service = std::sync::Arc::new(
+        compaction::CompactionService::new(
+            db_arc.clone(),
+            embedding.clone(),
+            llm_engine,
+            embedding_model.clone(),
         )
     );
 
