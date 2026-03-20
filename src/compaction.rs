@@ -1,9 +1,11 @@
+#![allow(dead_code)] // Phase 9 (HTTP Integration) will consume these items
+
 use std::sync::Arc;
 use tokio_rusqlite::Connection;
 use zerocopy::IntoBytes;
 use crate::embedding::EmbeddingEngine;
-use crate::summarization::SummarizationEngine;
 use crate::error::ApiError;
+use crate::summarization::SummarizationEngine;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Public request / response types
