@@ -8,6 +8,17 @@ A single Rust binary that gives any AI agent persistent memory via a simple REST
 
 Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run.
 
+## Current Milestone: v1.2 Authentication / API Keys
+
+**Goal:** Add optional API key authentication so mnemonic can be safely deployed on a network — scoped to agent namespaces, enforced in middleware, off by default for local dev.
+
+**Target features:**
+- API key authentication via Bearer token (mnk_... prefix)
+- Keys scoped to specific agent_ids for enforced namespace isolation
+- CLI key management (mnemonic keys create/list/revoke)
+- Optional — open mode by default, auth activates when keys exist
+- Axum middleware layer checking Authorization headers
+
 ## Requirements
 
 ### Validated
@@ -36,13 +47,17 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-- [ ] Time-based weighting parameter for age-aware compaction aggressiveness
+- [ ] API key authentication via Authorization: Bearer mnk_... headers
+- [ ] API keys scoped to specific agent_ids for enforced namespace isolation
+- [ ] CLI key management commands (mnemonic keys create/list/revoke)
+- [ ] Optional auth — open mode by default, auth activates when keys exist
+- [ ] Axum middleware layer for auth enforcement across all endpoints
 
 ### Out of Scope
 
 - Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
-- Authentication / API keys — premature for embeddable local tool; run behind reverse proxy
+- Authentication / API keys — ~~premature for embeddable local tool~~ → **promoted to Active in v1.2** (compaction raised destructive-operation stakes; network deployment needs baseline auth)
 - Pluggable storage backends (Qdrant, Postgres) — single-file SQLite is a feature, not a limitation
 - Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
 - gRPC support — doubles interface surface; REST sufficient for all reviewed use cases
@@ -93,5 +108,22 @@ Single-binary distribution — no Python, no Docker, no external services requir
 | SQLite error-swallowing for idempotent migration | ALTER TABLE ADD COLUMN IF NOT EXISTS unsupported; catch extended_code==1 | Good — v1.1 |
 | POST /memories/compact returns 200 (not 201) | Compaction mutates data but does not create a new addressable resource | Good — v1.1 |
 
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd:transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd:complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
 ---
-*Last updated: 2026-03-20 after v1.1 milestone*
+*Last updated: 2026-03-20 after v1.2 milestone started*
