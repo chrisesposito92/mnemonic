@@ -56,6 +56,26 @@ pub async fn open(
                 memory_id TEXT PRIMARY KEY,
                 embedding float[384]
             );
+
+            -- v1.1: source_ids tracks which memories were merged into this one
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS
+                source_ids TEXT NOT NULL DEFAULT '[]';
+
+            -- v1.1: compaction audit log
+            CREATE TABLE IF NOT EXISTS compact_runs (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at DATETIME,
+                clusters_found INTEGER NOT NULL DEFAULT 0,
+                memories_merged INTEGER NOT NULL DEFAULT 0,
+                memories_created INTEGER NOT NULL DEFAULT 0,
+                dry_run BOOLEAN NOT NULL DEFAULT 0,
+                threshold REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_compact_runs_agent_id ON compact_runs(agent_id);
             ",
         )?;
         Ok(())
