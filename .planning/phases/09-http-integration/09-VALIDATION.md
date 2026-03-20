@@ -1,10 +1,11 @@
 ---
 phase: 9
 slug: http-integration
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: complete
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-20
+validated: 2026-03-20
 ---
 
 # Phase 9 — Validation Strategy
@@ -38,11 +39,11 @@ created: 2026-03-20
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 09-01-01 | 01 | 1 | API-01 | integration | `cargo test --test integration compact_success` | ❌ W0 | ⬜ pending |
-| 09-01-02 | 01 | 1 | API-02 | integration | `cargo test --test integration compact_dry_run` | ❌ W0 | ⬜ pending |
-| 09-01-03 | 01 | 1 | API-03 | integration | `cargo test --test integration compact_id_mapping` | ❌ W0 | ⬜ pending |
-| 09-01-04 | 01 | 1 | API-04 | integration | `cargo test --test integration compact_agent_isolation` | ❌ W0 | ⬜ pending |
-| 09-01-05 | 01 | 1 | API-01 | integration | `cargo test --test integration compact_validation` | ❌ W0 | ⬜ pending |
+| 09-01-01 | 01 | 1 | API-01 | integration | `cargo test --test integration compact_http_basic` | tests/integration.rs:1190 | ✅ green |
+| 09-01-02 | 01 | 1 | API-02 | integration | `cargo test --test integration compact_http_dry_run` | tests/integration.rs:1241 | ✅ green |
+| 09-01-03 | 01 | 1 | API-03 | integration | `cargo test --test integration compact_http_basic` | tests/integration.rs:1190 | ✅ green |
+| 09-01-04 | 01 | 1 | API-04 | integration | `cargo test --test integration compact_http_agent_isolation` | tests/integration.rs:1296 | ✅ green |
+| 09-01-05 | 01 | 1 | API-01 | integration | `cargo test --test integration compact_http_validation` | tests/integration.rs:1355 | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -50,7 +51,7 @@ created: 2026-03-20
 
 ## Wave 0 Requirements
 
-Existing infrastructure covers all phase requirements. `tests/integration.rs` already has `build_test_compaction()`, `json_request()`, `response_json()`, and `MockEmbeddingEngine`. Extend with `build_test_compact_state()` for HTTP-layer tests.
+Existing infrastructure covers all phase requirements. `tests/integration.rs` has `build_test_compaction()`, `build_test_compact_state()`, `json_request()`, `response_json()`, and `MockEmbeddingEngine`.
 
 ---
 
@@ -62,11 +63,21 @@ All phase behaviors have automated verification.
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** complete
+
+---
+
+## Validation Audit 2026-03-20
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
