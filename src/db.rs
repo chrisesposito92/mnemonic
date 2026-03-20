@@ -72,6 +72,19 @@ pub async fn open(
             );
 
             CREATE INDEX IF NOT EXISTS idx_compact_runs_agent_id ON compact_runs(agent_id);
+
+            -- v1.2: API key authentication
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL DEFAULT '',
+                display_id  TEXT NOT NULL,
+                hashed_key  TEXT NOT NULL UNIQUE,
+                agent_id    TEXT,
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                revoked_at  DATETIME
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_api_keys_agent_id ON api_keys(agent_id);
             ",
         )?;
 

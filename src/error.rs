@@ -82,21 +82,41 @@ pub enum ApiError {
     BadRequest(String),
     #[error("not found")]
     NotFound,
+    #[allow(dead_code)] // No callers in Phase 10 — used starting Phase 12
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
     #[error("internal error: {0}")]
     Internal(#[from] MnemonicError),
 }
 
 impl axum::response::IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        let (status, message) = match &self {
-            ApiError::BadRequest(msg) => (axum::http::StatusCode::BAD_REQUEST, msg.clone()),
-            ApiError::NotFound => (axum::http::StatusCode::NOT_FOUND, "not found".to_string()),
+        let (status, body) = match self {
+            ApiError::BadRequest(msg) => (
+                axum::http::StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": msg}),
+            ),
+            ApiError::NotFound => (
+                axum::http::StatusCode::NOT_FOUND,
+                serde_json::json!({"error": "not found"}),
+            ),
+            ApiError::Unauthorized(_) => (
+                axum::http::StatusCode::UNAUTHORIZED,
+                serde_json::json!({
+                    "error": "unauthorized",
+                    "auth_mode": "active",
+                    "hint": "Provide Authorization: Bearer mnk_..."
+                }),
+            ),
             ApiError::Internal(e) => {
                 tracing::error!(error = %e, "internal server error");
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({"error": "internal server error"}),
+                )
             }
         };
-        (status, axum::Json(serde_json::json!({"error": message}))).into_response()
+        (status, axum::Json(body)).into_response()
     }
 }
 
