@@ -24,7 +24,7 @@
 
 - [x] **Phase 6: Foundation** - Config extensions (llm_provider, llm_api_key) and schema additions (source_ids column, compact_runs table) (completed 2026-03-20)
 - [x] **Phase 7: Summarization Engine** - SummarizationEngine trait, OpenAiSummarizer, prompt injection prevention, LLM fallback behavior (completed 2026-03-20)
-- [ ] **Phase 8: Compaction Core** - CompactionService with greedy pairwise clustering, metadata merge, atomic write, dry_run mode
+- [x] **Phase 8: Compaction Core** - CompactionService with greedy pairwise clustering, metadata merge, atomic write, dry_run mode (completed 2026-03-20)
 - [ ] **Phase 9: HTTP Integration** - POST /memories/compact endpoint wired into AppState with full integration tests
 
 ## Phase Details
@@ -65,7 +65,7 @@ Plans:
   2. A merged memory inherits the tag union of all source memories, the earliest created_at timestamp, and combined content — verified by assertion
   3. The merge write is atomic: the new memory is inserted and source memories are deleted within a single SQLite transaction; a simulated failure between insert and delete leaves the database consistent (no data lost, no orphans)
   4. When max_candidates is set, the clustering algorithm caps the candidate set and returns without processing beyond the limit — preventing O(n^2) on large memory sets
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 08-01-PLAN.md — CompactionService struct, types, clustering algorithm, pipeline, unit tests, lib.rs + main.rs wiring
 - [ ] 08-02-PLAN.md — Integration tests for atomic write, dry_run, metadata merge, agent isolation, truncation
@@ -92,5 +92,5 @@ Plans:
 | 5. Config Cleanup | v1.0 | 1/1 | Complete | 2026-03-20 |
 | 6. Foundation | v1.1 | 2/2 | Complete | 2026-03-20 |
 | 7. Summarization Engine | v1.1 | 1/1 | Complete | 2026-03-20 |
-| 8. Compaction Core | 1/2 | In Progress|  | - |
+| 8. Compaction Core | 2/2 | Complete   | 2026-03-20 | - |
 | 9. HTTP Integration | v1.1 | 0/? | Not started | - |
