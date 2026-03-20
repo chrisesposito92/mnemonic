@@ -107,8 +107,8 @@ async fn main() -> Result<()> {
         )
     );
 
-    // 6b. Build CompactionService (consumed by HTTP handler in Phase 9)
-    let _compaction = std::sync::Arc::new(
+    // 6b. Build CompactionService
+    let compaction = std::sync::Arc::new(
         compaction::CompactionService::new(
             db_arc.clone(),
             embedding.clone(),
@@ -120,6 +120,7 @@ async fn main() -> Result<()> {
     // 7. Start axum server
     let state = server::AppState {
         service,
+        compaction,
     };
     server::serve(&config, state).await?;
 

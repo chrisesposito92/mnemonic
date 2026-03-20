@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Phase 9 (HTTP Integration) will consume these items
-
 use std::sync::Arc;
 use tokio_rusqlite::Connection;
 use zerocopy::IntoBytes;

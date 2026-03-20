@@ -5,6 +5,7 @@ use axum::{
 };
 use serde_json::Value;
 use tracing_subscriber::prelude::*;
+use crate::compaction::CompactRequest;
 use crate::error::ApiError;
 use crate::service::{CreateMemoryRequest, ListParams, SearchParams};
 
@@ -25,6 +26,7 @@ pub fn init_tracing() {
 #[derive(Clone)]
 pub struct AppState {
     pub service: std::sync::Arc<crate::service::MemoryService>,
+    pub compaction: std::sync::Arc<crate::compaction::CompactionService>,
 }
 
 /// Constructs the axum Router with all routes wired to AppState.
@@ -34,6 +36,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/memories", post(create_memory_handler).get(list_memories_handler))
         .route("/memories/search", get(search_memories_handler))
         .route("/memories/{id}", delete(delete_memory_handler))
+        .route("/memories/compact", post(compact_memories_handler))
         .with_state(state)
 }
 
@@ -76,6 +79,28 @@ async fn delete_memory_handler(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let memory = state.service.delete_memory(id).await?;
     Ok(Json(serde_json::to_value(memory).unwrap()))
+}
+
+/// POST /memories/compact — triggers memory compaction for an agent.
+async fn compact_memories_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CompactRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.agent_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("agent_id must not be empty".to_string()));
+    }
+    if let Some(t) = body.threshold {
+        if !(0.0..=1.0).contains(&t) {
+            return Err(ApiError::BadRequest("threshold must be between 0.0 and 1.0".to_string()));
+        }
+    }
+    if let Some(m) = body.max_candidates {
+        if m == 0 {
+            return Err(ApiError::BadRequest("max_candidates must be greater than 0".to_string()));
+        }
+    }
+    let response = state.compaction.compact(body).await?;
+    Ok(Json(serde_json::to_value(response).unwrap()))
 }
 
 /// Binds a TCP listener and serves the axum application.
