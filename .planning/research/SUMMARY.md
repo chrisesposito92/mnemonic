@@ -1,200 +1,196 @@
 # Project Research Summary
 
-**Project:** Mnemonic
-**Domain:** Rust single-binary agent memory server (embedded vector search + local ML inference + REST API)
-**Researched:** 2026-03-19
+**Project:** Mnemonic v1.1 — Memory Compaction and Summarization
+**Domain:** Rust single-binary agent memory server — embedded vector search, local ML inference, REST API
+**Researched:** 2026-03-20
 **Confidence:** HIGH
 
 ## Executive Summary
 
-Mnemonic is a self-contained agent memory server that competes on a single differentiating axis: it is the only tool in its category that ships as a true single Rust binary with bundled local ML inference, no Python dependency, no external database, and no API key required to get started. Competitors (Mem0, Zep, Redis Agent Memory Server) all require Python runtimes, external services, or cloud accounts. The recommended approach is a layered Rust service — axum for HTTP, tokio-rusqlite + sqlite-vec for storage, and candle (HuggingFace's pure-Rust inference) for local embedding — wired together as a 4-layer architecture: HTTP handlers, a MemoryService orchestrator, a trait-based EmbeddingEngine, and a MemoryRepository over SQLite. Model weights are downloaded on first run via hf-hub and cached to `~/.cache/mnemonic/`; they are not bundled in the binary.
+Mnemonic v1.1 adds memory compaction and LLM-powered summarization to an already-shipped v1.0 baseline. The v1.0 system is a clean 4-layer Rust architecture (axum HTTP -> MemoryService -> EmbeddingEngine + SQLite) with 1,932 lines across 8 files, and the architecture research confirms this foundation accommodates all v1.1 capabilities through additive changes only — no refactoring, no new external dependencies, no structural upheaval. The recommended approach follows a two-tier compaction model: Tier 1 is purely algorithmic greedy pairwise cosine similarity deduplication (zero new crates, 30 lines of Rust), and Tier 2 is optional LLM-powered summarization using the existing reqwest 0.13 + serde_json stack. The new `CompactionService` is a peer of `MemoryService` rather than a method on it, mirroring the `SummarizationEngine` trait off the already-proven `EmbeddingEngine` pattern.
 
-The feature surface for v1 is deliberately narrow: CRUD operations on memories (`POST`, `GET search`, `GET list`, `DELETE`), agent_id + session_id namespacing on every operation, a health endpoint, and the bundled all-MiniLM-L6-v2 model with an optional OpenAI fallback. Features that would destroy the "zero-config, single binary" story — web UI, auth, pluggable storage backends, memory summarization — are explicitly deferred to v2+. The schema must be designed correctly from day one: adding `agent_id`, `session_id`, `created_at`, and `embedding_model` columns retroactively requires a migration and re-embedding pass.
+The features research, backed by the SimpleMem paper (arXiv 2601.02553) and AgentZero production patterns, establishes that a default similarity threshold of 0.85 is appropriate, with configurable `recency_bias` for temporal weighting. The competitor analysis confirms that Mnemonic's differentiator is "no LLM required" — Mem0, AgentZero, and SimpleMem all require a language model; Mnemonic's Tier 1 algorithmic path works without one. Stack research ruled out all candidate third-party crates: async-openai conflicts with reqwest 0.13, hdbscan lacks cosine distance support, linfa-clustering requires ndarray. The existing dependency set is sufficient for every v1.1 capability.
 
-The top risks are all correctness traps that produce silent failures: wrong embedding pooling (CLS token instead of masked mean pooling) produces semantically useless vectors; storing un-normalized vectors then using inner-product distance gives wrong rankings; mixing embeddings from different models corrupts search results permanently. The second category of risk is concurrency: blocking rusqlite calls on the tokio thread pool will starve the executor under load, and naive multi-writer SQLite connection pools produce `SQLITE_BUSY` errors. All of these must be addressed in the foundation and embedding phases before any user-facing features are built.
+The critical risks concentrate in compaction atomicity, namespace isolation, and LLM integration safety. Non-atomic merge — deleting source memories before confirming the replacement is written — is an irreversible data-loss scenario with no in-system recovery. Cross-agent compaction (missing `agent_id` WHERE filter in clustering SQL) is a data contamination scenario. Prompt injection via stored memory content into the LLM summarization prompt is a novel attack surface documented by Palo Alto Unit 42 (2025) specifically for agent memory systems. All three have clear preventions that must be enforced before the compaction endpoint ships.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The stack is fully determined by two constraints: single Rust binary and zero external dependencies. These constraints rule out ONNX Runtime (system C library), sqlx (cannot load sqlite-vec extension), diesel (same), actix-rt or async-std (wrong runtime for the ecosystem), and fastembed-rs (default ONNX backend). The resulting stack has no ambiguity: tokio + axum for async HTTP, rusqlite + tokio-rusqlite + sqlite-vec for storage, candle + tokenizers + hf-hub for inference. All versions are confirmed against official sources as of 2026-03-19.
+The v1.0 dependency set requires zero additions for v1.1. All three capability areas — clustering, LLM integration, and schema migration — are served by existing crates. The only Cargo.toml requirements are to keep `rusqlite = "0.37"` pinned (sqlite-vec 0.1.7 has a documented conflict with rusqlite 0.39's libsqlite3-sys) and to keep `reqwest = "0.13"` (async-openai 0.33.x depends on reqwest 0.12 and would introduce two HTTP stacks in the binary). Two SQL additions are needed: a `compact_runs` table for auditability and a `source_ids` column on `memories` for provenance tracking.
 
-**Core technologies:**
-- tokio 1.50.0: async runtime — required by axum, tokio-rusqlite, and the entire ecosystem; no real alternative
-- axum 0.8.8: HTTP layer — tokio-rs maintained, Tower-native, best DX in Rust HTTP today
-- rusqlite 0.38.0 (bundled feature): SQLite access — `bundled` feature compiles SQLite 3.51.1 into the binary; required because sqlite-vec needs `load_extension` which sqlx does not expose
-- tokio-rusqlite 0.7.0: async SQLite wrapper — prevents blocking rusqlite calls from starving tokio worker threads; uses mpsc/oneshot actor pattern internally
-- sqlite-vec 0.1.7: vector search extension — Mozilla Builders-maintained, actively developed (last release March 17 2026), replaces archived sqlite-vss; pure C, zero external dependencies
-- candle-core + candle-nn + candle-transformers 0.9.2: pure-Rust ML inference — the only way to bundle a neural network in a Rust binary without a C runtime dependency; HuggingFace-maintained
-- tokenizers 0.22.2: HuggingFace tokenization — required alongside candle for sentence-transformer models
-- hf-hub 0.3.x: model download and caching — downloads safetensors weights on first run to `~/.cache/huggingface/`; keeps model out of the binary
-- thiserror 2.x: error types — structured errors that map to HTTP status codes; anyhow loses this structure and is wrong for REST APIs
+**Core technologies (locked from v1.0, reused for v1.1):**
+- **reqwest 0.13 + serde_json**: LLM summarization HTTP client — already present; ~40 lines replaces the entire async-openai dependency
+- **rusqlite 0.37 (bundled) + tokio-rusqlite 0.7**: Schema migration via `ALTER TABLE ADD COLUMN IF NOT EXISTS`; atomic write transactions for compaction
+- **sqlite-vec 0.1.7**: KNN similarity queries for cluster candidate fetching during compaction
+- **candle-core/nn/transformers 0.9**: Re-embedding of compacted memory content using the same local inference path as v1.0
+- **async-trait 0.1**: `SummarizationEngine` trait follows the existing `EmbeddingEngine` trait pattern exactly
+- **figment 0.10**: `llm_provider`, `llm_api_key`, `llm_base_url` config fields added identically to existing `embedding_provider` pattern
 
-**Critical version constraints:**
-- All candle subcrates (core, nn, transformers) must be identical version 0.9.2; mismatches cause linker errors
-- axum 0.8.x requires tower-http 0.6.x; keep them aligned
-- tokio-rusqlite 0.7 is compatible with rusqlite 0.38; verify if upgrading either
+**No new dependencies required.**
 
 ### Expected Features
 
-The feature set is well-documented against multiple competitor reference implementations. The MVP is narrow and unambiguous.
+**Must have (table stakes for v1.1 to be coherent):**
+- `POST /memories/compact` endpoint — agent-triggered, explicit, no background magic
+- Scoped compaction — `agent_id` required, hard WHERE filter in clustering SQL
+- Tier 1: Greedy pairwise vector similarity deduplication — works for all users without an LLM
+- Configurable `similarity_threshold` (default 0.85, range [0.5, 1.0])
+- Metadata merge — merged memory inherits tag union from all source memories, preserves earliest `created_at`
+- Compaction response with full stats: `{ memories_before, memories_after, clusters_found, memories_removed, memories_created }`
+- Response includes old-to-new ID mapping — agents that cache memory IDs can update stale references
 
-**Must have (table stakes):**
-- `POST /memories` — store content + metadata (agent_id, session_id, arbitrary tags)
-- `GET /memories/search` — semantic search with agent_id/session_id filters and limit
-- `GET /memories` — list memories with filter params
-- `DELETE /memories/{id}` — delete a single memory
-- `GET /health` — liveness check; required for any process manager or container orchestration
-- agent_id + session_id namespacing on all operations — must be in schema from day one
-- Persistence across restarts — SQLite file on disk covers this
-- Plain JSON API — no SDK required
+**Should have (high value, low-to-medium cost — include in v1.1):**
+- Tier 2: LLM-powered cluster summarization (opt-in via `llm_provider` config)
+- Configurable LLM provider following `embedding_provider` pattern (`openai` / `none`)
+- `recency_bias` float [0.0, 1.0] for time-weighted similarity using SimpleMem's affinity formula
+- `dry_run: bool` request field — preview proposed clusters without committing changes
 
-**Should have (competitive differentiators):**
-- Bundled local embedding model (all-MiniLM-L6-v2 via candle) — the defining differentiator; no competitor ships this; makes zero-config possible
-- Single Rust binary — enables `cargo install` and GitHub release distribution
-- SQLite single-file storage — trivial to back up, inspect, or wipe
-- Zero-config startup with sensible defaults
-- Optional OpenAI embedding fallback (env var, no code change required)
-- Metadata filtering on search (agent_id + session_id + time range)
+**Defer (v1.2+):**
+- `session_id` scoping for compaction (agent-level only for v1.1)
+- Streaming progress events for compactions over 1000 memories
+- Compaction history / audit log endpoint (`GET /memories/compact/status`)
 
-**Defer (v2+):**
-- Memory summarization / compaction — requires LLM call per write; adds latency and API key dependency
-- Authentication / API keys — premature for local tool; run behind a reverse proxy
-- Web UI / dashboard — violates single-binary simplicity story
-- gRPC interface — REST is sufficient; double the interface surface is not worth it
-- Pluggable storage backends — the single-file story is a feature, not a limitation
-- Memory decay / TTL expiration — surprising silent data loss; let users delete explicitly
+**Confirmed anti-features (exclude permanently):**
+- Automatic background compaction — violates agent control philosophy; PROJECT.md explicitly excludes
+- Hierarchical/parent-child summaries — PROJECT.md explicitly excludes
+- Memory decay/TTL — PROJECT.md explicitly excludes
+- Cross-agent compaction — violates `agent_id` isolation invariant
 
 ### Architecture Approach
 
-The architecture is a clean 4-layer design with strict separation of concerns. HTTP handlers are thin wrappers that call the service layer; the MemoryService is the only place with business logic; the EmbeddingEngine is a trait that abstracts local vs. OpenAI providers; the MemoryRepository owns all SQL. Shared state flows via `Arc<AppState>` attached to the axum Router. The component build order matters: models and error types first, then DB and embedding layers in parallel, then the service layer that integrates them, then the HTTP layer on top.
+The v1.1 architecture adds exactly two new source files (`compaction.rs`, `summarization.rs`) and makes additive edits to six existing files (`main.rs`, `config.rs`, `server.rs`, `db.rs`, `error.rs`, `lib.rs`). `MemoryService` is untouched. `CompactionService` is a new peer struct in `AppState` that reuses the same `Arc<Connection>` clone and the same `Arc<dyn EmbeddingEngine>` as `MemoryService` — no second connection, no new infrastructure. The compaction data flow has four distinct phases: fetch (read-only DB call), cluster (pure Rust computation, no DB lock held), synthesize (optional LLM call, no DB lock held), and write (single atomic SQLite transaction covering INSERT new memory + DELETE source memories in both `memories` and `vec_memories`).
 
 **Major components:**
-1. HTTP Layer (axum Router + handlers in `api/`) — parse/route requests, serialize responses; no business logic; thin wrappers over service calls
-2. AppState (`Arc<AppState>`) — holds `Arc<MemoryService>` and `Arc<Config>`; shared across all handler invocations via axum `.with_state()`
-3. MemoryService (`service/memory.rs`) — orchestrates store/search/delete flows; calls EmbeddingEngine then MemoryRepository; only place with business rules
-4. EmbeddingEngine trait (`embedding/`) — `async fn embed(&self, text: &str) -> Vec<f32>`; `LocalEngine` (candle BERT) and `OpenAiEngine` are concrete impls; provider selected at startup from config
-5. MemoryRepository (`db/memory.rs`) — all SQL via tokio-rusqlite `.call()` closures; insert, knn_search with agent_id pre-filter, delete
-6. SQLite storage — two tables: `memories` (metadata) and `vec_memories` (vec0 virtual table with embeddings); joined at query time
+1. **`CompactionService`** (`src/compaction.rs`) — orchestrates the full compaction pipeline; holds `Arc<Connection>`, `Arc<dyn EmbeddingEngine>`, `Option<Arc<dyn SummarizationEngine>>`; the `Option` provides clean Tier 1 / Tier 2 semantics
+2. **`SummarizationEngine` trait + `OpenAiSummarizer`** (`src/summarization.rs`) — single method `async fn summarize(&self, texts: &[String]) -> Result<String>`; mirrors EmbeddingEngine pattern exactly; `MockSummarizer` for tests without network calls
+3. **Schema additions** (`db.rs`) — `compact_runs` table for run auditability; `source_ids TEXT DEFAULT '[]'` column on `memories` for provenance of merged memories
+4. **Compaction handler** (`server.rs`) — thin axum handler; deserializes `CompactRequest`, calls `CompactionService::compact()`, returns `CompactResponse`
+5. **Config extensions** (`config.rs`) — `llm_provider`, `llm_api_key`, `llm_base_url`, `llm_model` fields; `validate_config()` extended with LLM validation block matching embedding_provider pattern
 
 ### Critical Pitfalls
 
-1. **Wrong embedding pooling (silent semantic failure)** — all-MiniLM-L6-v2 requires mean pooling with attention mask weighting, not CLS token extraction and not simple average. Validate against Python sentence-transformers output for known sentence pairs before shipping. Cosine similarity for related pairs should be >0.85.
+1. **Non-atomic merge (delete before insert)** — Irreversible data loss if crash occurs between DELETE and INSERT. Prevention: always insert the merged memory first, then delete sources, entirely within a single `conn.call()` transaction that never crosses an async boundary. Never hold a SQLite write transaction open while awaiting an LLM response.
 
-2. **Mutex held across `.await` (deadlock under concurrent load)** — `std::sync::Mutex` guard held across an await point makes the future `!Send` and causes deadlocks under concurrent traffic. Use tokio-rusqlite's actor pattern (`.call()` closures) for all SQLite state; use `tokio::sync::Mutex` only when async-held guards are unavoidable.
+2. **Cross-namespace compaction** — Missing `agent_id = ?` WHERE filter in clustering SQL merges memories across agents. Prevention: `agent_id` must be required in the `CompactRequest` body; the clustering query must enforce it as a hard filter; multi-agent integration tests are mandatory before ship.
 
-3. **SQLite multi-connection write pool (`SQLITE_BUSY` errors)** — SQLite serializes writes; multiple concurrent writers cause `SQLITE_BUSY` and up to 20x throughput degradation. Use a single write connection backed by a tokio channel queue, plus a separate read pool. Enable WAL mode (`PRAGMA journal_mode = WAL`) so readers never block writers.
+3. **Prompt injection via stored memory content** — Malicious content in a memory (from a previous agent session reading a hostile source) can manipulate the LLM summarizer output. Prevention: always delimit memory content with explicit data-framing tags in the prompt (`<memories>...</memories>`), never use raw string interpolation; set `max_tokens` on every LLM call.
 
-4. **Embedding model mismatch after provider change (silent wrong results)** — switching between candle and OpenAI providers mixes vectors from different spaces; similarity scores become meaningless. Store `embedding_model VARCHAR NOT NULL` in the memories schema from day one; warn on startup if configured provider differs from stored embeddings.
+4. **Similarity threshold semantics inversion** — sqlite-vec returns distance (lower = more similar); treating it as similarity or inverting the comparison operator causes compaction to merge the most dissimilar memories instead of the most similar. Prevention: lock threshold semantics before implementation; implement `dry_run` mode for validation before commit.
 
-5. **sqlite-vec brute-force scale ceiling** — sqlite-vec has no ANN index (tracked, not yet implemented); at ~100K total vectors KNN latency reaches ~50ms, at 1M vectors ~500ms. Mitigation: always pre-filter by `agent_id` to reduce the scanned vector set; document the scale limit; design schema with this filter from the start.
+5. **Runaway LLM cost from unbounded compaction** — A looping agent or large cluster can burn hundreds of API calls. Prevention: enforce max cluster size per LLM call (20 memories / 4000 tokens), max LLM calls per compaction request (10 clusters), and per-agent rate limiting on the compact endpoint.
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure:
+Based on the dependency graph from ARCHITECTURE.md and risk profile from PITFALLS.md, the natural build order is:
 
-### Phase 1: Foundation
-**Rationale:** Domain models, error types, configuration, and the SQLite connection setup are dependencies for every other component. Getting the DB layer right here (WAL mode, single write connection, sqlite-vec extension registration, correct schema with all required columns) prevents the most expensive retrofit work. Architecture research explicitly states the build order starts here.
-**Delivers:** Compiling project skeleton; typed `Config`; `AppError` with `IntoResponse`; working SQLite connection with WAL mode, sqlite-vec loaded, and initial schema applied on startup; `memories` table with `agent_id`, `session_id`, `embedding_model`, `created_at` columns
-**Addresses:** agent_id + session_id namespacing (schema), persistence (SQLite file), zero-config startup (defaults)
-**Avoids:** Missing `embedding_model` column (pitfall 7), no WAL mode (pitfall 2), sqlite-vec extension not registered (integration gotcha)
+### Phase 1: Foundation — Errors, Config, Schema
 
-### Phase 2: Embedding Pipeline
-**Rationale:** The embedding layer must be built and validated in isolation before the service layer integrates it. Wrong pooling is a silent failure — it must be caught here with explicit validation against Python sentence-transformers before any search features are built on top. The trait abstraction must be established here so the OpenAI fallback can be added without refactoring the service.
-**Delivers:** `EmbeddingEngine` trait; `LocalEngine` (candle BERT with correct masked mean pooling + L2 normalization); model loaded once at startup via hf-hub; startup progress message for model download; `OpenAiEngine` stub or full implementation; validation test against known sentence pairs
-**Addresses:** Bundled local embedding model (core differentiator), optional OpenAI fallback, zero-config startup (model auto-download)
-**Avoids:** Wrong embedding pooling (pitfall 3), missing L2 normalization (pitfall 4), model loaded per request (performance trap), binary bloat from `include_bytes!` (pitfall 5)
+**Rationale:** Every subsequent component depends on having `CompactionError`/`SummarizationError` in `error.rs`, the `llm_provider` config fields in `config.rs`, and the new schema columns in `db.rs`. These have zero risk (pure additive changes) and unblock all other phases. This phase also establishes the `agent_id` scoping requirement at the schema level before any clustering logic exists.
 
-### Phase 3: Storage Layer
-**Rationale:** With the schema in place (Phase 1) and embedding vectors available (Phase 2), the repository layer can be built and tested with real vectors. This is the phase where KNN query patterns with `agent_id` pre-filtering are implemented and verified. The single-writer connection pattern must be in place before any write throughput testing.
-**Delivers:** `MemoryRepository` with insert, knn_search (with `agent_id` pre-filter), list/filter, and delete operations; all SQL via tokio-rusqlite `.call()` closures; integration tests confirming correct KNN results; write serialization confirmed with concurrent test
-**Addresses:** SQLite single-file storage, metadata filtering, namespace isolation
-**Avoids:** Unscoped vector queries (anti-pattern 3), blocking rusqlite in tokio runtime (anti-pattern 1), multi-connection write pool (pitfall 2)
+**Delivers:** A server that starts cleanly on v1.0 databases (idempotent `ALTER TABLE ADD COLUMN IF NOT EXISTS`), exposes new config fields, and has the error type hierarchy ready for downstream use.
 
-### Phase 4: Service and API
-**Rationale:** The service layer can only be built once both the embedding and storage layers have working implementations. This is the integration point per the architecture research build order. HTTP handlers are deliberately thin — all logic stays in MemoryService.
-**Delivers:** `MemoryService` (store, search, delete); axum Router with all v1 endpoints (`POST /memories`, `GET /memories/search`, `GET /memories`, `DELETE /memories/{id}`, `GET /health`); `AppState` wiring; structured JSON error responses; input validation (max content length, required fields)
-**Addresses:** All table-stakes features, health endpoint, plain JSON API, structured error codes
-**Avoids:** No input length limits (security mistake), generic 500 errors for embedding failures (UX pitfall), `DELETE` returning 200 for missing IDs (UX pitfall)
+**Addresses (from FEATURES.md):** Configurable `llm_provider`, `llm_api_base`, `llm_model` config; `source_ids` provenance column; `compact_runs` audit table.
 
-### Phase 5: Distribution and Hardening
-**Rationale:** A working server that cannot be distributed or run reliably in production is not a product. This phase turns the working binary into a shippable artifact with proper documentation, tested distribution paths, and the operational characteristics that make it credible for production agent use.
-**Delivers:** cargo-dist GitHub release artifacts (macOS arm64/x86_64, Linux musl); `RUSTFLAGS="-C target-cpu=native"` guidance for performance; startup self-check (sqlite-vec version, WAL mode confirmed, model loaded); rate limiting on search endpoint; README with quickstart in under 3 commands, full API reference, curl + Python + LangChain examples; documented scale limits
-**Addresses:** Single Rust binary distribution, Unix-friendly output, zero-config startup documentation
-**Avoids:** No rate limiting on `/search` (security mistake), silent model download (UX pitfall), no `total_count` in search responses (UX pitfall)
+**Avoids (from PITFALLS.md):** Schema migration bugs; config validation gaps; error type collisions.
+
+---
+
+### Phase 2: SummarizationEngine Trait + OpenAiSummarizer
+
+**Rationale:** The `SummarizationEngine` trait is a dependency of `CompactionService` but has no dependencies of its own beyond `error.rs`. Isolating it as a separate phase makes it unit-testable with `MockSummarizer` before any clustering logic exists. This is also where the prompt injection prevention must be designed and validated — the highest-security-risk component should be reviewable in isolation.
+
+**Delivers:** A tested `SummarizationEngine` trait with `OpenAiSummarizer` (real LLM) and `MockSummarizer` (deterministic, no network). The summarization prompt with explicit data-framing tags. LLM timeout and `max_tokens` enforcement. Token usage returned in the response.
+
+**Implements (from ARCHITECTURE.md):** `SummarizationEngine` trait pattern mirroring `EmbeddingEngine`; `OpenAiSummarizer` using existing reqwest 0.13 client.
+
+**Avoids (from PITFALLS.md):** Prompt injection (data-framing tags in prompt design); runaway LLM cost (max_tokens, per-call timeout); LLM failure leaving inconsistent state (fallback behavior defined here).
+
+---
+
+### Phase 3: Compaction Core Logic
+
+**Rationale:** This is the highest-complexity phase and depends on Phases 1 and 2. All clustering, metadata merge, atomic write, and dry-run logic lives here. The atomicity guarantee (insert-first, delete-second within a single `conn.call()` transaction) must be implemented and verified with fault injection tests before the HTTP endpoint is wired up.
+
+**Delivers:** `CompactionService::compact()` implementing the full 4-phase pipeline: fetch memories + embeddings, compute pairwise cosine similarity with optional `recency_bias` time weighting, greedy cluster formation with centroid validation, atomic write phase. `dry_run` mode returns proposed clusters without committing. Metadata merge (tag union, earliest `created_at`).
+
+**Addresses (from FEATURES.md):** Tier 1 deduplication; Tier 2 LLM summarization (via `Option<Arc<dyn SummarizationEngine>>`); `recency_bias` parameter; `dry_run` mode; compaction stats response; old-to-new ID mapping.
+
+**Avoids (from PITFALLS.md):** Non-atomic merge (fault injection test required); non-transitive cluster instability (centroid validation + determinism test); wrong metadata on merged memory (explicit assertions on `created_at` and tag union); compaction blocking reads/writes (`spawn_blocking` for CPU-intensive clustering); similarity threshold semantics inversion (dry_run tests with known pairs).
+
+---
+
+### Phase 4: HTTP Integration and Wiring
+
+**Rationale:** Wire everything together last, after all lower-layer components are tested in isolation. This phase is deliberately thin — the handler itself should be 15-20 lines. Integration tests at this layer cover the full end-to-end flow including multi-agent namespace isolation.
+
+**Delivers:** `POST /memories/compact` route in `server.rs`; `CompactionService` injected into `AppState` in `main.rs`; full integration tests including multi-agent scenario (compact Agent A, verify Agent B untouched); load test measuring read/write latency during compaction.
+
+**Avoids (from PITFALLS.md):** Cross-namespace compaction (multi-agent integration test mandatory here); breaking agents via ID deletion (integration test verifies response includes old-to-new ID mapping); compaction blocking normal operations (concurrent load test).
+
+---
 
 ### Phase Ordering Rationale
 
-- Foundation before everything because `agent_id`, `embedding_model`, and WAL mode must be in the schema from day one; retrofitting these requires a migration and full re-embedding pass
-- Embedding before storage because the repository tests need real embedding vectors to verify KNN correctness; validating pooling in isolation (Phase 2) catches the most expensive silent failure before it can contaminate stored data
-- Storage before service because the service layer calls both; building service against stubs delays the discovery of integration bugs
-- Service and API together because axum handlers are thin wrappers; they do not justify a separate phase
-- Distribution last because it requires a working binary but does not block feature development; hardening work (rate limiting, self-checks) is included here rather than added as an afterthought
+- Errors before config before schema matches the dependency graph in ARCHITECTURE.md's Build Order section — each layer is needed by the next.
+- SummarizationEngine isolated to Phase 2 keeps the highest-security-risk component (prompt design, LLM timeout, cost controls) reviewable in isolation before clustering logic adds complexity.
+- Compaction core before HTTP ensures the most complex and highest-risk logic (atomicity, namespace isolation) is proven by unit/integration tests before the endpoint is exposed.
+- All four phases must ship together as v1.1 — none can be deferred. The Tier 2 LLM path is explicitly a v1.1 feature per the features research.
 
 ### Research Flags
 
-Phases likely needing deeper research during planning:
-- **Phase 2 (Embedding Pipeline):** The candle BERT + masked mean pooling + L2 normalization implementation is the highest-risk code in the project. Research the exact candle API for batch embedding, attention mask shapes, and the sentence-transformers pooling algorithm before writing production code. The community article cited in ARCHITECTURE.md (MEDIUM confidence) should be cross-referenced against the candle BERT example in the official repo.
-- **Phase 3 (Storage Layer):** sqlite-vec's Rust API for vec0 virtual tables and KNN query syntax (MATCH + distance ORDER BY) should be verified against the official sqlite-vec Rust integration guide and demo.rs example. The pre-filter join pattern with `agent_id` is not explicitly documented in sqlite-vec — validate the query plan.
+Phases with standard, well-documented patterns (research-phase likely unnecessary):
+- **Phase 1 (Foundation):** Pure Rust additions following existing patterns; all decisions are additive mirrors of v1.0 code.
+- **Phase 4 (HTTP Integration):** Axum routing is well-understood in this codebase; the complexity lives in the layers below.
 
-Phases with standard patterns (skip research-phase):
-- **Phase 1 (Foundation):** axum, rusqlite, config crate, and thiserror are well-documented with standard patterns. No research needed.
-- **Phase 4 (Service and API):** axum handler patterns and `Arc<AppState>` wiring are standard. No research needed.
-- **Phase 5 (Distribution):** cargo-dist is well-documented. musl static builds are standard. No research needed.
+Phases that may benefit from `/gsd:research-phase` if implementation hits uncertainty:
+- **Phase 2 (Summarization):** Prompt injection prevention is an evolving field. The XML data-framing approach is current best practice (2025 OWASP + Unit 42 sources), but a research-phase update before implementation is prudent if the specific prompt structure needs refinement for a given LLM provider.
+- **Phase 3 (Compaction Core):** Centroid validation for non-transitive cluster stability is the one algorithm decision with meaningful implementation choices. If the greedy + centroid approach produces unexpected results during testing, a research-phase into alternative single-linkage strategies would be warranted.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All versions verified against official crates.io, docs.rs, and GitHub releases as of 2026-03-19. One MEDIUM caveat: uuid v1.22.0 confirmed via crates.io (requires JS to verify) |
-| Features | HIGH | Cross-referenced against 4 competitor implementations (Mem0, Zep, Redis Agent Memory Server, Hindsight) plus 3 ecosystem survey sources. Feature table stakes and differentiators are consistent across all sources |
-| Architecture | HIGH | Component boundaries and patterns sourced from official axum, tokio-rusqlite, sqlite-vec, and candle docs. Community articles cross-checked against official sources. Build order is internally consistent with dependency graph |
-| Pitfalls | HIGH | Critical pitfalls sourced from official bug trackers (candle #2418, sqlite-vec #25), SQLite official WAL docs, tokio shared state tutorial, and a verified benchmark (20x throughput claim). Pooling and normalization pitfalls sourced from Milvus AI reference docs |
+| Stack | HIGH | All crate version decisions verified against official sources (docs.rs, GitHub Cargo.toml). The reqwest 0.12/0.13 conflict is a concrete finding from the actual async-openai Cargo.toml, not inference. |
+| Features | MEDIUM-HIGH | Similarity threshold defaults from SimpleMem paper and AgentZero production system. Threshold universality acknowledged as LOW confidence (Jason Liu source) — the `dry_run` mode is the mitigation. Feature scope confirmed against PROJECT.md. |
+| Architecture | HIGH | Architecture is additive extension of existing v1.0 codebase inspected directly. Component boundaries derived from the proven EmbeddingEngine pattern. tokio-rusqlite actor model behavior is documented in official docs. |
+| Pitfalls | HIGH | Critical pitfalls have official source backing: SQLite atomicity docs, Palo Alto Unit 42 prompt injection research (2025), OWASP LLM01:2025, NeurIPS 2025 InjecMEM paper. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **sqlite-vec ANN index availability:** sqlite-vec's ANN index is tracked in issue #25 but not yet implemented as of the research date. Check the sqlite-vec release notes before the Phase 3 planning session — if ANN has shipped, the scale ceiling concern changes significantly.
-- **candle BERT batch embedding API:** The architecture research assumes batch embedding is supported, but the exact API (tensor shapes for batched tokenizer output + attention mask) is not spelled out in the research files. Validate during Phase 2 planning before writing embedding code.
-- **all-MiniLM-L6-v2 vs. nomic-embed-text-v1.5 model choice:** STACK.md flags that all-MiniLM-L6-v2 is aging (512 token limit, lower MTEB scores in 2025 benchmarks) and recommends nomic-embed-text-v1.5 or BGE-small-en-v1.5 as upgrades. The model identifier should be in config so users can swap it — but the initial default model choice should be validated against the target use case (short agent memory snippets vs. long documents) before committing it to the schema.
-- **OpenAI text-embedding-3-small token limit handling:** PITFALLS.md notes a hard 8191 token input limit for the OpenAI API. The chunking strategy for inputs that exceed this limit is not designed. Needs a decision during Phase 4 (reject with 400, or silently truncate, or chunk-and-average).
+- **Similarity threshold validation:** The 0.85 default is research-backed but not validated against real Mnemonic memory content. The `dry_run` mode must be implemented before the default is finalized; first production users should be encouraged to run dry-run first and tune accordingly.
+- **Centroid validation algorithm detail:** The architecture recommends centroid-based cluster validation to handle non-transitivity, but the exact handling of cluster members that fail the secondary centroid check (eject to singleton vs. keep in cluster) is left to implementation. This should be a documented decision in the Phase 3 plan.
+- **LLM model default:** Research recommends `gpt-4o-mini` for cost/quality balance, but this is not validated against actual compaction output quality. Users must be able to override with any OpenAI-compatible model string.
+- **`max_candidates` limit for large memory sets:** ARCHITECTURE.md recommends a configurable `max_candidates` limit for agents approaching 10K memories, but the exact default and enforcement mechanism are not specified. Define these in the Phase 3 plan.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- [axum docs.rs 0.8.8](https://docs.rs/axum/latest/axum/) — handler patterns, State extractor, Router
-- [tokio GitHub releases](https://github.com/tokio-rs/tokio/releases) — v1.50.0 confirmed
-- [sqlite-vec GitHub releases](https://github.com/asg017/sqlite-vec/releases) — v0.1.7 confirmed (March 17 2026)
-- [sqlite-vec Rust integration guide](https://alexgarcia.xyz/sqlite-vec/rust.html) — extension loading, KNN query patterns
-- [sqlite-vec demo.rs](https://github.com/asg017/sqlite-vec/blob/main/examples/simple-rust/demo.rs) — official Rust example
-- [candle GitHub](https://github.com/huggingface/candle/blob/main/Cargo.toml) — v0.9.2 confirmed, BERT implementation
-- [tokenizers docs.rs](https://docs.rs/tokenizers/latest/tokenizers/) — v0.22.2 confirmed
-- [tokio-rusqlite docs.rs](https://docs.rs/tokio-rusqlite/latest/tokio_rusqlite/) — v0.7.0, actor pattern
-- [rusqlite docs.rs](https://docs.rs/crate/rusqlite/latest) — v0.38.0, bundled SQLite 3.51.1
-- [tower-http docs.rs](https://docs.rs/tower-http/latest/tower_http/) — v0.6.8 confirmed
-- [config docs.rs](https://docs.rs/config/latest/config/) — v0.15.22 confirmed
-- [SQLite WAL mode official docs](https://sqlite.org/wal.html) — concurrent reader/single writer model
-- [Tokio shared state docs](https://tokio.rs/tokio/tutorial/shared-state) — Mutex-across-await deadlock mechanics
-- [sqlite-vec stable release blog](https://alexgarcia.xyz/blog/2024/sqlite-vec-stable-release/index.html) — brute-force scale benchmarks
-- [ANN index tracking — sqlite-vec #25](https://github.com/asg017/sqlite-vec/issues/25) — ANN not yet implemented
-- [candle issue #2418](https://github.com/huggingface/candle/issues/2418) — GELU performance root cause
+- [SimpleMem: Efficient Lifelong Memory for LLM Agents (arXiv 2601.02553)](https://arxiv.org/html/2601.02553v1) — Affinity formula, 0.85 clustering threshold
+- [async-openai Cargo.toml on GitHub](https://github.com/64bit/async-openai/blob/main/async-openai/Cargo.toml) — reqwest 0.12 dependency confirmed; conflict with project's reqwest 0.13
+- [hdbscan 0.12.0 docs.rs DistanceMetric enum](https://docs.rs/hdbscan/0.12.0/hdbscan/enum.DistanceMetric.html) — no cosine distance support confirmed
+- [Unit 42 / Palo Alto: Indirect Prompt Injection Poisons AI Long-Term Memory](https://unit42.paloaltonetworks.com/indirect-prompt-injection-poisons-ai-longterm-memory/) — prompt injection via summarization, persistent memory attack
+- [OWASP LLM01:2025 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) — current classification and prevention strategies
+- [InjecMEM: Memory Injection Attack on LLM Agent Memory Systems (NeurIPS 2025)](https://openreview.net/forum?id=QVX6hcJ2um) — query-only injection into memory banks
+- [tokio-rusqlite docs](https://docs.rs/tokio-rusqlite/latest/tokio_rusqlite/) — actor model, Connection clone behavior
+- [SQLite WAL mode official docs](https://sqlite.org/wal.html) — reader/writer concurrency model
+- [SQLite Atomic Commit](https://sqlite.org/atomiccommit.html) — rollback journal atomicity guarantees
+- Existing v1.0 source code (`src/*.rs`) — architecture baseline; confirmed reqwest 0.13, confirmed rusqlite 0.37
 
 ### Secondary (MEDIUM confidence)
-- [Mem0 GitHub](https://github.com/mem0ai/mem0) — competitor feature set
-- [Zep Agent Memory Product Page](https://www.getzep.com/product/agent-memory/) — competitor features and positioning
-- [Redis Agent Memory Server GitHub](https://github.com/redis/agent-memory-server) — competitor API design and namespace patterns
-- [Milvus FAQ: sentence transformer mistakes](https://milvus.io/ai-quick-reference/what-are-common-mistakes-that-could-lead-to-poor-results-when-using-sentence-transformer-embeddings-for-semantic-similarity-tasks) — pooling and normalization pitfalls
-- [SQLite write pool benchmark — Evan Schwartz](https://emschwartz.me/psa-your-sqlite-connection-pool-might-be-ruining-your-write-performance/) — 20x throughput difference
-- [Building Sentence Transformers in Rust with Candle](https://dev.to/mayu2008/building-sentence-transformers-in-rust-a-practical-guide-with-burn-onnx-runtime-and-candle-281k) — candle BERT pooling patterns
-- [include_bytes! compile time issue — rust-lang #65818](https://github.com/rust-lang/rust/issues/65818) — large blob compile time cost
-- [Mem0 Research Paper (arXiv 2504.19413)](https://arxiv.org/abs/2504.19413) — memory architecture analysis
-- [Zep Temporal KG Architecture (arXiv 2501.13956)](https://arxiv.org/abs/2501.13956) — Zep feature set
+- [AgentZero Memory Consolidation System (DeepWiki)](https://deepwiki.com/frdel/agent-zero/4.3-memory-consolidation-system) — 0.70/0.90 threshold values, LLM prompt structure
+- [NVIDIA NeMo SemDeDup documentation](https://docs.nvidia.com/nemo-framework/user-guide/24.09/datacuration/semdedup.html) — threshold configuration, aggressive vs. conservative tradeoffs
+- [PSA: SQLite connection pool write performance — Evan Schwartz](https://emschwartz.me/psa-your-sqlite-connection-pool-might-be-ruining-your-write-performance/) — single-writer performance data
+- [Widemem: importance scoring, decay, conflict resolution](https://discuss.huggingface.co/t/widemem-open-source-memory-layer-for-llms-with-importance-scoring-decay-and-conflict-resolution/174269) — recency decay formula
+- [Factory.ai: Evaluating Context Compression](https://factory.ai/news/evaluating-compression) — structure preservation, incremental merge patterns
+- [Finding near-duplicates with Jaccard similarity and MinHash](https://blog.nelhage.com/post/fuzzy-dedup/fuzzy-dedup/) — non-transitivity of similarity measures
 
-### Tertiary (MEDIUM-LOW confidence)
-- [HN: Don't use all-MiniLM-L6-v2](https://news.ycombinator.com/item?id=46081800) — model aging context; community discussion, useful directional signal
-- [5 AI Agent Memory Systems Compared (DEV Community)](https://dev.to/varun_pratapbhardwaj_b13/5-ai-agent-memory-systems-compared-mem0-zep-letta-supermemory-superlocalmemory-2026-benchmark-59p3) — benchmark data and differentiation analysis
+### Tertiary (LOW confidence)
+- [Jason Liu: Two Experiments on Agent Compaction](https://jxnl.co/writing/2025/08/30/context-engineering-compaction/) — field lacks empirical consensus on thresholds; single source, acknowledged caveat
+- [Memory Optimization Strategies in AI Agents — Medium](https://medium.com/@nirdiamant21/memory-optimization-strategies-in-ai-agents-1f75f8180d54) — compaction frequency patterns; community source
 
 ---
-*Research completed: 2026-03-19*
+*Research completed: 2026-03-20*
 *Ready for roadmap: yes*

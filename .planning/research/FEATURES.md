@@ -1,192 +1,232 @@
 # Feature Research
 
-**Domain:** Agent memory server (lightweight, single-binary, REST API)
-**Researched:** 2026-03-19
-**Confidence:** HIGH
+**Domain:** Memory summarization / compaction for agent memory server (v1.1 milestone)
+**Researched:** 2026-03-20
+**Confidence:** MEDIUM-HIGH (thresholds from multiple sources; LLM prompt patterns from open-source implementations; Rust clustering crates verified on crates.io)
+
+---
+
+## Scope Note
+
+This document covers **only the new features for v1.1**. The v1.0 baseline (5 REST endpoints, local embeddings, agent_id/session_id namespacing, SQLite+sqlite-vec) is already shipped and is treated as a dependency, not a feature.
+
+---
 
 ## Feature Landscape
 
 ### Table Stakes (Users Expect These)
 
-Features that agent developers assume exist. Missing any of these and the product is not a credible alternative.
+Features that any agent developer expects from a "memory compaction" feature. Missing these makes the feature feel incomplete or untrustworthy.
 
-| Feature | Why Expected | Complexity | Notes |
-|---------|--------------|------------|-------|
-| Store a memory (write) | Fundamental CRUD — no write = no product | LOW | `POST /memories` with content + metadata |
-| Retrieve by semantic search | The whole point of a memory server vs. a key-value store | MEDIUM | Vector similarity via embedding + ANN index |
-| Delete a memory | Agents need to forget wrong or outdated information | LOW | `DELETE /memories/{id}` |
-| List / filter memories | Inspect what's stored; filter by agent, session, time | LOW | `GET /memories?agent_id=&session_id=` |
-| agent_id namespacing | Multi-agent isolation is universally expected; every competitor has it | LOW | Query param or header scopes all operations |
-| session_id grouping | Session-scoped retrieval is a first-class pattern across all tools reviewed | LOW | Orthogonal to agent_id; narrows recall to a session |
-| Persistence across restarts | "Memory" that disappears on restart isn't memory | LOW | SQLite file on disk covers this |
-| Health / readiness endpoint | Ops requirement; needed for Docker, Kubernetes, any process manager | LOW | `GET /health` returning 200 |
-| Plain JSON API | Every consumer language must be able to call it without an SDK | LOW | Standard REST + `application/json` |
+| Feature | Why Expected | Complexity | Dependencies on Existing Architecture |
+|---------|--------------|------------|---------------------------------------|
+| POST /memories/compact endpoint | Every memory system with compaction uses an explicit API call. Agent stays in control — no background magic. This is the industry-standard pattern (OpenAI, Anthropic, AgentZero all surface compaction as explicit action). | LOW | Requires existing `POST /memories` + `DELETE /memories/{id}`. New route added to `server.rs`. |
+| Scoped compaction (agent_id required) | Compacting the wrong agent's memories is data loss. Every reviewed system scopes compaction by namespace. | LOW | Requires `agent_id` query param / body field — matches existing `SearchParams` pattern in `service.rs`. |
+| Vector similarity deduplication (no LLM) | The "always works" tier. Agents without LLM credentials still need deduplication. Algorithmic, deterministic, zero-cost. | MEDIUM | Uses existing `vec_memories` sqlite-vec virtual table and its cosine distance queries. No new infra. |
+| Metadata merge on dedup | When two memories are merged, the surviving memory should inherit tags from both. Agents expect merged memories to be richer, not information-lossy. | LOW | Requires reading `tags` JSON from `memories` table, merging arrays, updating surviving row. |
+| Compaction response with stats | Agents need to know what happened: how many memories existed, how many were removed, how many clusters were merged. Without this, the agent cannot make decisions based on compaction results. | LOW | Response struct: `{ memories_before, memories_after, clusters_found, memories_removed, memories_created }`. New type in `service.rs`. |
+| Configurable similarity threshold | No single threshold is correct for all use cases. Agents need to tune aggressiveness. Research shows 0.85 is the established default (SimpleMem paper, AgentZero 0.7 for discovery / 0.9 for replace). | LOW | New field in `CompactRequest` body. Default to 0.85 with valid range [0.5, 1.0]. |
 
 ### Differentiators (Competitive Advantage)
 
-These are where Mnemonic competes. The core value proposition is zero-config, single-binary — most competitors require Python, Docker, external services, or cloud accounts.
+Features that are not universally expected but differentiate Mnemonic within its "zero-config, single-binary" positioning.
 
-| Feature | Value Proposition | Complexity | Notes |
-|---------|-------------------|------------|-------|
-| Bundled local embedding model | No OpenAI key needed to get started; offline-capable; zero cost per embedding | HIGH | all-MiniLM-L6-v2 via candle (pure Rust, no ONNX Runtime). This is the defining differentiator. Competitors either require an API key (Mem0 cloud, Zep cloud) or an external Python service. |
-| Single Rust binary | Download and run — no Python, no Docker, no Node.js, no npm install | HIGH | Enables distribution via `cargo install`, GitHub releases, Homebrew. No other reviewed tool ships as a true single binary with bundled inference. |
-| SQLite-backed (single file) | All data is one `.db` file — trivial to back up, copy, inspect, or wipe | MEDIUM | sqlite-vec for vectors + standard SQLite for metadata. Simpler than Qdrant, Chroma, Redis. |
-| Zero-config startup | Works out of the box with no configuration file required | LOW | Sensible defaults; env vars or TOML for overrides when needed |
-| Optional OpenAI embedding fallback | Escape hatch for users who want higher-quality embeddings or have a key | LOW | Activated by env var; no code changes by the caller |
-| Metadata filtering on search | Narrow semantic search to specific agents, sessions, or time windows | MEDIUM | Combine vector similarity with SQL WHERE clauses; mirrors Qdrant/Mem0 filter patterns |
-| Unix-friendly output | stdout logging, clean exit codes, signal handling | LOW | Expected by anyone running it in a shell script or process supervisor |
+| Feature | Value Proposition | Complexity | Dependencies on Existing Architecture |
+|---------|-------------------|------------|---------------------------------------|
+| LLM-powered cluster summarization (opt-in) | Pure dedup loses context; summarization synthesizes. Competitors that require LLM (Mem0, Zep) always use it. Mnemonic differentiates by making it **optional** — works without LLM, better with one. | HIGH | Requires new `llm_provider` config following existing `embedding_provider` pattern in `config.rs`. Calls LLM API to generate summary text for a cluster. Writes summary as new memory via existing store path. |
+| Configurable LLM provider (same pattern as embeddings) | Users already understand the `embedding_provider` config enum. Reusing the same pattern for LLM is zero learning curve. | MEDIUM | Extend `Config` struct and `validate_config()`. New `LlmEngine` trait parallel to `EmbeddingEngine`. OpenAI-compatible HTTP client (reqwest already in dep tree via axum). |
+| Time-based weighting parameter for compaction aggressiveness | Research-backed: the SimpleMem affinity formula `β·cos(vᵢ,vⱼ) + (1-β)·e^(−λ|tᵢ−tⱼ|)` combines semantic similarity with temporal proximity. Older, semantically similar memories should be more aggressively merged than recent ones. Configurable `recency_bias` float [0.0, 1.0] maps to β. | MEDIUM | Requires `created_at` timestamps from `memories` table (already stored). Adjusted affinity score computed in Rust before clustering decision. No new storage. |
+| Dry-run / preview mode | Agent can see what compaction would do without committing changes. Builds trust in the feature. Pattern is present in NetApp compaction docs and database vacuum tooling but rare in agent memory systems — genuine differentiator. | LOW | `dry_run: bool` field in request body. If true, return stats without executing DELETE/INSERT. All computation identical, skip writes. |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
-These are features that will be requested but should be deliberately deferred or refused for the initial product. Scope creep here kills the "zero-dependency" value proposition.
-
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| Web UI / dashboard | "Show me what's stored" is a natural ask | Adds a frontend build pipeline, static asset serving, and significant scope. Violates the single-binary simplicity story. | Users can query the REST API with curl, httpie, or any API client. SQLite file is inspectable with DB Browser for SQLite. |
-| Authentication / API keys | Production deployments need access control | Adds auth middleware, key management, storage for hashed keys — meaningful scope. Premature for an embeddable tool used locally. | Run behind a reverse proxy (nginx, Caddy) or use network-level access control. Document this explicitly. |
-| Memory summarization / compaction | Long conversations need summarization to stay under context limits | Requires LLM call on every compaction cycle. Adds latency, cost, and error surface. Needs careful prompt engineering. | Future milestone. Users can implement summarization in their agent code and store the summary as a new memory. |
-| gRPC / streaming API | Performance-conscious users will ask | Doubles the interface surface. REST is sufficient for all reviewed use cases. gRPC adds a proto compile step and language-specific stubs. | REST with keep-alive is adequate. Add gRPC only after REST is validated. |
-| Pluggable storage backends (Qdrant, Postgres) | Power users want to swap out SQLite | Massively increases abstraction complexity. The "single file" story is a feature, not a limitation. | Document that Qdrant/Postgres variants can be forked. Keep the core simple. |
-| Automatic entity extraction / knowledge graphs | Zep and Hindsight do this — it looks impressive | Requires an LLM call per write. Adds latency and API key dependency. Out of scope for a local, zero-config tool. | Users can store pre-extracted entities as metadata fields. |
-| Memory decay / TTL expiration | "Old memories should fade" is conceptually appealing | Surprising behavior that can silently lose data. Hard to tune correctly. Adds background job complexity. | Future milestone. Let users delete memories explicitly. |
-| Multi-node / distributed mode | "What if I have 10 agents on different machines?" | SQLite is not designed for multi-writer distributed use. Would require replacing the storage layer entirely. | Single-node is the correct initial scope. Document that SQLite WAL mode handles concurrent reads well. |
+| Automatic background compaction | "Just run it periodically" feels convenient | Silently mutates agent memory without agent consent. Race conditions with ongoing agent writes. Violates Mnemonic's explicit control philosophy. PROJECT.md explicitly excludes this. | Agent calls POST /memories/compact at natural checkpoints (session end, token budget threshold). |
+| Hierarchical / parent-child summaries | More structure = richer memory model | Requires traversal logic, schema changes (parent_id FK), recursive queries. Covers a use case that cluster-and-replace already handles at 90% quality. PROJECT.md explicitly excludes. | Flat cluster-and-replace. Summaries become first-class memories searchable like any other. |
+| Per-memory importance scoring at write time | "Weight memories by importance" sounds good | Requires LLM call on every single write, adding latency and API key dependency to the baseline path. Breaks the zero-config guarantee. | Importance is implicit in retrieval: frequently-retrieved memories survive compaction because they form their own clusters. |
+| Compaction across agent boundaries | "Merge learnings from all agents" | Violates the agent_id isolation invariant that all existing query logic is built around. A bug here creates cross-agent data leakage. | Multi-agent knowledge sharing is a separate feature with different security model. Out of scope for v1.1. |
+| Memory decay / TTL on compact | "Age out old memories automatically" | Surprising and irreversible. Data loss without explicit agent action. PROJECT.md explicitly excludes. | Time-based weighting in compaction makes old memories more likely to be clustered, not silently deleted. |
+| HDBSCAN / DBSCAN clustering crate | "Proper density-based clustering" sounds rigorous | `petal-clustering` and `hdbscan` crates exist in Rust (verified on crates.io) but add a significant dependency. For typical agent memory sizes (10–500 memories per agent_id), simple greedy pairwise similarity with a threshold outperforms density-based clustering on correctness-per-complexity ratio. DBSCAN requires choosing ε (epsilon) and min_samples, which users cannot tune intuitively. | Greedy single-linkage: sort pairs by similarity, merge above threshold. O(n²) acceptable for 100–500 memories. Produces predictable, debuggable clusters. |
+
+---
 
 ## Feature Dependencies
 
 ```
-[agent_id namespacing]
-    └──required by──> [Semantic search with filtering]
-                          └──required by──> [session_id grouping in search]
+[POST /memories/compact endpoint]
+    └──requires──> [POST /memories] (to write summary/merged content)
+    └──requires──> [DELETE /memories/{id}] (to remove deduplicated originals)
+    └──requires──> [agent_id namespacing] (to scope compaction safely)
+    └──requires──> [vec_memories sqlite-vec table] (for similarity queries)
 
-[Bundled embedding model]
-    └──required for──> [Zero-config semantic search]
-                           └──enables──> [Single-binary distribution]
+[Vector similarity deduplication]
+    └──requires──> [vec_memories embeddings] (existing, 384-dim float vectors)
+    └──requires──> [memories.created_at] (for time-based weighting)
+    └──enables──> [Metadata merge] (once cluster is identified, merge tags)
 
-[Optional OpenAI embedding fallback]
-    └──enhances──> [Bundled embedding model]
-    └──requires──> [Embedding provider abstraction in code]
+[Time-based weighting]
+    └──requires──> [memories.created_at] (already in schema — no migration needed)
+    └──enhances──> [Vector similarity deduplication] (adjusts similarity scores before clustering)
 
-[SQLite storage]
-    └──required by──> [Persistence across restarts]
-    └──required by──> [Metadata filtering on search]
-    └──required by──> [List / filter memories]
+[LLM-powered summarization]
+    └──requires──> [Vector similarity deduplication] (clusters must be identified first)
+    └──requires──> [LlmEngine trait + config] (new, following embedding_provider pattern)
+    └──requires──> [POST /memories] (to store the generated summary)
+    └──enhances──> [Metadata merge] (LLM summary replaces merged content, metadata still merged)
 
-[Health endpoint]
-    └──independent of all other features]
+[Dry-run mode]
+    └──requires──> [all compaction logic above] (identical computation, no writes)
+    └──conflicts──> [nothing] (purely additive flag)
 
-[Memory summarization / compaction]
-    └──requires──> [Store a memory] (compaction writes summaries)
-    └──requires──> [Delete a memory] (compaction removes originals)
-    └──deferred to v2]
+[Configurable similarity threshold]
+    └──requires──> [CompactRequest body struct] (new field, not a breaking change)
 ```
 
 ### Dependency Notes
 
-- **agent_id required by filtering:** All search and list endpoints must accept agent_id to scope results. This is foundational — if it is not in the schema from day one, retrofitting it requires a migration.
-- **Bundled model required for zero-config:** The entire "download and run" story depends on not requiring an external service for embeddings. candle-based inference must ship in the binary.
-- **Embedding provider abstraction required for OpenAI fallback:** The fallback cannot be bolted on after the fact. The embedding interface must be a trait with at least two implementations from the beginning.
-- **SQLite required for filtering:** Metadata filtering is implemented as SQL WHERE clauses on the memories table. This is only possible because storage is SQLite — it is not an add-on.
+- **Dedup requires existing vec_memories:** The KNN query pattern already used in `GET /memories/search` is reused for similarity lookups during compaction. No new vector infrastructure needed.
+- **LLM tier requires dedup tier:** Clusters must be identified algorithmically before the LLM is invoked. LLM receives a cluster of N memory contents and returns a consolidated summary. Dedup-without-LLM is Tier 1; Tier 2 adds LLM on top.
+- **Time weighting requires no schema migration:** `created_at DATETIME` is already in the `memories` table. The weighting is applied in application code, not stored.
+- **LLM provider follows embedding_provider pattern:** Same `validate_config()` gate, same env-var-or-TOML approach. Users who have already configured OpenAI for embeddings can reuse that key for summarization.
+
+---
 
 ## MVP Definition
 
-### Launch With (v1)
+### This Milestone Is v1.1 (not a greenfield MVP)
 
-The minimum viable product validates: "Can any agent store and semantically search memories with zero configuration?"
+The question is not "what is minimum to validate the concept" — v1.0 is already shipped and validated. The question is "what is the minimum coherent compaction feature that delivers real value?"
 
-- [ ] `POST /memories` — store content + metadata (agent_id, session_id, arbitrary key-value tags)
-- [ ] `GET /memories/search?q=&agent_id=&session_id=&limit=` — semantic search with filters
-- [ ] `GET /memories` — list memories with filter params
-- [ ] `DELETE /memories/{id}` — delete a single memory
-- [ ] `GET /health` — liveness check
-- [ ] Bundled all-MiniLM-L6-v2 via candle — zero-config local inference
-- [ ] Optional `OPENAI_API_KEY` env var to use OpenAI embeddings instead
-- [ ] SQLite + sqlite-vec storage in a single `.db` file
-- [ ] agent_id + session_id namespacing on all operations
-- [ ] Configuration via env vars with documented TOML override
-- [ ] Clean README: quickstart in under 3 commands, full API reference, examples for curl + Python + LangChain
+### Ship in v1.1
 
-### Add After Validation (v1.x)
+- [ ] `POST /memories/compact` endpoint — agent-triggered, scoped by `agent_id`, returns stats
+- [ ] Tier 1: Greedy pairwise vector similarity deduplication — works for all users, no LLM required
+- [ ] Metadata merge — surviving memory inherits tags union from all merged memories
+- [ ] Configurable `similarity_threshold` (default 0.85, range [0.5, 1.0])
+- [ ] Time-based weighting via `recency_bias` float [0.0, 1.0] (default 0.0 = pure semantic)
+- [ ] Compaction response with `{ memories_before, memories_after, clusters_found, memories_removed, memories_created }`
+- [ ] Tier 2: LLM-powered summarization (opt-in, requires `llm_provider` config) — produces a consolidated summary memory per cluster instead of just keeping the most-similar one
+- [ ] `dry_run: bool` request field — preview without committing
 
-Add once core is working and real agents are using it.
+### Add After Validation (v1.2+)
 
-- [ ] `PUT /memories/{id}` — update memory content (triggers re-embedding) — add when users ask for correction workflows
-- [ ] Hybrid search (vector + BM25 keyword) — add when users report poor recall on exact-match queries
-- [ ] Memory tags / custom metadata fields beyond agent_id / session_id — add when users report the current schema is too rigid
-- [ ] Batch write endpoint (`POST /memories/batch`) — add when users hit write throughput issues
-- [ ] OpenTelemetry tracing — add when users ask for observability in production deployments
+- [ ] `POST /memories/compact` with `session_id` scoping — currently agent_id only; add session scoping after collecting feedback on compaction granularity
+- [ ] Streaming progress events for large compaction jobs — add when users report timeouts on large memory sets (>1000 memories)
+- [ ] Compaction history / audit log — add when users ask "what was removed and why?"
 
-### Future Consideration (v2+)
+### Out of Scope (Confirmed by PROJECT.md)
 
-Defer until product-market fit is established.
+- [ ] Automatic background compaction — explicitly excluded
+- [ ] Hierarchical summaries — explicitly excluded
+- [ ] Memory decay / TTL — explicitly excluded
+- [ ] Cross-agent compaction — not in scope for any milestone
 
-- [ ] Memory summarization / compaction — requires LLM integration; defer until users request it with specific workflows
-- [ ] Authentication / API keys — defer until users deploy Mnemonic in multi-user environments
-- [ ] Web UI — defer until users ask for a visual inspection tool
-- [ ] gRPC interface — defer until REST is validated and performance requirements emerge
-- [ ] Pluggable storage backends — defer; revisit only if SQLite limitations are hit in practice
+---
 
 ## Feature Prioritization Matrix
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| Store memory (POST /memories) | HIGH | LOW | P1 |
-| Semantic search (GET /memories/search) | HIGH | MEDIUM | P1 |
-| Delete memory | HIGH | LOW | P1 |
-| List / filter memories | HIGH | LOW | P1 |
-| agent_id + session_id namespacing | HIGH | LOW | P1 |
-| Health endpoint | MEDIUM | LOW | P1 |
-| Bundled local embedding model | HIGH | HIGH | P1 |
-| SQLite + sqlite-vec storage | HIGH | MEDIUM | P1 |
-| OpenAI embedding fallback | MEDIUM | LOW | P1 |
-| Zero-config startup | HIGH | LOW | P1 |
-| PUT /memories/{id} update | MEDIUM | MEDIUM | P2 |
-| Hybrid vector + BM25 search | MEDIUM | HIGH | P2 |
-| Batch write endpoint | LOW | MEDIUM | P2 |
-| OpenTelemetry tracing | LOW | MEDIUM | P2 |
-| Memory summarization / compaction | MEDIUM | HIGH | P3 |
-| Authentication / API keys | MEDIUM | HIGH | P3 |
-| Web UI | LOW | HIGH | P3 |
+| POST /memories/compact endpoint + routing | HIGH | LOW | P1 |
+| Greedy similarity deduplication (Tier 1) | HIGH | MEDIUM | P1 |
+| Metadata tag merge | MEDIUM | LOW | P1 |
+| Configurable similarity threshold | MEDIUM | LOW | P1 |
+| Compaction response stats | HIGH | LOW | P1 |
+| LLM summarization (Tier 2) | HIGH | HIGH | P1 |
+| Configurable LLM provider (config + validate) | HIGH | MEDIUM | P1 |
+| Time-based weighting (recency_bias) | MEDIUM | LOW | P2 |
+| Dry-run mode | MEDIUM | LOW | P2 |
 
 **Priority key:**
-- P1: Must have for launch
-- P2: Should have, add when possible
-- P3: Nice to have, future consideration
+- P1: Must have for v1.1 to be a coherent compaction feature
+- P2: High value, low cost — include in v1.1 unless schedule pressure forces cut
+- P3: Future milestone
 
-## Competitor Feature Analysis
+---
 
-| Feature | Mem0 | Zep | Redis Agent Memory Server | Mnemonic (our approach) |
-|---------|------|-----|--------------------------|-------------------------|
-| Single binary distribution | No (Python package) | No (Go binary but external DB required) | No (Python + Redis) | Yes — defining differentiator |
-| Local embedding inference | No (API key required by default) | No (requires LLM API) | No (requires LLM API) | Yes — bundled candle model |
-| Zero-config startup | No | No | No | Yes |
-| REST API | Yes | Yes | Yes | Yes |
-| Semantic search | Yes | Yes (temporal KG) | Yes | Yes |
-| Metadata filtering | Yes | Yes | Yes | Yes |
-| agent_id / session namespacing | Yes | Yes (user/session) | Yes | Yes |
-| Multi-agent isolation | Yes (cloud) | Yes | Yes | Yes (via agent_id) |
-| Single-file storage | No | No | No | Yes (SQLite .db) |
-| Memory summarization | Yes | Yes (auto) | Yes (configurable) | No (v2+) |
-| Knowledge graph / entity extraction | No | Yes (Graphiti) | Yes (entity recognition) | No (out of scope) |
-| Authentication | Yes (cloud) | Yes | Yes | No (v2+) |
-| Open source | Yes (SDK) | Yes (community) | Yes | Yes |
-| Language | Python / TypeScript SDK | Go backend | Python backend | Rust (no SDK needed) |
+## Algorithm Detail: Greedy Pairwise Deduplication
+
+This section bridges research findings into the implementation decision.
+
+**Why greedy pairwise, not DBSCAN/HDBSCAN:**
+- Agent memory sets are small (typically 10–500 per agent_id) — O(n²) pairwise is 250,000 comparisons max, negligible on modern hardware
+- DBSCAN requires ε (distance threshold) and min_samples — not intuitive for users; our single `similarity_threshold` parameter is simpler and maps directly to user intent
+- `petal-clustering` and `hdbscan` Rust crates exist but add dependency weight without benefit at this scale
+- Greedy single-linkage produces predictable, deterministic clusters that are easy to debug and explain in compaction stats
+
+**Similarity scoring with time weighting:**
+
+Research from SimpleMem (arXiv 2601.02553) defines the affinity score as:
+
+```
+affinity(i, j) = β · cos(vᵢ, vⱼ) + (1-β) · e^(−λ·|tᵢ − tⱼ|)
+```
+
+Where:
+- `β` = `recency_bias` parameter [0.0, 1.0] — weight between pure semantic vs. temporal closeness
+- `cos(vᵢ, vⱼ)` = cosine similarity from sqlite-vec distance query (convert distance to similarity)
+- `λ` = decay constant (recommend `ln(2) / 7days` so affinity halves every week)
+- `|tᵢ − tⱼ|` = absolute time difference in seconds
+
+At `recency_bias = 0.0` (default), this reduces to pure cosine similarity — identical to v1.0 search behavior. Users who don't set `recency_bias` see no behavioral change.
+
+**Threshold guidance (evidence-based):**
+- 0.70: Discovery threshold — finds loosely related memories for review (AgentZero default)
+- 0.85: Merge threshold — established in SimpleMem paper as cluster formation cutoff
+- 0.90: High-confidence replace — used in AgentZero as "safe replacement" validation gate
+- Recommend: default `similarity_threshold = 0.85`, document the three zones in API reference
+
+**Cluster merge strategy (Tier 1, no LLM):**
+Retain the memory with the earliest `created_at` within the cluster (the "original") and delete the rest, merging their tags into the survivor. This is conservative — oldest memory is most-established information. Alternative (retain newest) risks losing historical context.
+
+**LLM summarization prompt pattern (Tier 2):**
+Research from AgentZero's memory consolidation system shows this structure works in production:
+
+```
+System: You are a memory consolidator. Given a cluster of related memories,
+produce a single consolidated memory that preserves all unique information.
+Do not add information not present in the inputs. Be concise.
+
+User: Cluster of {N} related memories from agent '{agent_id}':
+[1] {content_1} (stored: {created_at_1})
+[2] {content_2} (stored: {created_at_2})
+...
+
+Produce a single consolidated memory. Output only the memory text, no preamble.
+```
+
+The consolidated summary is stored as a new memory (new UUID, `created_at = now()`, merged tags), then all cluster members are deleted. This is the "replace with summary" strategy used by Mem0, AgentZero, and SimpleMem.
+
+---
+
+## Competitor Compaction Feature Analysis
+
+| Feature | Mem0 | AgentZero | SimpleMem (research) | Mnemonic v1.1 |
+|---------|------|-----------|----------------------|----------------|
+| Trigger mechanism | Implicit on every write | Explicit call | Asynchronous background | Explicit API call (agent-triggered) |
+| Dedup threshold | Not published | 0.70 (discovery), 0.90 (replace) | 0.85 | Configurable, default 0.85 |
+| Time-based weighting | No | No | Yes (β decay formula) | Yes (recency_bias param) |
+| LLM required | Yes (always) | Yes (always) | Yes (always) | No (Tier 1 is pure algorithmic) |
+| Dry-run preview | No | No | No | Yes |
+| Single-binary friendly | No (Python) | No (Python) | Research only | Yes (Rust, no new external deps) |
+| Cluster strategy | LLM decides | Greedy + LLM | Affinity clustering | Greedy pairwise + optional LLM |
+| Response stats | Partial | Metadata only | Not applicable | Full stats (before/after counts) |
+
+---
 
 ## Sources
 
-- [Mem0 GitHub — mem0ai/mem0](https://github.com/mem0ai/mem0) — Feature set, SDK, deployment options
-- [Mem0 Research Paper (arXiv 2504.19413)](https://arxiv.org/abs/2504.19413) — Memory architecture analysis
-- [Zep: Temporal Knowledge Graph Architecture (arXiv 2501.13956)](https://arxiv.org/abs/2501.13956) — Zep feature set and design
-- [Zep Agent Memory Product Page](https://www.getzep.com/product/agent-memory/) — Features and positioning
-- [Redis Agent Memory Server GitHub](https://github.com/redis/agent-memory-server) — Feature set, API design
-- [Redis Agent Memory Server Docs](https://redis.github.io/agent-memory-server/) — Architecture and capabilities
-- [Hindsight Open-Source MCP Memory Server](https://hindsight.vectorize.io/blog/2026/03/04/mcp-agent-memory) — Retain/Recall/Reflect pattern
-- [5 AI Agent Memory Systems Compared (DEV Community)](https://dev.to/varun_pratapbhardwaj_b13/5-ai-agent-memory-systems-compared-mem0-zep-letta-supermemory-superlocalmemory-2026-benchmark-59p3) — Benchmark data and differentiation analysis
-- [Top 10 AI Memory Products 2026 (Medium)](https://medium.com/@bumurzaqov2/top-10-ai-memory-products-2026-09d7900b5ab1) — Ecosystem landscape
-- [Memory for AI Agents: A New Paradigm (The New Stack)](https://thenewstack.io/memory-for-ai-agents-a-new-paradigm-of-context-engineering/) — Context engineering patterns
-- [Amazon Bedrock AgentCore Memory Organization](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-organization.html) — Namespace and session_id patterns
-- [Metadata Filtering and Hybrid Search (Dataquest)](https://www.dataquest.io/blog/metadata-filtering-and-hybrid-search-for-vector-databases/) — Filter API design patterns
-- [Why Your Agent's Memory Architecture Is Probably Wrong (DEV Community)](https://dev.to/agentteams/why-your-agents-memory-architecture-is-probably-wrong-55fc) — Anti-patterns and pitfalls
+- [SimpleMem: Efficient Lifelong Memory for LLM Agents (arXiv 2601.02553)](https://arxiv.org/html/2601.02553v1) — Affinity formula with time weighting, 0.85 threshold for cluster formation. HIGH confidence.
+- [AgentZero Memory Consolidation System (DeepWiki)](https://deepwiki.com/frdel/agent-zero/4.3-memory-consolidation-system) — 0.70 discovery threshold, 0.90 replace safety threshold, five consolidation strategies (SKIP/KEEP_SEPARATE/MERGE/REPLACE/UPDATE), LLM prompt structure. HIGH confidence.
+- [Jason Liu: Two Experiments on Agent Compaction](https://jxnl.co/writing/2025/08/30/context-engineering-compaction/) — Compaction is an active research problem; field lacks empirical consensus on thresholds. LOW confidence on universality of any single threshold.
+- [Factory.ai: Evaluating Context Compression](https://factory.ai/news/evaluating-compression) — Structure forces preservation; incremental merge outperforms full regeneration. MEDIUM confidence.
+- [Supermemory: Infinitely Running Stateful Coding Agents](https://supermemory.ai/blog/infinitely-running-stateful-coding-agents/) — Preemptive compaction at 80% context usage; preserve negative constraints verbatim. MEDIUM confidence.
+- [petal-clustering crate (crates.io)](https://crates.io/crates/petal-clustering) — Pure Rust DBSCAN/HDBSCAN available; not recommended at typical memory set sizes. HIGH confidence on existence.
+- [hdbscan crate (crates.io)](https://crates.io/crates/hdbscan) — Pure Rust HDBSCAN available. HIGH confidence on existence.
+- [NVIDIA SemDedup](https://docs.nvidia.com/nemo-framework/user-guide/25.07/datacuration/semdedup.html) — Semantic deduplication reduces dataset size 20-50%. MEDIUM confidence on applicability to agent memory.
+- [Widemem: importance scoring, decay, conflict resolution (Hugging Face Forums)](https://discuss.huggingface.co/t/widemem-open-source-memory-layer-for-llms-with-importance-scoring-decay-and-conflict-resolution/174269) — Exponential decay with half-life parameterization; `recencyScore = exp(-decayRate * ageInHours)`. MEDIUM confidence.
 
 ---
-*Feature research for: agent memory server (Mnemonic)*
-*Researched: 2026-03-19*
+*Feature research for: Mnemonic v1.1 memory summarization / compaction milestone*
+*Researched: 2026-03-20*
