@@ -15,5 +15,11 @@
   "hooks": {
     "context_warnings": true,
     "workflow_guard": false
+  },
+  "git": {
+    "branching_strategy": "none",
+    "phase_branch_template": "gsd/phase-{phase}-{slug}",
+    "milestone_branch_template": "gsd/{milestone}-{slug}",
+    "quick_branch_template": null
   }
 }
