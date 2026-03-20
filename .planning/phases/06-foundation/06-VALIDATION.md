@@ -1,10 +1,11 @@
 ---
 phase: 6
 slug: foundation
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: complete
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-20
+audited: 2026-03-20
 ---
 
 # Phase 6 — Validation Strategy
@@ -38,13 +39,27 @@ created: 2026-03-20
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 06-01-01 | 01 | 1 | LLM-01 | unit | `cargo test config` | ✅ | ⬜ pending |
-| 06-01-02 | 01 | 1 | LLM-01 | unit | `cargo test config::tests::test_validate_config` | ✅ | ⬜ pending |
-| 06-02-01 | 02 | 1 | SC-4 | integration | `cargo test --test integration test_schema` | ✅ | ⬜ pending |
-| 06-02-02 | 02 | 1 | SC-4 | unit | `cargo test db` | ✅ | ⬜ pending |
-| 06-03-01 | 03 | 1 | — | unit | `cargo test error` | ✅ | ⬜ pending |
+| 06-01-01 | 01 | 1 | LLM-01 | unit | `cargo test --lib config::tests` | ✅ | ✅ green |
+| 06-01-02 | 01 | 1 | LLM-01 | unit | `cargo test --lib config::tests::test_validate_config` | ✅ | ✅ green |
+| 06-02-01 | 02 | 1 | SC-4 | integration | `cargo test --test integration test_schema` | ✅ | ✅ green |
+| 06-02-02 | 02 | 1 | SC-4 | integration | `cargo test --test integration test_compact_runs` | ✅ | ✅ green |
+| 06-02-03 | 02 | 1 | SC-4 | integration | `cargo test --test integration test_compact_runs_agent_id_index` | ✅ | ✅ green |
+| 06-01-03 | 01 | 1 | LLM-01 | integration | `cargo test --test error_types` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+---
+
+## Gap Audit (Nyquist Auditor — 2026-03-20)
+
+Gaps resolved by `gsd-nyquist-auditor`:
+
+| Gap | Requirement | Test Added | File | Command | Status |
+|-----|-------------|-----------|------|---------|--------|
+| GAP 1 | LlmError variant display strings | `test_llm_error_api_call_display`, `test_llm_error_timeout_display`, `test_llm_error_parse_display` | `tests/error_types.rs` | `cargo test --test error_types` | ✅ green |
+| GAP 1 | LlmError #[from] into MnemonicError | `test_llm_error_into_mnemonic` | `tests/error_types.rs` | `cargo test --test error_types` | ✅ green |
+| GAP 2 | compact_runs agent_id index | `test_compact_runs_agent_id_index` | `tests/integration.rs` | `cargo test --test integration test_compact_runs_agent_id_index` | ✅ green |
+| GAP 3 | LlmError display strings | covered by GAP 1 tests | `tests/error_types.rs` | `cargo test --test error_types` | ✅ green |
 
 ---
 
@@ -64,11 +79,11 @@ Existing infrastructure covers all phase requirements. cargo test already runs u
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** audited green — 2026-03-20
