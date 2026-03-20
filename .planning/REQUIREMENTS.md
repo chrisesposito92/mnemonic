@@ -64,24 +64,24 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| API-01 | — | Pending |
-| API-02 | — | Pending |
-| API-03 | — | Pending |
-| API-04 | — | Pending |
-| DEDUP-01 | — | Pending |
-| DEDUP-02 | — | Pending |
-| DEDUP-03 | — | Pending |
-| DEDUP-04 | — | Pending |
-| LLM-01 | — | Pending |
-| LLM-02 | — | Pending |
-| LLM-03 | — | Pending |
-| LLM-04 | — | Pending |
+| API-01 | Phase 9 | Pending |
+| API-02 | Phase 9 | Pending |
+| API-03 | Phase 9 | Pending |
+| API-04 | Phase 9 | Pending |
+| DEDUP-01 | Phase 8 | Pending |
+| DEDUP-02 | Phase 8 | Pending |
+| DEDUP-03 | Phase 8 | Pending |
+| DEDUP-04 | Phase 8 | Pending |
+| LLM-01 | Phase 6 | Pending |
+| LLM-02 | Phase 7 | Pending |
+| LLM-03 | Phase 7 | Pending |
+| LLM-04 | Phase 7 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 12 total
-- Mapped to phases: 0
-- Unmapped: 12 ⚠️
+- Mapped to phases: 12
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-20*
-*Last updated: 2026-03-20 after initial definition*
+*Last updated: 2026-03-20 after roadmap creation — all 12 requirements mapped to phases 6-9*
