@@ -9,6 +9,9 @@ pub enum MnemonicError {
 
     #[error("embedding error: {0}")]
     Embedding(#[from] EmbeddingError),
+
+    #[error("llm error: {0}")]
+    Llm(#[from] LlmError),
 }
 
 /// Errors originating from database operations.
@@ -57,6 +60,19 @@ impl From<candle_core::Error> for EmbeddingError {
     fn from(e: candle_core::Error) -> Self {
         EmbeddingError::Inference(format!("{}", e))
     }
+}
+
+/// Errors originating from LLM operations.
+#[derive(Debug, thiserror::Error)]
+pub enum LlmError {
+    #[error("LLM API call failed: {0}")]
+    ApiCall(String),
+
+    #[error("LLM request timed out")]
+    Timeout,
+
+    #[error("LLM response could not be parsed: {0}")]
+    ParseError(String),
 }
 
 /// API-layer errors with HTTP status code mapping.
