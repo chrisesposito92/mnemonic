@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Memory Compaction
 status: unknown
-stopped_at: Phase 9 context gathered
-last_updated: "2026-03-20T15:57:04.060Z"
+stopped_at: Completed 09-01-PLAN.md
+last_updated: "2026-03-20T16:16:38.703Z"
 progress:
   total_phases: 4
-  completed_phases: 3
-  total_plans: 5
-  completed_plans: 5
+  completed_phases: 4
+  total_plans: 6
+  completed_plans: 6
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 08 — compaction-core
+**Current focus:** Phase 09 — http-integration
 
 ## Current Position
 
-Phase: 08 (compaction-core) — COMPLETE
-Plan: 2 of 2
+Phase: 09 (http-integration) — EXECUTING
+Plan: 1 of 1
 
 ## Performance Metrics
 
@@ -50,6 +50,7 @@ Plan: 2 of 2
 | Phase 07 P01 | 8min | 2 tasks | 3 files |
 | Phase 08 P01 | 3min | 2 tasks | 4 files |
 | Phase 08 P02 | 8 | 1 tasks | 1 files |
+| Phase 09 P01 | 10 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -72,6 +73,9 @@ Recent decisions affecting v1.1:
 - [Phase 07]: _llm_engine stored as Option<Arc<dyn SummarizationEngine>>; None when no llm_provider configured
 - [Phase 08]: cosine_similarity = dot product (EmbeddingEngine guarantees L2 norm); greedy first-match clustering via 4-arm match on cluster_id[i]/cluster_id[j]; atomic merge transaction in single db.call closure; dry_run creates compact_runs row with dry_run=1
 - [Phase 08]: dry_run returns memories_created=0 (not preview count) — corrected test assertion to match authoritative compaction.rs behavior
+- [Phase 09]: POST /memories/compact returns 200 OK (not 201) — compaction mutates data but does not create a new addressable resource
+- [Phase 09]: AppState extends with compaction as a peer Arc field alongside service — matches MemoryService pattern, no nested service hierarchy
+- [Phase 09]: build_test_compact_state() is a separate helper from build_test_state() — keeps compaction test setup isolated without coupling existing tests to compaction concerns
 
 ### Pending Todos
 
@@ -85,6 +89,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-20T15:57:04.058Z
-Stopped at: Phase 9 context gathered
-Resume file: .planning/phases/09-http-integration/09-CONTEXT.md
+Last session: 2026-03-20T16:16:38.701Z
+Stopped at: Completed 09-01-PLAN.md
+Resume file: None

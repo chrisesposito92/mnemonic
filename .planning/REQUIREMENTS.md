@@ -9,10 +9,10 @@ Requirements for memory summarization / compaction. Each maps to roadmap phases.
 
 ### Compaction API
 
-- [ ] **API-01**: Agent can trigger memory compaction via POST /memories/compact with required agent_id
-- [ ] **API-02**: Agent can preview compaction results without committing via dry_run parameter
-- [ ] **API-03**: Compaction response includes stats (clusters found, memories merged, memories created)
-- [ ] **API-04**: Compaction response includes old-to-new ID mapping for each merged cluster
+- [x] **API-01**: Agent can trigger memory compaction via POST /memories/compact with required agent_id
+- [x] **API-02**: Agent can preview compaction results without committing via dry_run parameter
+- [x] **API-03**: Compaction response includes stats (clusters found, memories merged, memories created)
+- [x] **API-04**: Compaction response includes old-to-new ID mapping for each merged cluster
 
 ### Algorithmic Dedup (Tier 1)
 
@@ -64,10 +64,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| API-01 | Phase 9 | Pending |
-| API-02 | Phase 9 | Pending |
-| API-03 | Phase 9 | Pending |
-| API-04 | Phase 9 | Pending |
+| API-01 | Phase 9 | Complete |
+| API-02 | Phase 9 | Complete |
+| API-03 | Phase 9 | Complete |
+| API-04 | Phase 9 | Complete |
 | DEDUP-01 | Phase 8 | Complete |
 | DEDUP-02 | Phase 8 | Complete |
 | DEDUP-03 | Phase 8 | Complete |
