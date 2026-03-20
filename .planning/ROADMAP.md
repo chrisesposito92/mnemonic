@@ -16,6 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Embedding** - Local all-MiniLM-L6-v2 model via candle with OpenAI fallback (completed 2026-03-19)
 - [x] **Phase 3: Service and API** - MemoryService orchestrator + axum REST endpoints + multi-agent namespacing (completed 2026-03-19)
 - [x] **Phase 4: Distribution** - Binary packaging, README, quickstart, and API reference (completed 2026-03-19)
+- [ ] **Phase 5: Config & Embedding Provider Cleanup** - Wire embedding_provider config, update example file, remove dead code (Gap Closure)
 
 ## Phase Details
 
@@ -81,6 +82,19 @@ Plans:
 - [ ] 04-01-PLAN.md — Cargo.toml metadata, LICENSE file, and comprehensive README.md (DOCS-01, DOCS-02, DOCS-03)
 - [ ] 04-02-PLAN.md — GitHub Actions release workflow for cross-platform binary distribution (DOCS-01)
 
+### Phase 5: Config & Embedding Provider Cleanup
+**Goal**: Close integration gaps from v1.0 audit — wire the `embedding_provider` config field into engine selection (or remove it), update `mnemonic.toml.example` with `openai_api_key`, and clean up dead code producing compiler warnings
+**Depends on**: Phase 4
+**Requirements**: CONF-02, CONF-03, EMBD-04 (integration quality — all already satisfied)
+**Gap Closure**: Closes INT-01, INT-02 from v1.0-MILESTONE-AUDIT.md
+**Success Criteria** (what must be TRUE):
+  1. Setting `MNEMONIC_EMBEDDING_PROVIDER=openai` without an API key either produces a startup error or is explicitly documented as falling back to local — no silent surprise behavior
+  2. `mnemonic.toml.example` includes a commented `openai_api_key` field showing the correct key name
+  3. `cargo build 2>&1 | grep warning` produces zero compiler warnings (dead code removed)
+  4. All existing tests continue to pass
+
+Plans: 0/0 plans complete
+
 ## Progress
 
 **Execution Order:**
@@ -92,3 +106,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 2. Embedding | 2/2 | Complete   | 2026-03-19 |
 | 3. Service and API | 3/3 | Complete   | 2026-03-19 |
 | 4. Distribution | 2/2 | Complete   | 2026-03-19 |
+| 5. Config & Embedding Provider Cleanup | 0/0 | Pending | — |
