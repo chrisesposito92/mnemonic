@@ -35,10 +35,11 @@ fn test_config() -> mnemonic::config::Config {
         db_path: ":memory:".to_string(),
         embedding_provider: "local".to_string(),
         openai_api_key: None,
+        ..Default::default()
     }
 }
 
-/// Verifies that the memories table exists after db::open() and contains all 8 required columns.
+/// Verifies that the memories table exists after db::open() and contains all 9 required columns.
 #[tokio::test]
 async fn test_schema_created() {
     setup();
@@ -59,7 +60,7 @@ async fn test_schema_created() {
 
     assert!(table_exists, "memories table should exist");
 
-    // Verify all 8 columns are present
+    // Verify all 9 columns are present
     let column_names: Vec<String> = conn
         .call(|c| -> Result<Vec<String>, rusqlite::Error> {
             let mut stmt = c.prepare("PRAGMA table_info(memories)")?;
@@ -80,6 +81,7 @@ async fn test_schema_created() {
         "embedding_model",
         "created_at",
         "updated_at",
+        "source_ids",
     ];
 
     for col in &expected_columns {
@@ -90,7 +92,7 @@ async fn test_schema_created() {
         );
     }
 
-    assert_eq!(column_names.len(), 8, "memories table should have exactly 8 columns");
+    assert_eq!(column_names.len(), 9, "memories table should have exactly 9 columns");
 }
 
 /// Verifies that WAL journal mode is active after db::open().
@@ -110,6 +112,7 @@ async fn test_wal_mode() {
         db_path: db_path.clone(),
         embedding_provider: "local".to_string(),
         openai_api_key: None,
+        ..Default::default()
     };
 
     let conn = mnemonic::db::open(&config).await.unwrap();
@@ -185,6 +188,71 @@ async fn test_embedding_model_column() {
         "TEXT",
         "embedding_model column should have type TEXT"
     );
+}
+
+/// Verifies that the compact_runs table exists after db::open() and contains all 10 required columns.
+#[tokio::test]
+async fn test_compact_runs_exists() {
+    setup();
+    let config = test_config();
+    let conn = mnemonic::db::open(&config).await.unwrap();
+
+    let column_names: Vec<String> = conn
+        .call(|c| -> Result<Vec<String>, rusqlite::Error> {
+            let mut stmt = c.prepare("PRAGMA table_info(compact_runs)")?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(names)
+        })
+        .await
+        .unwrap();
+
+    let expected_columns = [
+        "id", "agent_id", "started_at", "completed_at",
+        "clusters_found", "memories_merged", "memories_created",
+        "dry_run", "threshold", "status",
+    ];
+
+    for col in &expected_columns {
+        assert!(
+            column_names.iter().any(|c| c == col),
+            "compact_runs table should have column '{}'",
+            col
+        );
+    }
+
+    assert_eq!(column_names.len(), 10, "compact_runs table should have exactly 10 columns");
+}
+
+/// Verifies that db::open() is idempotent — calling twice on the same database produces no error.
+#[tokio::test]
+async fn test_db_open_idempotent() {
+    setup();
+    let tmp_dir = std::env::temp_dir();
+    let db_file = tmp_dir.join(format!("mnemonic_test_idempotent_{}.db", std::process::id()));
+    let db_path = db_file.to_str().unwrap().to_string();
+
+    let config = mnemonic::config::Config {
+        port: 0,
+        db_path: db_path.clone(),
+        embedding_provider: "local".to_string(),
+        openai_api_key: None,
+        ..Default::default()
+    };
+
+    // First open — creates schema
+    let conn1 = mnemonic::db::open(&config).await.unwrap();
+    drop(conn1);
+
+    // Second open — must not error (all DDL is IF NOT EXISTS)
+    let conn2 = mnemonic::db::open(&config).await.unwrap();
+    drop(conn2);
+
+    // Clean up
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", db_path));
+    let _ = std::fs::remove_file(format!("{}-shm", db_path));
 }
 
 /// Verifies that db::open() works in an async context and supports insert + query via conn.call().

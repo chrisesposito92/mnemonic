@@ -57,10 +57,6 @@ pub async fn open(
                 embedding float[384]
             );
 
-            -- v1.1: source_ids tracks which memories were merged into this one
-            ALTER TABLE memories ADD COLUMN IF NOT EXISTS
-                source_ids TEXT NOT NULL DEFAULT '[]';
-
             -- v1.1: compaction audit log
             CREATE TABLE IF NOT EXISTS compact_runs (
                 id TEXT PRIMARY KEY,
@@ -78,6 +74,20 @@ pub async fn open(
             CREATE INDEX IF NOT EXISTS idx_compact_runs_agent_id ON compact_runs(agent_id);
             ",
         )?;
+
+        // v1.1: Add source_ids column to memories table.
+        // SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS, so we
+        // attempt the migration and ignore "duplicate column name" — the only
+        // error that can occur when the column already exists.
+        match c.execute_batch(
+            "ALTER TABLE memories ADD COLUMN source_ids TEXT NOT NULL DEFAULT '[]';",
+        ) {
+            Ok(()) => {}
+            Err(rusqlite::Error::SqliteFailure(ref err, _))
+                if err.extended_code == 1 => {}  // SQLITE_ERROR: duplicate column name
+            Err(e) => return Err(e),
+        }
+
         Ok(())
     })
     .await
