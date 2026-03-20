@@ -1,4 +1,6 @@
+use mnemonic::compaction::{CompactionService, CompactRequest};
 use mnemonic::embedding::{EmbeddingEngine, LocalEngine};
+use mnemonic::summarization::MockSummarizer;
 use std::sync::{Arc, Once, OnceLock};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -827,4 +829,303 @@ async fn test_search_agent_filter() {
     for m in memories {
         assert_eq!(m["agent_id"], "x", "all search results should belong to agent x");
     }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Compaction Integration Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Creates a CompactionService with MockEmbeddingEngine and optional MockSummarizer,
+/// sharing the same in-memory DB as the MemoryService.
+async fn build_test_compaction(with_llm: bool) -> (Arc<CompactionService>, Arc<mnemonic::service::MemoryService>) {
+    setup();
+    let config = test_config();
+    let conn = mnemonic::db::open(&config).await.unwrap();
+    let db = Arc::new(conn);
+    let embedding: Arc<dyn mnemonic::embedding::EmbeddingEngine> = Arc::new(MockEmbeddingEngine);
+    let summarization: Option<Arc<dyn mnemonic::summarization::SummarizationEngine>> = if with_llm {
+        Some(Arc::new(MockSummarizer))
+    } else {
+        None
+    };
+    let service = Arc::new(mnemonic::service::MemoryService::new(
+        db.clone(), embedding.clone(), "mock-model".to_string(),
+    ));
+    let compaction = Arc::new(CompactionService::new(
+        db.clone(), embedding.clone(), summarization, "mock-model".to_string(),
+    ));
+    (compaction, service)
+}
+
+/// DEDUP-01, DEDUP-02, DEDUP-03: Compacting similar memories produces merged memory with correct
+/// metadata, and source memories are deleted atomically.
+#[tokio::test]
+async fn test_compact_atomic_write() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (compaction, service) = build_test_compaction(false).await;
+
+    // Insert 2 memories with IDENTICAL content (MockEmbeddingEngine produces same vector -> cosine sim = 1.0)
+    let m1 = service.create_memory(CreateMemoryRequest {
+        content: "the cat sat on the mat".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        session_id: Some("sess-1".to_string()),
+        tags: Some(vec!["animal".to_string(), "cat".to_string()]),
+    }).await.unwrap();
+    let m2 = service.create_memory(CreateMemoryRequest {
+        content: "the cat sat on the mat".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        session_id: Some("sess-2".to_string()),
+        tags: Some(vec!["cat".to_string(), "furniture".to_string()]),
+    }).await.unwrap();
+
+    // Compact with very low threshold to guarantee clustering
+    let response = compaction.compact(CompactRequest {
+        agent_id: "agent-1".to_string(),
+        threshold: Some(0.5),
+        max_candidates: None,
+        dry_run: Some(false),
+    }).await.unwrap();
+
+    // Verify response counts
+    assert_eq!(response.clusters_found, 1, "should find 1 cluster");
+    assert_eq!(response.memories_merged, 2, "should merge 2 memories");
+    assert_eq!(response.memories_created, 1, "should create 1 merged memory");
+    assert!(!response.run_id.is_empty(), "run_id must not be empty");
+
+    // Verify id_mapping
+    assert_eq!(response.id_mapping.len(), 1, "should have 1 cluster mapping");
+    let mapping = &response.id_mapping[0];
+    assert!(mapping.source_ids.contains(&m1.id), "source_ids must contain m1");
+    assert!(mapping.source_ids.contains(&m2.id), "source_ids must contain m2");
+    assert!(mapping.new_id.is_some(), "new_id must be Some in non-dry-run");
+
+    // Verify source memories are DELETED
+    let list = service.list_memories(mnemonic::service::ListParams {
+        agent_id: Some("agent-1".to_string()),
+        session_id: None, tag: None, after: None, before: None,
+        limit: None, offset: None,
+    }).await.unwrap();
+    assert_eq!(list.total, 1, "should have exactly 1 memory after compaction (the merged one)");
+
+    // Verify merged memory has correct metadata
+    let merged = &list.memories[0];
+    assert_eq!(merged.id, mapping.new_id.as_ref().unwrap().clone());
+    // Tags should be union: animal, cat, furniture (deduplicated)
+    assert!(merged.tags.contains(&"animal".to_string()), "merged tags must contain 'animal'");
+    assert!(merged.tags.contains(&"cat".to_string()), "merged tags must contain 'cat'");
+    assert!(merged.tags.contains(&"furniture".to_string()), "merged tags must contain 'furniture'");
+    // created_at should be earliest (m1 was created first)
+    assert_eq!(merged.created_at, m1.created_at, "merged created_at should be earliest source");
+}
+
+/// DEDUP-01, DEDUP-03: dry_run returns cluster preview without modifying data.
+#[tokio::test]
+async fn test_compact_dry_run() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (compaction, service) = build_test_compaction(false).await;
+
+    // Insert 2 identical-content memories
+    service.create_memory(CreateMemoryRequest {
+        content: "identical content for dry run".to_string(),
+        agent_id: Some("agent-dry".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "identical content for dry run".to_string(),
+        agent_id: Some("agent-dry".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+
+    // Count before
+    let before = service.list_memories(mnemonic::service::ListParams {
+        agent_id: Some("agent-dry".to_string()),
+        session_id: None, tag: None, after: None, before: None,
+        limit: None, offset: None,
+    }).await.unwrap();
+    assert_eq!(before.total, 2);
+
+    // Compact with dry_run=true
+    let response = compaction.compact(CompactRequest {
+        agent_id: "agent-dry".to_string(),
+        threshold: Some(0.5),
+        max_candidates: None,
+        dry_run: Some(true),
+    }).await.unwrap();
+
+    assert_eq!(response.clusters_found, 1, "dry_run should still find clusters");
+    assert_eq!(response.memories_merged, 2);
+    // In dry_run, memories_created is 0 — no actual writes performed
+    assert_eq!(response.memories_created, 0);
+    // new_id should be None in dry_run
+    assert!(response.id_mapping[0].new_id.is_none(), "new_id must be None in dry_run");
+
+    // Count after — should be UNCHANGED
+    let after = service.list_memories(mnemonic::service::ListParams {
+        agent_id: Some("agent-dry".to_string()),
+        session_id: None, tag: None, after: None, before: None,
+        limit: None, offset: None,
+    }).await.unwrap();
+    assert_eq!(after.total, 2, "dry_run must not modify memory count");
+}
+
+/// DEDUP-01: When no memories exceed similarity threshold, no clusters are formed.
+#[tokio::test]
+async fn test_compact_no_clusters() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (compaction, service) = build_test_compaction(false).await;
+
+    // Insert 2 memories with DIFFERENT content (different embeddings)
+    service.create_memory(CreateMemoryRequest {
+        content: "apples and oranges are fruit".to_string(),
+        agent_id: Some("agent-diff".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "quantum physics and black holes".to_string(),
+        agent_id: Some("agent-diff".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+
+    // Compact with HIGH threshold (0.99) — unlikely to cluster different content
+    let response = compaction.compact(CompactRequest {
+        agent_id: "agent-diff".to_string(),
+        threshold: Some(0.99),
+        max_candidates: None,
+        dry_run: Some(false),
+    }).await.unwrap();
+
+    assert_eq!(response.clusters_found, 0, "different content should not cluster at 0.99 threshold");
+    assert_eq!(response.memories_merged, 0);
+    assert_eq!(response.memories_created, 0);
+    assert!(response.id_mapping.is_empty());
+
+    // Memories should be unchanged
+    let list = service.list_memories(mnemonic::service::ListParams {
+        agent_id: Some("agent-diff".to_string()),
+        session_id: None, tag: None, after: None, before: None,
+        limit: None, offset: None,
+    }).await.unwrap();
+    assert_eq!(list.total, 2, "no memories should be removed when no clusters form");
+}
+
+/// DEDUP-03: Compacting Agent A's memories must not affect Agent B's memories.
+#[tokio::test]
+async fn test_compact_agent_isolation() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (compaction, service) = build_test_compaction(false).await;
+
+    // Insert identical memories for Agent A
+    service.create_memory(CreateMemoryRequest {
+        content: "shared fact about the world".to_string(),
+        agent_id: Some("agent-A".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "shared fact about the world".to_string(),
+        agent_id: Some("agent-A".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+
+    // Insert memory for Agent B
+    service.create_memory(CreateMemoryRequest {
+        content: "agent B private memory".to_string(),
+        agent_id: Some("agent-B".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+
+    // Compact Agent A only
+    let response = compaction.compact(CompactRequest {
+        agent_id: "agent-A".to_string(),
+        threshold: Some(0.5),
+        max_candidates: None,
+        dry_run: Some(false),
+    }).await.unwrap();
+
+    assert_eq!(response.clusters_found, 1);
+
+    // Verify Agent B is untouched
+    let agent_b = service.list_memories(mnemonic::service::ListParams {
+        agent_id: Some("agent-B".to_string()),
+        session_id: None, tag: None, after: None, before: None,
+        limit: None, offset: None,
+    }).await.unwrap();
+    assert_eq!(agent_b.total, 1, "Agent B must have exactly 1 memory — untouched by Agent A compaction");
+    assert_eq!(agent_b.memories[0].content, "agent B private memory");
+}
+
+/// DEDUP-04: max_candidates caps the candidate set and sets truncated=true.
+#[tokio::test]
+async fn test_compact_max_candidates_truncation() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (compaction, service) = build_test_compaction(false).await;
+
+    // Insert 5 identical memories
+    for i in 0..5 {
+        service.create_memory(CreateMemoryRequest {
+            content: "repeated fact for truncation test".to_string(),
+            agent_id: Some("agent-trunc".to_string()),
+            session_id: None,
+            tags: Some(vec![format!("tag-{}", i)]),
+        }).await.unwrap();
+    }
+
+    // Compact with max_candidates=3 (should truncate)
+    let response = compaction.compact(CompactRequest {
+        agent_id: "agent-trunc".to_string(),
+        threshold: Some(0.5),
+        max_candidates: Some(3),
+        dry_run: Some(true),
+    }).await.unwrap();
+
+    assert!(response.truncated, "should be truncated when 5 memories exceed max_candidates=3");
+    // Clusters should form from only the 3 most recent candidates
+    assert!(response.clusters_found >= 1, "should still find clusters within the 3 candidates");
+}
+
+/// DEDUP-02: When LLM is configured (MockSummarizer), merged content comes from summarization engine.
+#[tokio::test]
+async fn test_compact_with_mock_summarizer() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (compaction, service) = build_test_compaction(true).await;
+
+    // Insert 2 identical-content memories
+    service.create_memory(CreateMemoryRequest {
+        content: "the sky is blue".to_string(),
+        agent_id: Some("agent-llm".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+    service.create_memory(CreateMemoryRequest {
+        content: "the sky is blue".to_string(),
+        agent_id: Some("agent-llm".to_string()),
+        session_id: None, tags: None,
+    }).await.unwrap();
+
+    let response = compaction.compact(CompactRequest {
+        agent_id: "agent-llm".to_string(),
+        threshold: Some(0.5),
+        max_candidates: None,
+        dry_run: Some(false),
+    }).await.unwrap();
+
+    assert_eq!(response.clusters_found, 1);
+    assert_eq!(response.memories_created, 1);
+
+    // Verify merged memory content came from MockSummarizer
+    let list = service.list_memories(mnemonic::service::ListParams {
+        agent_id: Some("agent-llm".to_string()),
+        session_id: None, tag: None, after: None, before: None,
+        limit: None, offset: None,
+    }).await.unwrap();
+    assert_eq!(list.total, 1);
+    assert!(
+        list.memories[0].content.starts_with("MOCK_SUMMARY:"),
+        "merged content should come from MockSummarizer, got: {}",
+        list.memories[0].content
+    );
 }
