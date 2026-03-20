@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+mod auth;
 mod compaction;
 mod config;
 mod db;
@@ -99,6 +100,26 @@ async fn main() -> Result<()> {
     };
 
     let db_arc = std::sync::Arc::new(conn);
+
+    // 4b. Build KeyService and log auth mode (D-11, D-12, D-13)
+    let key_service = std::sync::Arc::new(
+        auth::KeyService::new(db_arc.clone())
+    );
+
+    match key_service.count_active_keys().await {
+        Ok(0) => tracing::info!(
+            "Auth: OPEN (no keys) — run 'mnemonic keys create' to enable"
+        ),
+        Ok(n) => tracing::info!(
+            keys = n,
+            "Auth: ACTIVE ({n} keys)"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "Auth: could not determine mode (DB error)"
+        ),
+    }
+
     let service = std::sync::Arc::new(
         service::MemoryService::new(
             db_arc.clone(),
@@ -121,6 +142,7 @@ async fn main() -> Result<()> {
     let state = server::AppState {
         service,
         compaction,
+        key_service,
     };
     server::serve(&config, state).await?;
 

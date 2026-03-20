@@ -27,6 +27,8 @@ pub fn init_tracing() {
 pub struct AppState {
     pub service: std::sync::Arc<crate::service::MemoryService>,
     pub compaction: std::sync::Arc<crate::compaction::CompactionService>,
+    #[allow(dead_code)] // No route middleware until Phase 12
+    pub key_service: std::sync::Arc<crate::auth::KeyService>,
 }
 
 /// Constructs the axum Router with all routes wired to AppState.

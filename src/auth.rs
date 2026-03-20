@@ -54,6 +54,7 @@ impl KeyService {
 
     /// Creates a new API key with the given name and optional agent_id scope.
     /// Returns the persisted ApiKey and the raw token (shown once, never stored).
+    #[allow(dead_code)] // Phase 11: CLI key management
     pub async fn create(
         &self,
         _name: String,
@@ -63,18 +64,21 @@ impl KeyService {
     }
 
     /// Lists all API keys (active and revoked).
+    #[allow(dead_code)] // Phase 11: CLI key management
     pub async fn list(&self) -> Result<Vec<ApiKey>, crate::error::DbError> {
         todo!("Phase 11: KeyService::list")
     }
 
     /// Revokes a key by ID. Sets revoked_at to current timestamp.
     /// Idempotent — revoking an already-revoked key is a no-op.
+    #[allow(dead_code)] // Phase 11: CLI key management
     pub async fn revoke(&self, _id: &str) -> Result<(), crate::error::DbError> {
         todo!("Phase 11: KeyService::revoke")
     }
 
     /// Validates a raw token against stored hashes.
     /// Returns AuthContext on success, or an error if the token is invalid/revoked.
+    #[allow(dead_code)] // Phase 12: Auth middleware
     pub async fn validate(&self, _raw_token: &str) -> Result<AuthContext, crate::error::DbError> {
         todo!("Phase 11: KeyService::validate")
     }
