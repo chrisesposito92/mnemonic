@@ -160,4 +160,41 @@ mod tests {
         };
         validate_config(&config).unwrap();
     }
+
+    #[test]
+    fn test_validate_config_llm_openai_no_key() {
+        let config = Config {
+            llm_provider: Some("openai".to_string()),
+            llm_api_key: None,
+            ..Config::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.to_string().contains("MNEMONIC_LLM_API_KEY"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_validate_config_llm_openai_with_key() {
+        let config = Config {
+            llm_provider: Some("openai".to_string()),
+            llm_api_key: Some("sk-test".to_string()),
+            ..Config::default()
+        };
+        validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn test_validate_config_llm_unknown_provider() {
+        let config = Config {
+            llm_provider: Some("anthropic".to_string()),
+            ..Config::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.to_string().contains("unknown llm_provider"), "error was: {}", err);
+    }
+
+    #[test]
+    fn test_validate_config_no_llm_ok() {
+        let config = Config::default(); // llm_provider defaults to None
+        validate_config(&config).unwrap();
+    }
 }
