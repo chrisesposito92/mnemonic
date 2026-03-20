@@ -64,7 +64,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 ---
 ## Current State
 
-v1.0 milestone complete — All 4 phases delivered. Single Rust binary with embedded SQLite+sqlite-vec storage, local all-MiniLM-L6-v2 embeddings via candle, REST API (5 endpoints), multi-agent namespacing, and comprehensive documentation. 488-line README with 3-command quickstart, full API reference, Python client, and agent tool-use examples. GitHub Actions release workflow for Linux x86_64, macOS x86_64, and macOS aarch64. 21 tests passing. MIT licensed.
+v1.0 milestone complete with gap closure — All 5 phases delivered. Phase 5 closed integration gaps INT-01 and INT-02: `embedding_provider` config field now drives engine selection (no longer a dead knob), `mnemonic.toml.example` includes `openai_api_key`, and all compiler warnings resolved. Single Rust binary with embedded SQLite+sqlite-vec storage, local all-MiniLM-L6-v2 embeddings via candle, REST API (5 endpoints), multi-agent namespacing, and comprehensive documentation. Zero compiler warnings, 30 tests passing. MIT licensed.
 
 ---
-*Last updated: 2026-03-19 after Phase 4 completion*
+*Last updated: 2026-03-20 after Phase 5 completion*
