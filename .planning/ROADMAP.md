@@ -79,7 +79,9 @@ Plans:
   2. An agent calling with dry_run: true receives the proposed cluster preview with no changes written to the database — a subsequent GET /memories returns the original count
   3. The compaction response includes an old-to-new ID mapping for every merged cluster so agents can update stale cached memory IDs
   4. Compacting Agent A's memories leaves Agent B's memories completely untouched — verified by an integration test that asserts Agent B's count is unchanged
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 09-01-PLAN.md — Compact handler wiring, input validation, HTTP-layer integration tests
 
 ## Progress
 
@@ -92,5 +94,5 @@ Plans:
 | 5. Config Cleanup | v1.0 | 1/1 | Complete | 2026-03-20 |
 | 6. Foundation | v1.1 | 2/2 | Complete | 2026-03-20 |
 | 7. Summarization Engine | v1.1 | 1/1 | Complete | 2026-03-20 |
-| 8. Compaction Core | 2/2 | Complete   | 2026-03-20 | - |
-| 9. HTTP Integration | v1.1 | 0/? | Not started | - |
+| 8. Compaction Core | v1.1 | 2/2 | Complete | 2026-03-20 |
+| 9. HTTP Integration | v1.1 | 0/1 | Not started | - |
