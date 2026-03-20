@@ -2,16 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Memory Compaction
-status: planning
-stopped_at: Phase 6 context gathered
-last_updated: "2026-03-20T13:29:11.097Z"
-last_activity: 2026-03-20 — v1.1 roadmap created (4 phases, 12 requirements mapped)
+status: executing
+stopped_at: "Completed 06-01-PLAN.md"
+last_updated: "2026-03-20T13:49:00.000Z"
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 2
+  completed_plans: 1
 ---
 
 # Project State
@@ -21,16 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 6 — Foundation (config extensions + schema additions)
+**Current focus:** Phase 06 — foundation
 
 ## Current Position
 
-Phase: 6 of 9 (Foundation)
-Plan: — (not yet planned)
-Status: Ready to plan
-Last activity: 2026-03-20 — v1.1 roadmap created (4 phases, 12 requirements mapped)
-
-Progress: [░░░░░░░░░░] 0%
+Phase: 06 (foundation) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -66,6 +60,8 @@ Recent decisions affecting v1.1:
 - CompactionService is a peer of MemoryService in AppState — not a method on MemoryService
 - SummarizationEngine trait mirrors EmbeddingEngine pattern exactly
 - agent_id is required in CompactRequest — hard WHERE filter, not optional
+- validate_config() restructured: embedding and LLM validations are independent blocks (both run), not early-return match arms
+- LlmError has no direct From impl for ApiError — conversion chain is LlmError -> MnemonicError::Llm -> ApiError::Internal
 
 ### Pending Todos
 
@@ -79,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-20T13:29:11.095Z
-Stopped at: Phase 6 context gathered
+Last session: 2026-03-20T13:49:00Z
+Stopped at: Completed 06-01-PLAN.md
 Resume file: .planning/phases/06-foundation/06-CONTEXT.md
