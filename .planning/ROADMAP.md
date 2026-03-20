@@ -38,7 +38,10 @@
   2. User can configure llm_provider, llm_api_key, llm_base_url, and llm_model via env vars or TOML without touching any other config
   3. validate_config() rejects invalid LLM config combinations (provider set but api_key missing) at startup, not at request time
   4. The memories table has a source_ids column and a compact_runs table exists, both queryable from a fresh database
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 06-01-PLAN.md — Config fields + LLM validation + LlmError enum
+- [ ] 06-02-PLAN.md — Schema DDL (source_ids column, compact_runs table) + integration test updates
 
 ### Phase 7: Summarization Engine
 **Goal**: A tested, prompt-injection-resistant SummarizationEngine is available for CompactionService to use — real LLM calls with OpenAiSummarizer, deterministic tests with MockSummarizer
@@ -82,7 +85,7 @@
 | 3. Service and API | v1.0 | 3/3 | Complete | 2026-03-19 |
 | 4. Distribution | v1.0 | 2/2 | Complete | 2026-03-19 |
 | 5. Config Cleanup | v1.0 | 1/1 | Complete | 2026-03-20 |
-| 6. Foundation | v1.1 | 0/? | Not started | - |
+| 6. Foundation | v1.1 | 0/2 | In progress | - |
 | 7. Summarization Engine | v1.1 | 0/? | Not started | - |
 | 8. Compaction Core | v1.1 | 0/? | Not started | - |
 | 9. HTTP Integration | v1.1 | 0/? | Not started | - |
