@@ -28,7 +28,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 - [ ] Algorithmic deduplication via vector similarity clustering (no LLM required)
 - [ ] Metadata merge for deduplicated memory clusters
 - [ ] LLM-powered summarization of similar memory clusters (opt-in, requires LLM config)
-- [ ] Configurable LLM provider following existing embedding_provider pattern
+- [x] Configurable LLM provider following existing embedding_provider pattern — Validated in Phase 6: Foundation
 - [ ] Time-based weighting parameter for age-aware compaction aggressiveness
 
 ### Out of Scope
@@ -45,8 +45,9 @@ Any AI agent can store and semantically search memories out of the box with zero
 ## Context
 
 Shipped v1.0 with 1,932 lines of Rust code across 5 phases (11 plans).
+Phase 6 complete — LLM config fields, schema migrations (source_ids, compact_runs), LlmError types added.
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2).
-30 tests passing, zero compiler warnings. MIT licensed.
+23 tests passing, zero compiler warnings (1 expected dead_code warning for LlmError). MIT licensed.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required.
 
@@ -88,4 +89,4 @@ Single-binary distribution — no Python, no Docker, no external services requir
 - Time-based weighting parameter for age-aware compaction
 
 ---
-*Last updated: 2026-03-20 after v1.1 milestone started*
+*Last updated: 2026-03-20 after Phase 6 (Foundation) completed*
