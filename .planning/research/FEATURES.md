@@ -1,14 +1,16 @@
 # Feature Research
 
-**Domain:** Memory summarization / compaction for agent memory server (v1.1 milestone)
+**Domain:** API key authentication for developer tools / infrastructure APIs (v1.2 milestone)
 **Researched:** 2026-03-20
-**Confidence:** MEDIUM-HIGH (thresholds from multiple sources; LLM prompt patterns from open-source implementations; Rust clustering crates verified on crates.io)
+**Confidence:** HIGH (patterns sourced from Stripe, GitHub, Paddle, prefix.dev, OWASP; axum middleware patterns verified against current docs)
 
 ---
 
 ## Scope Note
 
-This document covers **only the new features for v1.1**. The v1.0 baseline (5 REST endpoints, local embeddings, agent_id/session_id namespacing, SQLite+sqlite-vec) is already shipped and is treated as a dependency, not a feature.
+This document covers **only the new features for v1.2**. The v1.0/v1.1 baseline (6 REST endpoints, local embeddings, agent_id/session_id namespacing, SQLite+sqlite-vec, memory compaction) is already shipped and treated as a dependency, not a feature.
+
+The central question: what does "good" API key authentication look like for a developer infrastructure tool that starts as a local single-binary and can be optionally deployed on a network?
 
 ---
 
@@ -16,111 +18,118 @@ This document covers **only the new features for v1.1**. The v1.0 baseline (5 RE
 
 ### Table Stakes (Users Expect These)
 
-Features that any agent developer expects from a "memory compaction" feature. Missing these makes the feature feel incomplete or untrustworthy.
+Features any developer expects from an authenticated API. Missing these makes the auth system feel half-baked or insecure.
 
 | Feature | Why Expected | Complexity | Dependencies on Existing Architecture |
 |---------|--------------|------------|---------------------------------------|
-| POST /memories/compact endpoint | Every memory system with compaction uses an explicit API call. Agent stays in control — no background magic. This is the industry-standard pattern (OpenAI, Anthropic, AgentZero all surface compaction as explicit action). | LOW | Requires existing `POST /memories` + `DELETE /memories/{id}`. New route added to `server.rs`. |
-| Scoped compaction (agent_id required) | Compacting the wrong agent's memories is data loss. Every reviewed system scopes compaction by namespace. | LOW | Requires `agent_id` query param / body field — matches existing `SearchParams` pattern in `service.rs`. |
-| Vector similarity deduplication (no LLM) | The "always works" tier. Agents without LLM credentials still need deduplication. Algorithmic, deterministic, zero-cost. | MEDIUM | Uses existing `vec_memories` sqlite-vec virtual table and its cosine distance queries. No new infra. |
-| Metadata merge on dedup | When two memories are merged, the surviving memory should inherit tags from both. Agents expect merged memories to be richer, not information-lossy. | LOW | Requires reading `tags` JSON from `memories` table, merging arrays, updating surviving row. |
-| Compaction response with stats | Agents need to know what happened: how many memories existed, how many were removed, how many clusters were merged. Without this, the agent cannot make decisions based on compaction results. | LOW | Response struct: `{ memories_before, memories_after, clusters_found, memories_removed, memories_created }`. New type in `service.rs`. |
-| Configurable similarity threshold | No single threshold is correct for all use cases. Agents need to tune aggressiveness. Research shows 0.85 is the established default (SimpleMem paper, AgentZero 0.7 for discovery / 0.9 for replace). | LOW | New field in `CompactRequest` body. Default to 0.85 with valid range [0.5, 1.0]. |
+| Bearer token via `Authorization` header | RFC 7235 standard. Every developer tool from Stripe to OpenAI uses `Authorization: Bearer <token>`. Any other transport (header name, query param) is a surprise and an antipattern. | LOW | New axum `from_request` extractor or `tower::Service` middleware layer in `server.rs`. |
+| `mnk_` prefix on generated keys | Stripe (sk_live_), GitHub (ghp_, ghu_), PyPI (pypi-), prefix.dev (pfx_) all use prefixes so keys are identifiable in logs, env dumps, and grep output. Without a prefix, a leaked key cannot be traced back to the service. Stripe invented this pattern in 2012; it is now universal. | LOW | Pure format convention. Enforced in the key generator function, checked in the auth middleware. |
+| Keys stored as hashes only, never plaintext | OWASP requirement. Stripe does not store plaintext keys. Leaked DB does not expose credentials. The raw key is shown exactly once at creation. | MEDIUM | New `api_keys` table in SQLite (schema migration in `db.rs`). Store `SHA-256(key)` or `BLAKE3(key)` — fast lookup, not password hashing. See "Hash Storage" note below. |
+| Key shown once at creation, never again | Universal pattern: Stripe, GitHub, Paddle all show the full key once and never again. Users expect this — it enforces discipline to store keys immediately. | LOW | `POST /keys` response includes full key. No `GET /keys/:id` returns the secret. List endpoint returns only metadata (id, description, agent_id, created_at, last_used). |
+| 401 on invalid/missing key when auth is active | Standard HTTP semantics. Missing auth = 401 Unauthorized. Wrong key = 401. Authenticated but wrong agent_id = 403 Forbidden. These are different errors and must not be conflated. | LOW | Axum middleware extracts Bearer token, looks up hash in DB, returns 401/403 via existing `ApiError` type in `error.rs`. |
+| Open mode (no auth when no keys exist) | Mnemonic's target for local dev is zero-config. If auth is mandatory from install, it breaks the quickstart. The established pattern (used by Ollama, Home Assistant, and other local-first tools) is: no keys configured = open access. First key created = auth enforced. | LOW | Auth middleware checks key count at startup (or via cached flag). If zero keys exist, pass all requests. If any key exists, enforce. |
+| CLI key management (create / list / revoke) | Developer tools that have API keys always have a matching CLI sub-command. Heroku: `heroku authorizations:create`. GitHub CLI: `gh auth token`. Stripe CLI: key management commands. Without CLI management, users must craft raw HTTP to manage credentials — unacceptable DX. | MEDIUM | New `KeysCommand` subcommand in `main.rs` / CLI arg parsing. Calls the keys API endpoints. Must be able to run against a configured server address. |
+| Key revocation (immediate effect) | Once revoked, a key must stop working immediately. Delayed revocation after compromise is unacceptable. Implies no long-lived in-process cache of valid keys without invalidation support. | LOW | `DELETE /keys/:id` marks key as revoked in DB. Middleware checks revocation status on every request (SQLite lookup is fast; no need for distributed invalidation given single-process architecture). |
 
 ### Differentiators (Competitive Advantage)
 
-Features that are not universally expected but differentiate Mnemonic within its "zero-config, single-binary" positioning.
+Features that are not universally expected but align with Mnemonic's positioning as a scoped, agent-aware memory tool.
 
 | Feature | Value Proposition | Complexity | Dependencies on Existing Architecture |
 |---------|-------------------|------------|---------------------------------------|
-| LLM-powered cluster summarization (opt-in) | Pure dedup loses context; summarization synthesizes. Competitors that require LLM (Mem0, Zep) always use it. Mnemonic differentiates by making it **optional** — works without LLM, better with one. | HIGH | Requires new `llm_provider` config following existing `embedding_provider` pattern in `config.rs`. Calls LLM API to generate summary text for a cluster. Writes summary as new memory via existing store path. |
-| Configurable LLM provider (same pattern as embeddings) | Users already understand the `embedding_provider` config enum. Reusing the same pattern for LLM is zero learning curve. | MEDIUM | Extend `Config` struct and `validate_config()`. New `LlmEngine` trait parallel to `EmbeddingEngine`. OpenAI-compatible HTTP client (reqwest already in dep tree via axum). |
-| Time-based weighting parameter for compaction aggressiveness | Research-backed: the SimpleMem affinity formula `β·cos(vᵢ,vⱼ) + (1-β)·e^(−λ|tᵢ−tⱼ|)` combines semantic similarity with temporal proximity. Older, semantically similar memories should be more aggressively merged than recent ones. Configurable `recency_bias` float [0.0, 1.0] maps to β. | MEDIUM | Requires `created_at` timestamps from `memories` table (already stored). Adjusted affinity score computed in Rust before clustering decision. No new storage. |
-| Dry-run / preview mode | Agent can see what compaction would do without committing changes. Builds trust in the feature. Pattern is present in NetApp compaction docs and database vacuum tooling but rare in agent memory systems — genuine differentiator. | LOW | `dry_run: bool` field in request body. If true, return stats without executing DELETE/INSERT. All computation identical, skip writes. |
+| Keys scoped to specific `agent_id` | Most infrastructure APIs offer global keys. Mnemonic's core concept is multi-agent namespacing — scoping a key to exactly one agent_id means a compromised agent key cannot read another agent's memories. This is a genuine differentiator because the threat model (multiple AI agents sharing one server) is specific to Mnemonic. | MEDIUM | `api_keys` table needs `agent_id TEXT` column (nullable for admin keys). Middleware checks that the `agent_id` in the request query/body matches the key's `agent_id`. Uses existing `agent_id` column pattern from `memories` table. |
+| Global admin key (unscoped) | Operators need to manage the server itself — list all agents, run compaction across namespaces, generate per-agent keys. A single unscoped admin key serves this role. Pattern: `agent_id IS NULL` on the key row = admin access. | LOW | `agent_id` on key row: `NULL` = admin (all namespaces), non-null = scoped. No separate key type needed; the data model carries the distinction. |
+| `last_used_at` timestamp on each key | Shows operators which keys are still active. Standard feature: GitHub, Stripe both surface this. Helps answer "can I safely revoke this old key?" | LOW | `last_used_at DATETIME` column on `api_keys` table. Updated on successful auth in the middleware. SQLite write on every authenticated request — acceptable for single-process server. |
+| Machine-readable key metadata (description field) | Per-key `description` field lets operators label keys by deployment ("prod agent", "staging agent", "CI pipeline"). Stripe and GitHub both have this. Without it, the key list is an undifferentiated set of prefixed random strings. | LOW | `description TEXT` column on `api_keys` table. Optional, set at creation time via CLI flag `--description`. |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| Automatic background compaction | "Just run it periodically" feels convenient | Silently mutates agent memory without agent consent. Race conditions with ongoing agent writes. Violates Mnemonic's explicit control philosophy. PROJECT.md explicitly excludes this. | Agent calls POST /memories/compact at natural checkpoints (session end, token budget threshold). |
-| Hierarchical / parent-child summaries | More structure = richer memory model | Requires traversal logic, schema changes (parent_id FK), recursive queries. Covers a use case that cluster-and-replace already handles at 90% quality. PROJECT.md explicitly excludes. | Flat cluster-and-replace. Summaries become first-class memories searchable like any other. |
-| Per-memory importance scoring at write time | "Weight memories by importance" sounds good | Requires LLM call on every single write, adding latency and API key dependency to the baseline path. Breaks the zero-config guarantee. | Importance is implicit in retrieval: frequently-retrieved memories survive compaction because they form their own clusters. |
-| Compaction across agent boundaries | "Merge learnings from all agents" | Violates the agent_id isolation invariant that all existing query logic is built around. A bug here creates cross-agent data leakage. | Multi-agent knowledge sharing is a separate feature with different security model. Out of scope for v1.1. |
-| Memory decay / TTL on compact | "Age out old memories automatically" | Surprising and irreversible. Data loss without explicit agent action. PROJECT.md explicitly excludes. | Time-based weighting in compaction makes old memories more likely to be clustered, not silently deleted. |
-| HDBSCAN / DBSCAN clustering crate | "Proper density-based clustering" sounds rigorous | `petal-clustering` and `hdbscan` crates exist in Rust (verified on crates.io) but add a significant dependency. For typical agent memory sizes (10–500 memories per agent_id), simple greedy pairwise similarity with a threshold outperforms density-based clustering on correctness-per-complexity ratio. DBSCAN requires choosing ε (epsilon) and min_samples, which users cannot tune intuitively. | Greedy single-linkage: sort pairs by similarity, merge above threshold. O(n²) acceptable for 100–500 memories. Produces predictable, debuggable clusters. |
+| Argon2/bcrypt for API key hashing | "Treat keys like passwords" is a reasonable instinct. prefix.dev uses Argon2 for their API keys. | API keys are 32+ bytes of cryptographically random data, not user-chosen passwords. Brute force is infeasible regardless of hash speed. Argon2 adds ~100ms of latency to every authenticated request in a single-process server. For a local infrastructure tool, this is noticeable. Password hash functions are for protecting weak secrets — random tokens are already strong. Use SHA-256 or BLAKE3 (fast, collision-resistant, purpose-appropriate). | Store `BLAKE3(key)` or `SHA-256(key)`. Fast lookup, no brute-force risk, no request latency penalty. |
+| Key rotation with overlap / grace period | "Enterprises need zero-downtime rotation" is a real concern for SaaS. Overlap periods (old key valid for 7 days after new key issued) prevent outages during rotation. | For a single-binary local/small-network tool, this adds significant complexity (two active keys per slot, expiry tracking, overlap logic). The user base (individual developers, small teams) can tolerate a brief rotation window — revoke old key, start using new key, done. | Simple revoke-and-recreate. Document the pattern: create new key, test it, revoke old key. CLI makes this a 2-command operation. |
+| Rate limiting per key | "Prevent one agent from hammering the server" sounds important for multi-tenant SaaS. | Mnemonic is a single-binary local/network tool for agent developers who own all the keys. Rate limiting adds complexity (sliding window counters, storage), latency, and a confusing 429 response that breaks agents unexpectedly. The actual threat model is a buggy agent loop — which is better addressed by the agent's own circuit breaker. | Document the concern. Add to v1.3+ consideration if user feedback confirms the need. |
+| JWT tokens instead of static keys | "JWTs are stateless and scale better" is true for distributed systems. | JWT adds library dependencies (JWT parsing/validation), introduces expiry semantics (agents must handle token refresh), and provides no benefit in a single-process server that can do a DB lookup in microseconds. Static API keys with a fast hash lookup are simpler, more transparent, and sufficient for this use case. | Static `mnk_` prefixed keys stored as hashed tokens in SQLite. Stateful, revocable immediately, zero library overhead. |
+| Per-endpoint permission scopes | "Keys should have fine-grained permissions (read vs. write vs. compact)" is a reasonable RBAC ask. | For Mnemonic's current feature set (one memory namespace per agent), the relevant permission boundary is already agent_id scoping. Adding endpoint-level scopes (e.g., "this key can search but not compact") adds UI/CLI complexity for a permission model that most users will never need. | Agent-scoped keys (agent_id on the key row) provide the meaningful isolation. Endpoint scopes are a v2+ feature if multi-tenant production deployments emerge. |
+| OAuth 2.0 / OIDC integration | "Use the org's identity provider" is expected for enterprise tooling. | OAuth adds an authorization server dependency, browser redirect flows, and token exchange logic — directly violating Mnemonic's zero-external-dependency principle. The target user is a developer running a local binary, not an enterprise SSO deployment. | Static API keys managed via CLI. Document that keys can be stored in `.env` files or secret managers. |
+| Web UI for key management | "A dashboard would be nice" comes up for any tool with credentials. | Adds a frontend build pipeline, static file serving, and session management. Violates the single-binary simplicity invariant. PROJECT.md explicitly excludes "Web UI / dashboard." | CLI commands: `mnemonic keys create`, `mnemonic keys list`, `mnemonic keys revoke <id>`. REST API for programmatic access. |
 
 ---
 
 ## Feature Dependencies
 
 ```
-[POST /memories/compact endpoint]
-    └──requires──> [POST /memories] (to write summary/merged content)
-    └──requires──> [DELETE /memories/{id}] (to remove deduplicated originals)
-    └──requires──> [agent_id namespacing] (to scope compaction safely)
-    └──requires──> [vec_memories sqlite-vec table] (for similarity queries)
+[Auth middleware (Bearer token check)]
+    └──requires──> [api_keys table in SQLite] (key hash storage)
+    └──requires──> [open-mode detection] (zero-keys = pass-through)
+    └──requires──> [agent_id scoping logic] (compare key.agent_id to request agent_id)
 
-[Vector similarity deduplication]
-    └──requires──> [vec_memories embeddings] (existing, 384-dim float vectors)
-    └──requires──> [memories.created_at] (for time-based weighting)
-    └──enables──> [Metadata merge] (once cluster is identified, merge tags)
+[api_keys SQLite table]
+    └──requires──> [schema migration in db.rs] (new table, added to existing open() function)
+    └──requires──> [key hash function] (BLAKE3 or SHA-256 — new util)
 
-[Time-based weighting]
-    └──requires──> [memories.created_at] (already in schema — no migration needed)
-    └──enhances──> [Vector similarity deduplication] (adjusts similarity scores before clustering)
+[CLI key management (mnemonic keys create/list/revoke)]
+    └──requires──> [REST key management endpoints] (POST/GET/DELETE /keys)
+    └──requires──> [server address config] (keys CLI must know where the server is)
 
-[LLM-powered summarization]
-    └──requires──> [Vector similarity deduplication] (clusters must be identified first)
-    └──requires──> [LlmEngine trait + config] (new, following embedding_provider pattern)
-    └──requires──> [POST /memories] (to store the generated summary)
-    └──enhances──> [Metadata merge] (LLM summary replaces merged content, metadata still merged)
+[REST key management endpoints (POST/GET/DELETE /keys)]
+    └──requires──> [api_keys table in SQLite]
+    └──requires──> [auth middleware] (key management endpoints must themselves be authenticated
+                    when auth is active — prevents unauthenticated key creation after first key)
 
-[Dry-run mode]
-    └──requires──> [all compaction logic above] (identical computation, no writes)
-    └──conflicts──> [nothing] (purely additive flag)
+[Key scoping to agent_id]
+    └──requires──> [api_keys.agent_id column] (nullable: NULL = admin, text = scoped)
+    └──requires──> [agent_id extraction from request] (existing pattern from memories endpoints)
+    └──enhances──> [existing multi-agent namespacing] (no changes to namespace logic, just enforces it)
 
-[Configurable similarity threshold]
-    └──requires──> [CompactRequest body struct] (new field, not a breaking change)
+[Open mode fallback]
+    └──requires──> [key count query at startup OR per-request check]
+    └──conflicts──> [nothing] (disabling auth is not the same as bypassing it)
 ```
 
 ### Dependency Notes
 
-- **Dedup requires existing vec_memories:** The KNN query pattern already used in `GET /memories/search` is reused for similarity lookups during compaction. No new vector infrastructure needed.
-- **LLM tier requires dedup tier:** Clusters must be identified algorithmically before the LLM is invoked. LLM receives a cluster of N memory contents and returns a consolidated summary. Dedup-without-LLM is Tier 1; Tier 2 adds LLM on top.
-- **Time weighting requires no schema migration:** `created_at DATETIME` is already in the `memories` table. The weighting is applied in application code, not stored.
-- **LLM provider follows embedding_provider pattern:** Same `validate_config()` gate, same env-var-or-TOML approach. Users who have already configured OpenAI for embeddings can reuse that key for summarization.
+- **Auth middleware depends on api_keys table:** The table must exist before the middleware can function. Schema migration in `db.rs::open()` is the natural location — Mnemonic already uses `execute_batch` for idempotent migrations.
+- **Key management endpoints must be self-protecting:** After the first key is created, `POST /keys` and `DELETE /keys/:id` must require an admin key. Before the first key exists (open mode), they are accessible. This circular dependency is resolved by checking key count per-request in the middleware, not at startup.
+- **CLI requires server address:** The `mnemonic keys` subcommand sends HTTP requests to the running server. It needs a `--server` flag or reads from config (port from `MNEMONIC_PORT` or `mnemonic.toml`). This reuses the existing `Config` struct.
+- **Agent-scoped keys do not change the memory API:** The `agent_id` in memory requests is already a parameter. Scoping enforcement is additive — the middleware compares the key's `agent_id` to the request's `agent_id` and returns 403 if they differ. No changes to `service.rs` or `compaction.rs`.
 
 ---
 
 ## MVP Definition
 
-### This Milestone Is v1.1 (not a greenfield MVP)
+### This Milestone Is v1.2 (adding auth to a shipped product)
 
-The question is not "what is minimum to validate the concept" — v1.0 is already shipped and validated. The question is "what is the minimum coherent compaction feature that delivers real value?"
+The goal is not to build a full auth platform. It is to make Mnemonic safe for network deployment without breaking the local-first zero-config experience.
 
-### Ship in v1.1
+### Ship in v1.2
 
-- [ ] `POST /memories/compact` endpoint — agent-triggered, scoped by `agent_id`, returns stats
-- [ ] Tier 1: Greedy pairwise vector similarity deduplication — works for all users, no LLM required
-- [ ] Metadata merge — surviving memory inherits tags union from all merged memories
-- [ ] Configurable `similarity_threshold` (default 0.85, range [0.5, 1.0])
-- [ ] Time-based weighting via `recency_bias` float [0.0, 1.0] (default 0.0 = pure semantic)
-- [ ] Compaction response with `{ memories_before, memories_after, clusters_found, memories_removed, memories_created }`
-- [ ] Tier 2: LLM-powered summarization (opt-in, requires `llm_provider` config) — produces a consolidated summary memory per cluster instead of just keeping the most-similar one
-- [ ] `dry_run: bool` request field — preview without committing
+- [ ] `api_keys` table with columns: `id`, `key_hash`, `description`, `agent_id` (nullable), `created_at`, `last_used_at`, `revoked_at`
+- [ ] Key generation: `mnk_` prefix + 32 bytes cryptographically secure random (base58 or base62 encoded)
+- [ ] Key storage: `BLAKE3(key)` or `SHA-256(key)` — never plaintext
+- [ ] Open mode: auth is bypassed when `api_keys` table has zero non-revoked rows
+- [ ] Axum middleware: extracts `Authorization: Bearer mnk_...` header, hashes it, looks up in DB, enforces agent_id scope
+- [ ] `POST /keys` — create a new key (returns full key once, never again)
+- [ ] `GET /keys` — list keys (metadata only: id, description, agent_id, created_at, last_used_at)
+- [ ] `DELETE /keys/:id` — revoke a key immediately
+- [ ] `mnemonic keys create [--agent-id <id>] [--description <text>]` CLI subcommand
+- [ ] `mnemonic keys list` CLI subcommand
+- [ ] `mnemonic keys revoke <id>` CLI subcommand
 
-### Add After Validation (v1.2+)
+### Add After Validation (v1.3+)
 
-- [ ] `POST /memories/compact` with `session_id` scoping — currently agent_id only; add session scoping after collecting feedback on compaction granularity
-- [ ] Streaming progress events for large compaction jobs — add when users report timeouts on large memory sets (>1000 memories)
-- [ ] Compaction history / audit log — add when users ask "what was removed and why?"
+- [ ] Key rotation helper: `mnemonic keys rotate <id>` — creates new key for same agent_id, then revokes old — when users report needing zero-downtime key transitions
+- [ ] Rate limiting per key — add when user feedback confirms runaway-agent protection is needed
+- [ ] Per-endpoint scope flags (read/write/compact) — add when multi-tenant production deployments emerge
+- [ ] Expiry date on keys (`expires_at` column) — add for enterprise deployment contexts
 
-### Out of Scope (Confirmed by PROJECT.md)
+### Confirmed Out of Scope (v1.2)
 
-- [ ] Automatic background compaction — explicitly excluded
-- [ ] Hierarchical summaries — explicitly excluded
-- [ ] Memory decay / TTL — explicitly excluded
-- [ ] Cross-agent compaction — not in scope for any milestone
+- [ ] JWT / OAuth / OIDC — violates zero-external-dependency principle
+- [ ] Web UI for key management — violates single-binary principle (PROJECT.md)
+- [ ] Rate limiting — premature for target user base
+- [ ] Argon2/bcrypt for key hashing — wrong tool for random-token use case
+- [ ] Key rotation grace periods — unnecessary complexity for target scale
 
 ---
 
@@ -128,105 +137,114 @@ The question is not "what is minimum to validate the concept" — v1.0 is alread
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| POST /memories/compact endpoint + routing | HIGH | LOW | P1 |
-| Greedy similarity deduplication (Tier 1) | HIGH | MEDIUM | P1 |
-| Metadata tag merge | MEDIUM | LOW | P1 |
-| Configurable similarity threshold | MEDIUM | LOW | P1 |
-| Compaction response stats | HIGH | LOW | P1 |
-| LLM summarization (Tier 2) | HIGH | HIGH | P1 |
-| Configurable LLM provider (config + validate) | HIGH | MEDIUM | P1 |
-| Time-based weighting (recency_bias) | MEDIUM | LOW | P2 |
-| Dry-run mode | MEDIUM | LOW | P2 |
+| `api_keys` table + schema migration | HIGH | LOW | P1 |
+| `mnk_` key generation + BLAKE3 hash storage | HIGH | LOW | P1 |
+| Open mode (zero-keys = pass-through) | HIGH | LOW | P1 |
+| Axum auth middleware (Bearer + agent_id scope) | HIGH | MEDIUM | P1 |
+| `POST /keys`, `GET /keys`, `DELETE /keys/:id` REST endpoints | HIGH | LOW | P1 |
+| CLI `mnemonic keys create/list/revoke` subcommands | HIGH | MEDIUM | P1 |
+| Admin key (agent_id = NULL) | MEDIUM | LOW | P1 |
+| `last_used_at` timestamp update on auth | MEDIUM | LOW | P1 |
+| `description` field on key | MEDIUM | LOW | P1 |
+| Key rotation helper CLI command | LOW | LOW | P3 |
+| Rate limiting | LOW | HIGH | P3 |
+| Per-endpoint scopes | LOW | HIGH | P3 |
 
 **Priority key:**
-- P1: Must have for v1.1 to be a coherent compaction feature
-- P2: High value, low cost — include in v1.1 unless schedule pressure forces cut
+- P1: Must have for v1.2 to be a coherent, deployable auth system
+- P2: High value, low cost — include if schedule permits
 - P3: Future milestone
 
 ---
 
-## Algorithm Detail: Greedy Pairwise Deduplication
+## Implementation Notes
 
-This section bridges research findings into the implementation decision.
+### Hash Algorithm: BLAKE3 vs SHA-256
 
-**Why greedy pairwise, not DBSCAN/HDBSCAN:**
-- Agent memory sets are small (typically 10–500 per agent_id) — O(n²) pairwise is 250,000 comparisons max, negligible on modern hardware
-- DBSCAN requires ε (distance threshold) and min_samples — not intuitive for users; our single `similarity_threshold` parameter is simpler and maps directly to user intent
-- `petal-clustering` and `hdbscan` Rust crates exist but add dependency weight without benefit at this scale
-- Greedy single-linkage produces predictable, deterministic clusters that are easy to debug and explain in compaction stats
+API keys are 32+ bytes of cryptographically random data. The threat model is a leaked database — not a brute-force attack on weak secrets. Therefore:
 
-**Similarity scoring with time weighting:**
+- **Use BLAKE3 or SHA-256** — both are fast (microseconds), collision-resistant, and purpose-appropriate for authenticating random tokens
+- **Do not use Argon2/bcrypt/scrypt** — these are designed to slow down brute force on weak (human-chosen) passwords. A random 32-byte token has 256 bits of entropy — brute force is computationally infeasible regardless of hash speed. Adding Argon2 only adds ~100ms of latency to every request with no security benefit.
+- **BLAKE3** is available in Rust via the `blake3` crate (MIT licensed, no unsafe, pure Rust or with AVX2 acceleration). SHA-256 via the `sha2` crate. Either is fine — BLAKE3 is faster but both are adequate.
 
-Research from SimpleMem (arXiv 2601.02553) defines the affinity score as:
+Confidence: HIGH (OWASP Password Storage Cheat Sheet distinguishes "password hashing" from "token hashing"; the recommendation to use fast hashes for random tokens is standard).
 
-```
-affinity(i, j) = β · cos(vᵢ, vⱼ) + (1-β) · e^(−λ·|tᵢ − tⱼ|)
-```
-
-Where:
-- `β` = `recency_bias` parameter [0.0, 1.0] — weight between pure semantic vs. temporal closeness
-- `cos(vᵢ, vⱼ)` = cosine similarity from sqlite-vec distance query (convert distance to similarity)
-- `λ` = decay constant (recommend `ln(2) / 7days` so affinity halves every week)
-- `|tᵢ − tⱼ|` = absolute time difference in seconds
-
-At `recency_bias = 0.0` (default), this reduces to pure cosine similarity — identical to v1.0 search behavior. Users who don't set `recency_bias` see no behavioral change.
-
-**Threshold guidance (evidence-based):**
-- 0.70: Discovery threshold — finds loosely related memories for review (AgentZero default)
-- 0.85: Merge threshold — established in SimpleMem paper as cluster formation cutoff
-- 0.90: High-confidence replace — used in AgentZero as "safe replacement" validation gate
-- Recommend: default `similarity_threshold = 0.85`, document the three zones in API reference
-
-**Cluster merge strategy (Tier 1, no LLM):**
-Retain the memory with the earliest `created_at` within the cluster (the "original") and delete the rest, merging their tags into the survivor. This is conservative — oldest memory is most-established information. Alternative (retain newest) risks losing historical context.
-
-**LLM summarization prompt pattern (Tier 2):**
-Research from AgentZero's memory consolidation system shows this structure works in production:
+### Key Format
 
 ```
-System: You are a memory consolidator. Given a cluster of related memories,
-produce a single consolidated memory that preserves all unique information.
-Do not add information not present in the inputs. Be concise.
-
-User: Cluster of {N} related memories from agent '{agent_id}':
-[1] {content_1} (stored: {created_at_1})
-[2] {content_2} (stored: {created_at_2})
-...
-
-Produce a single consolidated memory. Output only the memory text, no preamble.
+mnk_[base62-encoded 32 random bytes]
 ```
 
-The consolidated summary is stored as a new memory (new UUID, `created_at = now()`, merged tags), then all cluster members are deleted. This is the "replace with summary" strategy used by Mem0, AgentZero, and SimpleMem.
+Example: `mnk_7xK9mP2nQvR4sT6uW8yZ0aB1cD3eF5g`
+
+- `mnk_` prefix: 4 characters, identifies the service in logs/grep/secret scanners
+- 32 random bytes = 256 bits entropy via `rand::thread_rng().fill_bytes()`
+- Base62 encoding (a-z, A-Z, 0-9): URL-safe, no special characters, easy to copy-paste
+- Total length: ~47 characters — comparable to GitHub's 40-char tokens
+
+### Open Mode Logic
+
+The simplest correct implementation:
+
+```rust
+// In auth middleware:
+let active_key_count: i64 = db.query_row(
+    "SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL", [], |r| r.get(0)
+)?;
+if active_key_count == 0 {
+    return next.call(req).await; // open mode
+}
+// ... proceed with Bearer token check
+```
+
+Caveat: this query runs on every request. For a single-process SQLite server handling 100s of req/s, this is negligible (SQLite COUNT(*) on a small indexed table is microseconds). An `Arc<AtomicBool>` flag updated on key create/revoke is a valid optimization if profiling shows it matters — but is premature for v1.2.
+
+### Middleware Placement in axum
+
+The auth middleware should wrap the entire router except `GET /health`. Pattern:
+
+```rust
+Router::new()
+    .route("/health", get(health_handler))  // unauthenticated
+    .nest("/", authenticated_routes())
+    .layer(AuthMiddlewareLayer::new(db_arc))
+```
+
+Alternatively, use axum's `from_request` extractor on a `ValidatedKey` type — this is idiomatic in axum and avoids the need for a separate middleware layer. The extractor approach is preferred in the axum ecosystem for per-request auth because it composes cleanly with handler signatures.
 
 ---
 
-## Competitor Compaction Feature Analysis
+## Competitor / Reference Analysis
 
-| Feature | Mem0 | AgentZero | SimpleMem (research) | Mnemonic v1.1 |
-|---------|------|-----------|----------------------|----------------|
-| Trigger mechanism | Implicit on every write | Explicit call | Asynchronous background | Explicit API call (agent-triggered) |
-| Dedup threshold | Not published | 0.70 (discovery), 0.90 (replace) | 0.85 | Configurable, default 0.85 |
-| Time-based weighting | No | No | Yes (β decay formula) | Yes (recency_bias param) |
-| LLM required | Yes (always) | Yes (always) | Yes (always) | No (Tier 1 is pure algorithmic) |
-| Dry-run preview | No | No | No | Yes |
-| Single-binary friendly | No (Python) | No (Python) | Research only | Yes (Rust, no new external deps) |
-| Cluster strategy | LLM decides | Greedy + LLM | Affinity clustering | Greedy pairwise + optional LLM |
-| Response stats | Partial | Metadata only | Not applicable | Full stats (before/after counts) |
+| Feature | Stripe | GitHub | Ollama | Mnemonic v1.2 |
+|---------|--------|--------|--------|----------------|
+| Key prefix | `sk_live_`, `sk_test_`, `rk_` | `ghp_`, `ghu_`, `gha_` | No auth | `mnk_` |
+| Hash storage | Yes (SHA-256 equivalent) | Yes | N/A | Yes (BLAKE3) |
+| Show once | Yes | Yes | N/A | Yes |
+| Scoping | Restricted key permissions | Repository/org scopes | N/A | agent_id namespace |
+| Open mode | No (always required) | No (always required) | Yes (default open) | Yes (default open, auth on first key) |
+| CLI management | Stripe CLI | GitHub CLI | N/A | `mnemonic keys` |
+| Key metadata | Name, created, last used | Note, created, last used | N/A | Description, agent_id, created, last used |
+| Rate limiting | Yes (plan-based) | Yes (GitHub limits) | No | No (v1.2) |
+| Key rotation | Create + revoke | Create + revoke | N/A | Create + revoke (v1.2), rotate helper (v1.3+) |
+
+Ollama's "open by default" pattern is the most relevant precedent for Mnemonic — Ollama is a local inference server that recently added optional auth via `OLLAMA_API_KEY` env var. When not set, it runs open. This is exactly the UX model Mnemonic should follow.
 
 ---
 
 ## Sources
 
-- [SimpleMem: Efficient Lifelong Memory for LLM Agents (arXiv 2601.02553)](https://arxiv.org/html/2601.02553v1) — Affinity formula with time weighting, 0.85 threshold for cluster formation. HIGH confidence.
-- [AgentZero Memory Consolidation System (DeepWiki)](https://deepwiki.com/frdel/agent-zero/4.3-memory-consolidation-system) — 0.70 discovery threshold, 0.90 replace safety threshold, five consolidation strategies (SKIP/KEEP_SEPARATE/MERGE/REPLACE/UPDATE), LLM prompt structure. HIGH confidence.
-- [Jason Liu: Two Experiments on Agent Compaction](https://jxnl.co/writing/2025/08/30/context-engineering-compaction/) — Compaction is an active research problem; field lacks empirical consensus on thresholds. LOW confidence on universality of any single threshold.
-- [Factory.ai: Evaluating Context Compression](https://factory.ai/news/evaluating-compression) — Structure forces preservation; incremental merge outperforms full regeneration. MEDIUM confidence.
-- [Supermemory: Infinitely Running Stateful Coding Agents](https://supermemory.ai/blog/infinitely-running-stateful-coding-agents/) — Preemptive compaction at 80% context usage; preserve negative constraints verbatim. MEDIUM confidence.
-- [petal-clustering crate (crates.io)](https://crates.io/crates/petal-clustering) — Pure Rust DBSCAN/HDBSCAN available; not recommended at typical memory set sizes. HIGH confidence on existence.
-- [hdbscan crate (crates.io)](https://crates.io/crates/hdbscan) — Pure Rust HDBSCAN available. HIGH confidence on existence.
-- [NVIDIA SemDedup](https://docs.nvidia.com/nemo-framework/user-guide/25.07/datacuration/semdedup.html) — Semantic deduplication reduces dataset size 20-50%. MEDIUM confidence on applicability to agent memory.
-- [Widemem: importance scoring, decay, conflict resolution (Hugging Face Forums)](https://discuss.huggingface.co/t/widemem-open-source-memory-layer-for-llms-with-importance-scoring-decay-and-conflict-resolution/174269) — Exponential decay with half-life parameterization; `recencyScore = exp(-decayRate * ageInHours)`. MEDIUM confidence.
+- [API Key Management Best Practices (OneUptime, 2026)](https://oneuptime.com/blog/post/2026-02-20-api-key-management-best-practices/view) — prefix conventions, hash storage, key generation. HIGH confidence.
+- [How prefix.dev implemented API keys](https://prefix.dev/blog/how_we_implented_api_keys) — Argon2 for keys (noted but not recommended here — see Hash Algorithm note), pfx_ prefix pattern, show-once UX. MEDIUM confidence on Argon2 recommendation (overridden by OWASP reasoning).
+- [Best practices for building secure API Keys (freeCodeCamp)](https://www.freecodecamp.org/news/best-practices-for-building-api-keys-97c26eabfea9/) — 32-byte minimum, prefix for identification, scope restrictions. HIGH confidence.
+- [Stripe API Keys Documentation](https://docs.stripe.com/keys) — sk_live_ / sk_test_ / rk_ prefix conventions, restricted keys, show-once pattern. HIGH confidence (authoritative source).
+- [On API Keys Best Practices (Mergify)](https://articles.mergify.com/api-keys-best-practice/) — prefix design rationale, scoping approach. MEDIUM confidence.
+- [Rotate API keys (Paddle Developer Docs)](https://developer.paddle.com/api-reference/about/rotate-api-keys) — grace period overlap pattern (noted as anti-feature for Mnemonic's scale). HIGH confidence on the pattern.
+- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) — distinction between password hashing and token hashing. HIGH confidence.
+- [Axum authentication with Bearer tokens (rust-classes.com)](https://rust-classes.com/chapter_7_4) — axum extractor pattern for Bearer auth. MEDIUM confidence.
+- [Simple API Key Auth in Axum (ruststepbystep.com)](https://www.ruststepbystep.com/simple-api-key-authentication-in-axum-step-by-step-guide/) — middleware layer pattern for axum. MEDIUM confidence.
+- [API Authentication Best Practices 2026 (DEV Community)](https://dev.to/apiverve/api-authentication-best-practices-in-2026-3k4a) — current landscape. MEDIUM confidence.
 
 ---
-*Feature research for: Mnemonic v1.1 memory summarization / compaction milestone*
+*Feature research for: Mnemonic v1.2 API key authentication milestone*
 *Researched: 2026-03-20*

@@ -1,7 +1,7 @@
 # Pitfalls Research
 
 **Domain:** Rust agent memory server — embedded SQLite + vector search + local ML inference
-**Researched:** 2026-03-19 (v1.0); 2026-03-20 (v1.1 compaction addendum)
+**Researched:** 2026-03-19 (v1.0); 2026-03-20 (v1.1 compaction addendum); 2026-03-20 (v1.2 authentication addendum)
 **Confidence:** HIGH (critical pitfalls verified via official docs and known issues; performance numbers from benchmarks)
 
 ---
@@ -427,6 +427,329 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 
 ---
 
+## Authentication-Specific Pitfalls (v1.2)
+
+The following pitfalls apply specifically to adding optional API key authentication to an existing unauthenticated Rust/axum server. They are grouped by risk category: security mistakes, migration mistakes, scope-enforcement gaps, SQLite-specific concerns, and UX pitfalls for CLI key management.
+
+---
+
+### Auth Pitfall 1: Non-Constant-Time Key Comparison (Timing Attack)
+
+**What goes wrong:**
+The `==` operator on Rust `String` or `&str` performs a lexicographic comparison that short-circuits on the first mismatched byte. An attacker who can measure response latency with sufficient resolution can exploit this: a key guess that shares the first N characters with the real key takes slightly longer to reject than one that differs in the first byte. By iterating character-by-character and selecting the guess that takes longest, the attacker can reconstruct the full key in O(len * charset) guesses rather than O(charset^len) brute-force guesses. This vulnerability was disclosed as CVE-2025-59425 against vLLM (GHSA-wr9h-g72x-mwhm, rated High), and it applies to any server performing `key_from_request == stored_key` with a plain equality comparison.
+
+The attack is especially practical over a local network where jitter is low, or against a server with consistent response times.
+
+**Why it happens:**
+String equality is the obvious comparison. The vulnerability is not visible from reading the code — it is a side-channel that requires understanding how string comparison is implemented in hardware. Developers who know about timing attacks often assume "the network noise will drown it out" — a false assumption on local networks or when statistical averaging is applied over many samples.
+
+**How to avoid:**
+Use the `subtle` crate's `ConstantTimeEq` trait (maintained by dalek-cryptography, widely used in Rust crypto libraries):
+
+```rust
+use subtle::ConstantTimeEq;
+
+// Compare the SHA-256 hash of the incoming key against the stored hash.
+// Both are [u8; 32], comparison is constant-time regardless of content.
+let provided_hash: [u8; 32] = sha256(incoming_key_bytes);
+let stored_hash: [u8; 32] = load_stored_hash(key_id);
+if provided_hash.ct_eq(&stored_hash).into() {
+    // authorized
+}
+```
+
+Note: constant-time comparison of hashes (not raw keys) is the correct pattern. Comparing raw key strings against a database of hashed keys is already structurally correct — you hash the incoming key first, then compare hashes with `ct_eq`. This double-layers the protection: the attacker cannot learn anything useful from the timing of a hash comparison that does not correspond to the stored value.
+
+**Warning signs:**
+- Auth middleware uses `if provided_key == stored_key` or `provided_key.eq(stored_key)`.
+- No `subtle` or `constant_time_eq` dependency in Cargo.toml.
+- Key comparison happens before or instead of hashing.
+
+**Phase to address:** Auth middleware implementation phase. Must be the first thing verified before the middleware goes live.
+
+---
+
+### Auth Pitfall 2: Storing API Keys in Plaintext in the Database
+
+**What goes wrong:**
+If the `api_keys` table stores full plaintext key values (e.g., `mnk_abc123...`), a single SQLite file read — from a backup, a misconfigured file permission, a path traversal exploit, or an insider threat — exposes every key for every agent. There is no second factor of protection. An attacker who reads the database file can immediately impersonate any agent.
+
+**Why it happens:**
+Developers who are familiar with symmetric encryption may think "encrypt at rest" is sufficient and store full keys. Others skip hashing because they want to display the key to users on a "list keys" command. The plaintext pattern also makes auth middleware simpler: just `SELECT key FROM api_keys WHERE key = ?`.
+
+**How to avoid:**
+Store a SHA-256 hash of the key, not the key itself. The recommended schema pattern:
+
+```sql
+CREATE TABLE api_keys (
+    id          TEXT PRIMARY KEY,          -- short identifier, e.g. first 8 chars of key
+    key_hash    TEXT NOT NULL UNIQUE,      -- hex(SHA-256(full_key))
+    agent_id    TEXT NOT NULL,             -- scope: which agent this key authorizes
+    label       TEXT,                      -- human-readable name (e.g. "production agent")
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+);
+CREATE INDEX idx_api_keys_hash ON api_keys(key_hash);
+```
+
+Auth flow:
+1. Extract key from `Authorization: Bearer mnk_...` header.
+2. Compute `SHA-256(key)` in the middleware.
+3. Query `SELECT agent_id FROM api_keys WHERE key_hash = ?` with the hex hash.
+4. Compare hashes with `subtle::ConstantTimeEq` — the SQL lookup is by exact hash match, but the in-memory comparison before using the result should still be constant-time to prevent partial-hash oracle attacks.
+
+SHA-256 (not bcrypt/argon2) is appropriate here because API keys are high-entropy random strings (not low-entropy user passwords). bcrypt and argon2 are designed for low-entropy inputs; for a 32-byte random key, SHA-256 is computationally equivalent protection and performs in microseconds rather than hundreds of milliseconds.
+
+**Warning signs:**
+- `api_keys` table has a `key TEXT` column queried with `WHERE key = ?`.
+- `mnemonic keys list` command outputs the full key value.
+- No hashing step between key receipt and database lookup.
+
+**Phase to address:** Auth schema design phase — must be decided before any keys are generated or stored.
+
+---
+
+### Auth Pitfall 3: Breaking Existing Deployments When Auth Is Added (Migration Cliff)
+
+**What goes wrong:**
+An existing user has mnemonic deployed in open mode with agents writing memories. The v1.2 update ships and auth is now available. If the migration is handled incorrectly, one of two bad outcomes occurs:
+
+1. **Immediate lockout:** Auth is enabled by default or tied to the binary version. All existing agents get 401 errors as soon as they upgrade. Agents that cannot be reconfigured immediately lose access to their memories.
+2. **Silent open mode forever:** Auth is opt-in but the transition path is unclear. Users who want to secure their deployment don't know how to activate it, and the system is silently insecure even after upgrading.
+
+**Why it happens:**
+The "optional auth" design is conceptually simple but the migration path needs to be explicitly designed. Developers building the feature think from a greenfield perspective ("the user creates keys and then they're active") without considering the deployed-without-keys state.
+
+**How to avoid:**
+Implement the "auto-activate when keys exist" pattern explicitly and document it clearly:
+- If zero rows exist in `api_keys`, all requests are permitted (open mode — backward compatible).
+- If one or more rows exist in `api_keys`, auth is enforced on all endpoints (except `/health`).
+- The transition is user-controlled: the user creates the first key via `mnemonic keys create`, at which point auth activates.
+- Document this behavior prominently in the upgrade notes and in the server startup log: `"Auth mode: OPEN (no keys configured) — run 'mnemonic keys create' to enable authentication"`.
+
+The `api_keys` table must be added as a migration (not a fresh schema) so existing databases pick it up on first startup after upgrade. Use the same error-swallowing migration pattern already established in v1.1 (catch `extended_code == 1` for "table already exists").
+
+**Warning signs:**
+- Auth enforcement is controlled by a config flag rather than key existence.
+- Startup does not log whether the server is in open or auth mode.
+- No documentation explaining the open → auth transition path.
+- Integration tests do not include an "upgrade from open-mode DB" scenario.
+
+**Phase to address:** Auth schema migration phase — the first phase of v1.2 implementation, before any key generation logic.
+
+---
+
+### Auth Pitfall 4: Scope Enforcement Gap — Key Authorizes More Than Its `agent_id`
+
+**What goes wrong:**
+A key is created with `agent_id = "agent-A"`. The middleware validates the key correctly and extracts the authorized `agent_id`. However, the handler for `POST /memories` or `GET /memories/search` reads `agent_id` from the **request body or query parameter**, not from the authenticated key. An attacker with a valid key for `agent-A` can include `agent_id = "agent-B"` in the request body and read or write agent-B's memories.
+
+This is the agent equivalent of a horizontal privilege escalation (IDOR — Insecure Direct Object Reference). The key proves identity; the middleware does not enforce that the identity matches the requested resource.
+
+**Why it happens:**
+The middleware validates the key and marks the request as "authenticated." The handler then accepts `agent_id` from the caller as a trusted value, treating auth and authorization as separate concerns handled in separate places — but the authorization half never closes the loop. This pattern is extremely common in API security incidents.
+
+**How to avoid:**
+The middleware must inject the authenticated `agent_id` into request extensions after key validation:
+
+```rust
+// In auth middleware, after key lookup succeeds:
+request.extensions_mut().insert(AuthenticatedAgentId(key_record.agent_id.clone()));
+```
+
+Handlers must then extract the authorized `agent_id` from extensions, **not from the request body or query string**. If the request body also contains an `agent_id`, either ignore it entirely (use only the extension value) or assert it matches (return 403 if it differs).
+
+In open mode (no keys), set `AuthenticatedAgentId("*")` or a sentinel that signals no scope restriction — this preserves backward compatibility while enabling handlers to use the same code path.
+
+**Warning signs:**
+- Handlers extract `agent_id` from `Query<Params>` or `Json<Body>` after auth middleware has run, without cross-checking against the key's authorized scope.
+- No `AuthenticatedAgentId` extension type in the codebase.
+- Integration test does not attempt to use `key-for-agent-A` to access `agent-B`'s memories and verify a 403 response.
+
+**Phase to address:** Auth middleware implementation phase. Scope injection must be in the middleware design, not retrofitted into handlers after the fact.
+
+---
+
+### Auth Pitfall 5: Health Endpoint Behind Auth Breaks Monitoring and Liveness Probes
+
+**What goes wrong:**
+The axum middleware is applied at the router level and intercepts every request including `GET /health`. After auth is enabled, monitoring systems, Docker health checks, and Kubernetes liveness probes that call `/health` without a Bearer token start receiving 401 responses. The server appears unhealthy to the infrastructure layer even though it is running correctly. In Docker/K8s environments, this causes the container to restart in a restart loop.
+
+**Why it happens:**
+The `layer()` call in axum applies middleware to all routes on the router unless explicitly excluded. The health endpoint does not need authentication — its purpose is to report liveness to infrastructure, which has no concept of agent API keys. Developers applying auth as a blanket layer do not consider unauthenticated consumers.
+
+**How to avoid:**
+Apply auth middleware selectively, not globally. There are two clean patterns in axum:
+
+**Pattern 1: Split router with nested auth layer**
+```rust
+let protected = Router::new()
+    .route("/memories", ...)
+    .route("/memories/search", ...)
+    .route("/memories/{id}", ...)
+    .route("/memories/compact", ...)
+    .layer(from_fn_with_state(state.clone(), auth_middleware));
+
+let public = Router::new()
+    .route("/health", get(health_handler));
+
+Router::new()
+    .merge(protected)
+    .merge(public)
+    .with_state(state)
+```
+
+**Pattern 2: Path-based bypass inside the middleware**
+Check `request.uri().path()` at the start of the middleware function and call `next.run(request).await` immediately for `/health`.
+
+Pattern 1 is preferred because it is explicit — new routes added to `protected` are automatically covered, and new routes added to `public` are explicitly unauthenticated. Pattern 2 requires keeping a bypass list in sync with the router.
+
+**Warning signs:**
+- `build_router()` applies `.layer(auth_middleware)` to the entire `Router`.
+- Health check in Docker Compose or CI starts failing after auth is enabled.
+- No test asserting `GET /health` returns 200 without an Authorization header when auth is active.
+
+**Phase to address:** Auth middleware implementation phase. Router structure must be designed with the split before middleware is applied.
+
+---
+
+### Auth Pitfall 6: `mnemonic keys create` Displays the Key in Logs or Stores It in Shell History
+
+**What goes wrong:**
+The CLI subcommand `mnemonic keys create` generates a new key and outputs it once. If the output is also written to a structured log (via `tracing::info!` or similar), the full plaintext key appears in any log aggregator, file, or system journal the operator uses. Additionally, the generated key may appear in shell history if the user runs `mnemonic keys create --key <value>` (accepting a user-specified key rather than a server-generated one), or if the output is piped through commands that log their arguments.
+
+**Why it happens:**
+`tracing` is used throughout the codebase for operational observability. It is natural to add a `tracing::info!("Created key: {}", key)` line. The developer who writes this line is thinking about debuggability, not that this log line will appear in a centralized log aggregator accessible to anyone with log access.
+
+**How to avoid:**
+- Never log the full key value at any tracing level. Log only the key ID (short prefix) and the associated `agent_id`: `tracing::info!(key_id = %key.id, agent_id = %key.agent_id, "API key created")`.
+- Print the full key only to stdout via `println!` in the CLI command, with an explicit warning: `"Key created. Copy it now — it will not be shown again:\n\n  {key}\n"`.
+- Do not accept user-specified key values as CLI arguments (they appear in shell history and `ps aux`). Always generate keys server-side.
+- The `key_hash` column in SQLite never contains the original key, so there is no recovery path — make the "copy it now" warning impossible to miss.
+
+**Warning signs:**
+- Any `tracing::info!` or `tracing::debug!` call that formats a `key` variable containing the full `mnk_...` string.
+- CLI key creation accepts `--value <key>` as a flag.
+- No "you won't see this again" warning in the CLI output.
+
+**Phase to address:** CLI key management implementation phase (mnemonic keys create/list/revoke).
+
+---
+
+### Auth Pitfall 7: `mnemonic keys list` Leaks Key Prefixes That Enable Enumeration
+
+**What goes wrong:**
+The `mnemonic keys list` command needs to help users identify which key is which (since the full key is only shown once). The temptation is to display the first 8-16 characters of the key for identification. If the prefix is long enough (>6 chars), it materially reduces the search space for brute-force attacks: an attacker who sees `mnk_a3f8b2c1...` needs only to brute-force the remaining characters rather than the full key length.
+
+**Why it happens:**
+The identification problem is real — users genuinely cannot tell keys apart from the metadata alone, especially if they have multiple keys for the same agent. Displaying a short prefix feels like a reasonable UX tradeoff.
+
+**How to avoid:**
+Store a **separate** short identifier that is not a prefix of the actual key. The recommended pattern (used by Stripe, GitHub, prefix.dev):
+
+1. At key generation time, the full key is `mnk_<random_32_bytes_hex>`. The identifier is the **first 8 hex characters of the SHA-256 hash of the key** — not a prefix of the key itself.
+2. Store this identifier in the `id` column of `api_keys`.
+3. `mnemonic keys list` displays: `[a3f8b2c1]  agent-A  "Production agent"  created 2026-03-20`
+4. The identifier `a3f8b2c1` cannot be used to reconstruct any portion of the key or reduce the brute-force search space.
+
+Alternatively, use a separate random short token (e.g., 6 random alphanumeric chars) as the key ID, completely independent of the key's content.
+
+**Warning signs:**
+- `mnemonic keys list` output shows the first N characters of the actual `mnk_...` key string.
+- The `id` column in `api_keys` is set to `key[..8]` (a substring of the plaintext key).
+- No test asserting that the list output does not contain any substring of a generated key.
+
+**Phase to address:** Auth schema design + CLI key management implementation phase (both must agree on the key ID scheme before either is coded).
+
+---
+
+### Auth Pitfall 8: SQLite `api_keys` Table Added Without a Proper Migration
+
+**What goes wrong:**
+The `api_keys` table is a new addition to an existing database schema. If the startup code runs `CREATE TABLE api_keys (...)` without checking for existence on an existing database, it fails with "table already exists" — crashing startup for all users on their second run. Conversely, if the CREATE is wrapped in `CREATE TABLE IF NOT EXISTS` but the migration tracking is not updated (e.g., if `user_version` is used for migration state as `rusqlite_migration` does), the migration system may re-apply earlier migrations or misidentify the current schema state.
+
+A second failure mode: the `api_keys` table is added but the index `CREATE INDEX idx_api_keys_hash ON api_keys(key_hash)` is omitted. Every auth check becomes a full table scan. With hundreds of keys, this is still fast; but the index should be present from day one to avoid a forgotten follow-up migration.
+
+**Why it happens:**
+The v1.1 codebase already uses the error-swallowing `ALTER TABLE ADD COLUMN` pattern for idempotent schema evolution. Developers cargo-cult this pattern for `CREATE TABLE`, but the error codes differ — `ALTER TABLE` on an existing column returns `extended_code == 1`; `CREATE TABLE` on an existing table returns a different error that may not be swallowed correctly.
+
+**How to avoid:**
+Use `CREATE TABLE IF NOT EXISTS` for all new tables. Add the index with `CREATE INDEX IF NOT EXISTS`. Verify both with an explicit startup check — query `SELECT name FROM sqlite_master WHERE type='table' AND name='api_keys'` and log a startup assertion. If using a migration version counter, increment it for the v1.2 schema change and test the migration path from a v1.1 database.
+
+```sql
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           TEXT PRIMARY KEY,
+    key_hash     TEXT NOT NULL UNIQUE,
+    agent_id     TEXT NOT NULL,
+    label        TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+```
+
+**Warning signs:**
+- `CREATE TABLE api_keys` without `IF NOT EXISTS` in the schema initialization code.
+- No integration test that opens an existing v1.1 database and verifies startup succeeds.
+- No index on `key_hash` column.
+- `user_version` or migration counter not incremented for v1.2.
+
+**Phase to address:** Auth schema migration phase — the first thing built in v1.2, before any auth logic.
+
+---
+
+### Auth Pitfall 9: Key Revocation Not Reflected Immediately (Stale In-Memory Cache)
+
+**What goes wrong:**
+To avoid hitting SQLite on every request, the auth middleware caches a set of valid key hashes in memory (e.g., `Arc<RwLock<HashSet<String>>>`). When `mnemonic keys revoke <key_id>` is called, the key is deleted from the database but the in-memory cache still contains it. The revoked key continues to be accepted until the server restarts or the cache TTL expires. In a network deployment scenario where a key is compromised and the user revokes it urgently, the attacker retains access for the cache lifetime.
+
+**Why it happens:**
+Caching is an obvious performance optimization when the alternative is a database round-trip on every HTTP request. The cache invalidation problem is recognized in principle but "we'll handle it later" — and then the revocation path is coded without cache invalidation because the cache was added first.
+
+**How to avoid:**
+For mnemonic's scale (a single-binary tool serving one user or small team, typically with <100 keys), there is no performance reason to cache key lookups. SQLite reads from WAL mode are extremely fast (<1ms for an indexed lookup). The recommendation is to skip caching entirely for v1.2 and always hit the DB.
+
+If caching is added in a future version: the `mnemonic keys revoke` command must write to the DB and then trigger an in-process cache invalidation (via a tokio channel message to the auth middleware). The cache TTL should be short (max 30 seconds) regardless of channel-based invalidation, as a safety net.
+
+**Warning signs:**
+- `AppState` contains a `HashMap` or `HashSet` of valid key hashes that is populated at startup and never updated.
+- `mnemonic keys revoke` only issues a `DELETE` SQL statement with no cache invalidation side effect.
+- No test asserting that a revoked key is rejected on the next request.
+
+**Phase to address:** Auth middleware implementation phase. Decide "cache or no cache" before building the middleware; document the decision.
+
+---
+
+### Auth Pitfall 10: Open Mode Accepts Requests With Invalid Bearer Tokens
+
+**What goes wrong:**
+The "open mode when no keys exist" semantic creates an ambiguous behavior: what should the server do when it is in open mode but a request arrives with a malformed or invalid `Authorization: Bearer xyz` header? Two wrong answers:
+
+1. **Accept the request silently:** The caller sent what looks like a key and was not rejected. If the user later adds keys (activating auth mode), they assume the transition is clean — but agents that sent wrong keys in open mode will now be rejected, and the operator cannot tell whether the "wrong key" was intentional or a misconfiguration.
+
+2. **Reject the request with 401:** This breaks the "open by default" contract. An agent that sends any Authorization header for future-proofing is rejected even though auth is not active yet.
+
+The correct semantic is subtle and easy to get wrong.
+
+**How to avoid:**
+In open mode, the correct behavior is:
+- **No Authorization header:** Accept. (Standard open-mode request.)
+- **`Authorization: Bearer mnk_...` that is a syntactically valid key:** Attempt validation. If validation fails (no matching hash in DB), return 401 even in open mode. Rationale: a caller that sends a key is declaring intent to authenticate; a wrong key is an error, not a fallback to open access.
+- **Malformed Authorization header (not Bearer, garbage value):** Return 400 Bad Request with a clear error message. Do not silently ignore it.
+
+This behavior ensures that enabling auth (by adding the first key) does not silently break callers that were relying on "wrong key = open access."
+
+Document this behavior in the API spec and in the startup log.
+
+**Warning signs:**
+- Middleware returns early with "open mode, allow all" without inspecting whether a Bearer token was present.
+- No test for "open mode + wrong key → 401" or "malformed Authorization → 400."
+- API documentation does not specify open-mode behavior when a token is present.
+
+**Phase to address:** Auth middleware implementation phase. Write the open-mode behavior test before the middleware code.
+
+---
+
 ## Technical Debt Patterns
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
@@ -441,6 +764,12 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 | Passing raw memory content strings into LLM prompt | Simplest summarization code | Prompt injection attack surface from malicious stored content | Never — always delimit content as data, not instructions |
 | No dry_run mode for compaction | Simpler API surface | No way to validate threshold tuning before committing irreversible merges | Never — add dry_run before shipping compaction to users |
 | CPU-bound clustering in async fn | No spawn_blocking boilerplate | Starves tokio executor, making all requests slow during compaction | Never — always spawn_blocking for CPU-intensive work |
+| Storing plaintext API keys in SQLite | Simpler auth middleware (direct string compare) | Single file read exposes all keys; no second factor of protection | Never — hash with SHA-256 before storage |
+| Using `==` to compare API keys | No extra dependency | Timing attack: attacker can guess key character-by-character | Never — use `subtle::ConstantTimeEq` on hashes |
+| Auth enabled by config flag instead of key existence | Explicit control over auth mode | Migration cliff: upgrading users are either locked out or silently unsecured | Never — auto-activate on first key creation |
+| In-memory key hash cache without invalidation | Faster auth middleware (no DB per request) | Revoked keys remain valid until server restart | Never at this scale — SQLite indexed lookup is <1ms; skip the cache |
+| Applying auth middleware to all routes including `/health` | Simpler middleware wiring | Health checks and monitoring break when auth activates | Never — always exclude `/health` from auth |
+| Displaying key prefix (first N chars) in `keys list` | Users can visually identify keys | Reduces brute-force search space; partial key exposure | Never — use a hash-derived identifier instead |
 
 ---
 
@@ -456,6 +785,10 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 | LLM summarization API | No timeout set on HTTP client for LLM calls | Set explicit connect_timeout (5s) and read_timeout (30s); treat timeout as fallback-to-Tier-1 signal |
 | LLM summarization API | No max_tokens set on completion request | Always set max_tokens; prevents runaway generation and cost overruns |
 | LLM summarization API | Retrying LLM failures without backoff or max retry cap | Exponential backoff with max 2 retries; then fail-fast and fall back to Tier 1 |
+| axum auth middleware + `from_fn_with_state` | Using `from_fn` instead of `from_fn_with_state` when middleware needs DB access | Use `from_fn_with_state(state.clone(), auth_fn)` to pass AppState into middleware; `from_fn` has no access to state |
+| axum auth middleware + request extensions | Forgetting to call `next.run(request).await` after mutating extensions | Extensions are set on the Request before calling next; if next is not called, the handler never runs |
+| subtle crate + SHA-256 hash comparison | Comparing `Vec<u8>` instead of `[u8; 32]` | `ConstantTimeEq` is implemented on fixed-size byte arrays; convert SHA-256 output to `[u8; 32]` before calling `ct_eq` |
+| rusqlite `api_keys` migration | Using `CREATE TABLE` without `IF NOT EXISTS` on an existing database | Always use `CREATE TABLE IF NOT EXISTS`; verify with a startup assertion query |
 
 ---
 
@@ -472,6 +805,8 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 | Compaction clustering in async fn without spawn_blocking | All concurrent requests slow during compaction | Move distance matrix computation to `spawn_blocking` or `rayon` | First compaction run on >1K memories |
 | SQLite write lock held during LLM API call | All write operations time out during compaction | Never open a write transaction before receiving LLM response | First LLM-backed compaction with >2s LLM latency |
 | Unbounded cluster size passed to LLM | Token limit exceeded, API returns error, retry loop burns cost | Cap cluster size at 20 memories / 4000 tokens per LLM call | First compaction on a large cluster |
+| Auth middleware doing full table scan on `api_keys` | Auth latency grows linearly with number of keys | Index `key_hash` column; `CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)` | >100 keys (still fast, but add the index from day one) |
+| SHA-256 hashing on every auth request without index | Hash is cheap; table scan is not | The hash computation is ~1µs; the bottleneck is the unindexed lookup — not the hash | Any production deployment; add the index |
 
 ---
 
@@ -487,6 +822,12 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 | Raw memory content in LLM summarization prompt | Indirect prompt injection: malicious stored content manipulates summarization output, poisoning future memories | Delimit memory content in prompts with explicit data framing tags; treat LLM output as untrusted until validated |
 | No compaction rate limiting per agent | Misbehaving or compromised agent calls compact in a loop, burning LLM token budget | Rate-limit POST /memories/compact per agent_id; enforce maximum LLM calls per request |
 | Compact endpoint without agent_id scoping | Cross-agent data contamination if clustering does not enforce namespace isolation | Require agent_id in compact request; enforce it as a hard WHERE filter in all clustering queries |
+| Plaintext API key storage in SQLite | DB file theft exposes all keys with no second factor | Store SHA-256(key) as hex; never store or log the original key value after initial display |
+| Non-constant-time key comparison | Timing attack allows character-by-character key reconstruction | Use `subtle::ConstantTimeEq` to compare key hashes; never compare raw keys with `==` |
+| Auth middleware applied to `/health` endpoint | Health checks break when auth activates, causing container restart loops | Split the router: auth layer applied only to `/memories*` routes; `/health` remains public |
+| Scope enforcement gap: `agent_id` from request body overrides key scope | Key for agent-A can access agent-B's memories by sending `agent_id: agent-B` in the body | Inject authorized `agent_id` from the key record into request extensions; handlers must use the extension, not the body |
+| Logging full API key on creation | Key appears in log files, aggregators, system journal | Log only key ID and agent_id; print full key only to stdout with a "copy now" warning |
+| Displaying key prefix in `keys list` | Reduces brute-force search space; partial exposure | Use hash-derived short ID (first 8 hex chars of SHA-256 of key) as the display identifier |
 
 ---
 
@@ -502,6 +843,10 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 | Compact response does not report what changed | Agents cannot update cached ID references or validate that compaction did anything | Return `{ merged: N, skipped: M, new_ids: [...], source_ids: [...] }` in compact response |
 | No dry_run mode for compaction | Agents cannot validate threshold settings without committing irreversible changes | Implement `dry_run: true` request parameter that returns proposed clusters without executing merges |
 | Compact endpoint returns success when LLM partially failed | Agent assumes all memories were compacted; some clusters actually unchanged | Return per-cluster status: `{ clusters: [{ status: "merged" }, { status: "failed", reason: "llm_timeout" }] }` |
+| No startup message indicating auth mode (open vs. active) | Users cannot tell if their deployment is secured without reading the database | Log on startup: "Auth mode: OPEN (no API keys configured)" or "Auth mode: ACTIVE (N keys registered)" |
+| `mnemonic keys create` with no warning about one-time display | User closes terminal without copying the key; key is lost; must revoke and recreate | Print key with prominent warning before and after; consider requiring `--confirm-copied` flag |
+| `mnemonic keys list` shows no useful metadata | User has 3 keys for the same agent and cannot tell which is which | Display: key ID, agent_id, label (set at creation time), created_at, last_used_at |
+| 401 response body gives no hint about auth mode | Developer troubleshooting connection failures cannot tell if auth is active or if the key format is wrong | Include `{ "error": "unauthorized", "auth_mode": "active", "hint": "Provide Authorization: Bearer mnk_..." }` in 401 body |
 
 ---
 
@@ -526,6 +871,15 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 - [ ] **Compact response includes ID mapping:** Response body maps each new memory ID to its source IDs so callers can update cached references.
 - [ ] **dry_run mode works:** A compact request with `dry_run: true` returns proposed clusters without modifying the DB. Verify with a before/after memory count.
 - [ ] **spawn_blocking for clustering:** CPU-intensive similarity computation runs inside `tokio::task::spawn_blocking`, not directly in an async function.
+- [ ] **API keys hashed at rest:** `api_keys` table contains `key_hash TEXT` (hex SHA-256), not the raw key. Verify no raw `mnk_...` strings appear in the DB.
+- [ ] **Constant-time comparison in auth middleware:** Key hash comparison uses `subtle::ConstantTimeEq`, not `==`. Grep for any `== stored_hash` comparison in middleware code.
+- [ ] **Health endpoint unauthenticated:** `GET /health` returns 200 without any Authorization header, even when auth mode is active.
+- [ ] **Scope enforcement closes the loop:** Handlers extract `agent_id` from request extensions (set by middleware), not from the request body or query string. Verify with a test: key for agent-A + request body `agent_id: agent-B` → 403.
+- [ ] **`api_keys` migration uses IF NOT EXISTS:** Startup succeeds on an existing v1.1 database. Integration test opens v1.1 DB file and verifies v1.2 startup succeeds.
+- [ ] **`key_hash` column is indexed:** `EXPLAIN QUERY PLAN SELECT * FROM api_keys WHERE key_hash = ?` shows "SEARCH api_keys USING INDEX" not "SCAN api_keys".
+- [ ] **Key creation logs only ID, not full value:** Grep tracing calls — no `tracing::*!` macro formats a variable containing the full `mnk_...` key.
+- [ ] **Open mode + invalid token → 401:** A request with `Authorization: Bearer mnk_wrongkey` in open mode returns 401, not 200. Prevents silent auth bypass assumption.
+- [ ] **`mnemonic keys list` does not show key prefix:** Output contains only the hash-derived key ID, not any substring of the original `mnk_...` value.
 
 ---
 
@@ -543,6 +897,10 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 | Cross-agent contamination from missing agent_id filter | HIGH | Identify affected agents (compare pre/post-compaction memory counts); manual audit of merged memories; potentially restore from backup |
 | Prompt injection via memory content in summarization | MEDIUM | Audit summarization outputs; delete poisoned memories; re-compact affected clusters with sanitized prompts |
 | Runaway LLM cost from compaction loop | MEDIUM | Cut the LLM API key or set a spending limit at the provider level; add rate limiting to the compact endpoint before re-enabling |
+| Plaintext keys discovered in DB file | HIGH | Rotate all keys immediately (revoke all, issue new ones to all agents); no way to un-expose already-leaked keys; treat all prior keys as compromised |
+| Timing attack exploited before constant-time fix | MEDIUM | Rotate all API keys; deploy fix (subtle::ConstantTimeEq); old keys should be considered potentially reconstructed if the attacker had sufficient request volume |
+| Scope enforcement gap exploited (agent-A key accessed agent-B data) | HIGH | Audit access logs for cross-agent requests; identify affected agent-B memories; notify affected users; fix enforcement, rotate all keys |
+| `CREATE TABLE api_keys` crash on upgrade (no IF NOT EXISTS) | LOW | Ship hotfix with `IF NOT EXISTS`; existing users must restart the binary; no data loss |
 
 ---
 
@@ -570,6 +928,16 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 | Breaking agents via ID deletion | Compact endpoint API design | Verify compact response includes old-to-new ID mapping; test GET /memories/{old_id} returns 410/pointer |
 | Non-transitive cluster instability | Compact clustering logic — centroid validation | Run compact twice on same DB; assert identical cluster composition (determinism test) |
 | Wrong metadata on merged memory | Compact merge logic | Assert merged memory `created_at` == min(source `created_at`); assert tags == union(source tags) |
+| Timing attack on key comparison | Auth middleware implementation — key comparison | Code review: grep for `== stored_key`; confirm `subtle` in Cargo.toml; timing test with wrong-first-byte vs. wrong-last-byte key |
+| Plaintext key storage | Auth schema design | DB inspection: `SELECT key_hash FROM api_keys` — values must be 64-char hex strings (SHA-256), not `mnk_...` prefixed strings |
+| Migration cliff (breaking open-mode deployments) | Auth schema migration phase | Integration test: start server with existing v1.1 DB (no `api_keys` table); verify startup succeeds and open mode is active |
+| Scope enforcement gap (agent_id from body) | Auth middleware + handler implementation | Test: use key for agent-A, send `agent_id: "agent-B"` in body, assert 403 |
+| Health endpoint behind auth | Auth middleware implementation — router structure | Test: `GET /health` without Authorization header returns 200 when auth is active |
+| Key logged on creation | CLI key management implementation | Grep all `tracing::*!` calls in key creation path; none should format the full key |
+| Key prefix displayed in list | Auth schema design + CLI implementation | Test: `mnemonic keys list` output does not contain any substring of `mnk_...` key value |
+| `api_keys` migration missing IF NOT EXISTS | Auth schema migration phase | Integration test: open existing DB, run startup, assert no crash; check `sqlite_master` for `api_keys` table |
+| Stale in-memory cache after revocation | Auth middleware implementation | Test: create key, verify access; revoke key; immediately retry request, assert 401 (no restart) |
+| Open mode + invalid token not rejected | Auth middleware implementation | Test: in open mode, send `Authorization: Bearer mnk_invalid`; assert 401 response |
 
 ---
 
@@ -601,7 +969,21 @@ Metadata merge is an afterthought when the primary concern is getting the conten
 - [LLM Cost Control: Practical LLMOps Strategies](https://radicalbit.ai/resources/blog/cost-control/) — max_output_tokens, rate limiting, cost runaway prevention
 - [OpenClaw compaction idle-session bug — GitHub Issue #34935](https://github.com/openclaw/openclaw/issues/34935) — LLM called before checking for real messages, 48 unnecessary calls/day pattern
 
+**v1.2 authentication-specific sources:**
+- [CVE-2025-59425 / GHSA-wr9h-g72x-mwhm — vLLM timing attack on API key comparison](https://github.com/vllm-project/vllm/security/advisories/GHSA-wr9h-g72x-mwhm) — real-world disclosure: plain `==` comparison on Bearer token is High severity; fixed in vLLM 0.11.0
+- [dalek-cryptography/subtle — pure-Rust constant-time utilities](https://github.com/dalek-cryptography/subtle) — `ConstantTimeEq` trait; official crate for timing-attack-resistant comparison in Rust
+- [subtle docs.rs](https://docs.rs/subtle/latest/subtle/) — `ct_eq` usage, limitations (best-effort, not absolute guarantee against hardware side channels)
+- [Best practices for building secure API Keys — freeCodeCamp](https://www.freecodecamp.org/news/best-practices-for-building-api-keys-97c26eabfea9/) — hashed storage, display-once pattern, prefix-for-identification
+- [How we implemented API keys — prefix.dev](https://prefix.dev/blog/how_we_implented_api_keys) — prefixed key format (pfx_<8-char-id><password>), argon2 hashing for password portion, identifier vs. secret split
+- [axum::middleware::from_fn_with_state docs](https://docs.rs/axum/latest/axum/middleware/fn.from_fn_with_state.html) — accessing AppState in middleware, error type requirements
+- [axum middleware discussion #2222 — "it was tough to add middleware"](https://github.com/tokio-rs/axum/discussions/2222) — real-world pain points with tower::Service vs. from_fn approach
+- [Common Risks of Giving Your API Keys to AI Agents — Auth0](https://auth0.com/blog/api-key-security-for-ai-agents/) — scope enforcement failures, overly broad permissions, single-key-for-all-agents antipattern
+- [Zero Downtime Migration of API Authentication — Zuplo](https://dev.to/zuplo/zero-downtime-migration-of-api-authentication-h9c) — dual-mode auth, migration cliff, backward compatibility during transition
+- [API Key Management Best Practices — oneuptime (2026)](https://oneuptime.com/blog/post/2026-02-20-api-key-management-best-practices/view) — hashing, rotation, audit logging, display-once pattern
+- [rusqlite_migration crate](https://docs.rs/rusqlite_migration/latest/rusqlite_migration/) — user_version-based migration state; risk of conflict if other code modifies user_version
+
 ---
 *Pitfalls research for: Rust agent memory server (embedded SQLite + sqlite-vec + candle inference)*
 *v1.0 researched: 2026-03-19*
 *v1.1 compaction addendum researched: 2026-03-20*
+*v1.2 authentication addendum researched: 2026-03-20*
