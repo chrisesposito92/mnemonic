@@ -16,10 +16,10 @@ Requirements for memory summarization / compaction. Each maps to roadmap phases.
 
 ### Algorithmic Dedup (Tier 1)
 
-- [ ] **DEDUP-01**: System clusters memories by vector cosine similarity using configurable threshold (default 0.85)
-- [ ] **DEDUP-02**: System merges metadata for deduplicated clusters (tags union, earliest timestamp, combined content)
-- [ ] **DEDUP-03**: Merge operation is atomic — new memory inserted before source memories deleted, within single transaction
-- [ ] **DEDUP-04**: System enforces max candidates limit to prevent O(n²) on large memory sets
+- [x] **DEDUP-01**: System clusters memories by vector cosine similarity using configurable threshold (default 0.85)
+- [x] **DEDUP-02**: System merges metadata for deduplicated clusters (tags union, earliest timestamp, combined content)
+- [x] **DEDUP-03**: Merge operation is atomic — new memory inserted before source memories deleted, within single transaction
+- [x] **DEDUP-04**: System enforces max candidates limit to prevent O(n²) on large memory sets
 
 ### LLM Summarization (Tier 2)
 
@@ -68,10 +68,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | API-02 | Phase 9 | Pending |
 | API-03 | Phase 9 | Pending |
 | API-04 | Phase 9 | Pending |
-| DEDUP-01 | Phase 8 | Pending |
-| DEDUP-02 | Phase 8 | Pending |
-| DEDUP-03 | Phase 8 | Pending |
-| DEDUP-04 | Phase 8 | Pending |
+| DEDUP-01 | Phase 8 | Complete |
+| DEDUP-02 | Phase 8 | Complete |
+| DEDUP-03 | Phase 8 | Complete |
+| DEDUP-04 | Phase 8 | Complete |
 | LLM-01 | Phase 6 | Complete |
 | LLM-02 | Phase 7 | Complete |
 | LLM-03 | Phase 7 | Complete |
