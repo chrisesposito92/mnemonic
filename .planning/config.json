@@ -11,5 +11,9 @@
     "nyquist_validation": true,
     "auto_advance": true,
     "_auto_chain_active": true
+  },
+  "hooks": {
+    "context_warnings": true,
+    "workflow_guard": false
   }
 }
