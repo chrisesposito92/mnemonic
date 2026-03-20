@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Embedding** - Local all-MiniLM-L6-v2 model via candle with OpenAI fallback (completed 2026-03-19)
 - [x] **Phase 3: Service and API** - MemoryService orchestrator + axum REST endpoints + multi-agent namespacing (completed 2026-03-19)
 - [x] **Phase 4: Distribution** - Binary packaging, README, quickstart, and API reference (completed 2026-03-19)
-- [ ] **Phase 5: Config & Embedding Provider Cleanup** - Wire embedding_provider config, update example file, remove dead code (Gap Closure)
+- [x] **Phase 5: Config & Embedding Provider Cleanup** - Wire embedding_provider config, update example file, remove dead code (Gap Closure) (completed 2026-03-20)
 
 ## Phase Details
 
@@ -93,7 +93,7 @@ Plans:
   3. `cargo build 2>&1 | grep warning` produces zero compiler warnings (dead code removed)
   4. All existing tests continue to pass
 
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
 - [ ] 05-01-PLAN.md — Wire embedding_provider into engine selection, add validate_config(), remove dead code, update example config and README (CONF-02, CONF-03, EMBD-04)
@@ -109,4 +109,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Embedding | 2/2 | Complete   | 2026-03-19 |
 | 3. Service and API | 3/3 | Complete   | 2026-03-19 |
 | 4. Distribution | 2/2 | Complete   | 2026-03-19 |
-| 5. Config & Embedding Provider Cleanup | 0/1 | Pending | — |
+| 5. Config & Embedding Provider Cleanup | 1/1 | Complete   | 2026-03-20 |

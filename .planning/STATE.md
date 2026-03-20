@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Phase 5 context gathered
-last_updated: "2026-03-20T01:18:19.432Z"
+stopped_at: Completed 05-config-cleanup-01-PLAN.md
+last_updated: "2026-03-20T01:36:12.534Z"
 progress:
   total_phases: 5
-  completed_phases: 4
-  total_plans: 10
-  completed_plans: 10
+  completed_phases: 5
+  total_plans: 11
+  completed_plans: 11
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-19)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 04 — distribution
+**Current focus:** Phase 05 — config-cleanup
 
 ## Current Position
 
-Phase: 04 (distribution) — COMPLETE
-Plan: 2 of 2 (complete)
+Phase: 05 (config-cleanup) — EXECUTING
+Plan: 1 of 1
 
 ## Performance Metrics
 
@@ -54,6 +54,7 @@ Plan: 2 of 2 (complete)
 | Phase 03-service-and-api P02 | 1 | 2 tasks | 2 files |
 | Phase 03-service-and-api P03 | 2 | 2 tasks | 2 files |
 | Phase 04-distribution P01 | 5 | 2 tasks | 3 files |
+| Phase 05-config-cleanup P01 | 5 | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -87,6 +88,9 @@ Recent decisions affecting current work:
 - [Phase 04-distribution]: dtolnay/rust-toolchain@stable used in release workflow (not deprecated actions-rs/toolchain); native cross-compile without cross tool for all three targets
 - [Phase 04-distribution]: MIT License chosen for mnemonic binary server (simplest for CLI tools, confirmed via git remote)
 - [Phase 04-distribution]: cargo install --git URL documented over bare cargo install mnemonic (crate not yet on crates.io)
+- [Phase 05-config-cleanup]: validate_config() returns anyhow::Result<()> — consistent with main.rs error handling chain, no new error variant needed
+- [Phase 05-config-cleanup]: AppState slimmed to service-only — db, config, embedding were passed to MemoryService and not used by axum handlers directly
+- [Phase 05-config-cleanup]: embedding_provider match uses unreachable!() for unknown arm — valid because validate_config() runs first
 
 ### Pending Todos
 
@@ -100,6 +104,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-20T01:18:19.430Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-config-cleanup/05-CONTEXT.md
+Last session: 2026-03-20T01:36:12.532Z
+Stopped at: Completed 05-config-cleanup-01-PLAN.md
+Resume file: None
