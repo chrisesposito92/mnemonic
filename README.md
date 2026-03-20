@@ -2,7 +2,7 @@
 
 Framework-agnostic agent memory server — persistent semantic memory via a simple REST API.
 
-Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST, and retrieve the most relevant ones with a semantic search query. No external services, no configuration required — it works out of the box with a bundled embedding model.
+Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. No external services, no configuration required — it works out of the box with a bundled embedding model.
 
 ## Table of Contents
 
@@ -10,6 +10,7 @@ Mnemonic is a single binary that gives any AI agent durable, semantically search
 - [Concepts](#concepts)
 - [Configuration](#configuration)
 - [API Reference](#api-reference)
+  - [POST /memories/compact](#post-memoriescompact)
 - [Usage Examples](#usage-examples)
 - [How It Works](#how-it-works)
 - [Contributing](#contributing)
@@ -73,6 +74,10 @@ All configuration is optional. Mnemonic works with zero configuration.
 | `MNEMONIC_EMBEDDING_PROVIDER` | `local` | Embedding provider: `local` or `openai` |
 | `MNEMONIC_OPENAI_API_KEY` | — | OpenAI API key (required when `MNEMONIC_EMBEDDING_PROVIDER=openai`) |
 | `MNEMONIC_CONFIG_PATH` | `./mnemonic.toml` | Path to optional TOML configuration file |
+| `MNEMONIC_LLM_PROVIDER` | — | LLM provider for compaction summarization: `openai` (optional) |
+| `MNEMONIC_LLM_API_KEY` | — | LLM API key (required when `MNEMONIC_LLM_PROVIDER` is set) |
+| `MNEMONIC_LLM_BASE_URL` | — | Custom LLM API base URL (for OpenAI-compatible providers) |
+| `MNEMONIC_LLM_MODEL` | — | LLM model name (defaults to provider's default) |
 
 **Precedence:** env vars > TOML file > compiled defaults.
 
@@ -83,6 +88,11 @@ port = 9090
 db_path = "/data/mnemonic.db"
 embedding_provider = "local"
 # openai_api_key = "sk-..."
+
+# Optional: enable LLM-powered compaction summarization
+# llm_provider = "openai"
+# llm_api_key = "sk-..."
+# llm_model = "gpt-4o-mini"
 ```
 
 Set `MNEMONIC_CONFIG_PATH` to point to a different TOML file location.
@@ -281,6 +291,61 @@ curl -s -X DELETE http://localhost:8080/memories/019506d2-1c3b-7a2e-8b4f-0a1b2c3
 
 ---
 
+### POST /memories/compact
+
+Compact an agent's memories by deduplicating similar entries. Uses vector similarity clustering to find near-duplicate memories and merges them. When an LLM is configured, merged clusters are summarized into rich consolidated memories (Tier 2); otherwise, content is concatenated (Tier 1).
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `agent_id` | string | YES | — | Agent whose memories to compact |
+| `threshold` | float | no | `0.85` | Cosine similarity threshold for clustering (0.0-1.0, higher = stricter) |
+| `max_candidates` | integer | no | `100` | Max memories to consider (caps O(n^2) clustering) |
+| `dry_run` | boolean | no | `false` | Preview clusters without modifying data |
+
+**Response 200:**
+```json
+{
+  "clusters_found": 3,
+  "memories_merged": 7,
+  "memories_created": 3,
+  "id_mapping": {
+    "new-id-1": ["old-id-a", "old-id-b"],
+    "new-id-2": ["old-id-c", "old-id-d", "old-id-e"],
+    "new-id-3": ["old-id-f", "old-id-g"]
+  },
+  "dry_run": false
+}
+```
+
+When `dry_run: true`, no data is modified — `memories_created` is `0` and `id_mapping` shows proposed clusters.
+
+**Error 400:**
+```json
+{"error": "agent_id is required"}
+```
+
+**curl:**
+```bash
+# Compact memories for an agent
+curl -s -X POST http://localhost:8080/memories/compact \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "research-bot"}'
+
+# Preview what would be compacted (no changes made)
+curl -s -X POST http://localhost:8080/memories/compact \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "research-bot", "dry_run": true}'
+
+# Stricter threshold (only very similar memories merged)
+curl -s -X POST http://localhost:8080/memories/compact \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "research-bot", "threshold": 0.95}'
+```
+
+---
+
 ## Usage Examples
 
 ### curl Workflow
@@ -356,6 +421,14 @@ class MnemonicClient:
         r = requests.delete(f"{self.base_url}/memories/{memory_id}")
         r.raise_for_status()
         return r.json()
+
+    def compact(self, agent_id, threshold=None, max_candidates=None, dry_run=False):
+        payload = {"agent_id": agent_id, "dry_run": dry_run}
+        if threshold is not None:  payload["threshold"] = threshold
+        if max_candidates is not None: payload["max_candidates"] = max_candidates
+        r = requests.post(f"{self.base_url}/memories/compact", json=payload)
+        r.raise_for_status()
+        return r.json()
 ```
 
 **Basic usage:**
@@ -377,6 +450,13 @@ print(f"Total memories: {page['total']}")
 
 # Delete a memory
 client.delete(results[0]["id"])
+
+# Compact similar memories (preview first, then apply)
+preview = client.compact("research-bot", dry_run=True)
+print(f"Would merge {preview['memories_merged']} memories into {preview['clusters_found']} clusters")
+
+result = client.compact("research-bot")
+print(f"Merged {result['memories_merged']} → {result['memories_created']} memories")
 ```
 
 ---
@@ -467,6 +547,8 @@ def handle_tool_call(tool_name, args, agent_id):
 ## How It Works
 
 Mnemonic stores memories in a single SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector similarity search. When you POST a memory, Mnemonic embeds the content using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) (~22 MB), a compact but high-quality sentence embedding model, running locally via [candle](https://github.com/huggingface/candle) — a pure-Rust ML framework with no native library dependencies. The model is downloaded from HuggingFace Hub on first run and cached at `~/.cache/huggingface/`. When you search, your query is embedded with the same model and KNN vector search finds the closest memories by L2 distance. Optionally, you can switch to OpenAI `text-embedding-3-small` by setting `MNEMONIC_OPENAI_API_KEY` — no other configuration needed.
+
+**Compaction** works in two tiers. **Tier 1 (default)** uses vector cosine similarity to cluster near-duplicate memories and merges them algorithmically — tags are unioned, timestamps take the earliest, and content is concatenated. No LLM required. **Tier 2 (opt-in)** activates when `MNEMONIC_LLM_PROVIDER` is configured — clustered memories are sent to the LLM for rich summarization instead of simple concatenation. If the LLM call fails, compaction falls back to Tier 1 automatically. All merges are atomic (single SQLite transaction) and scoped to the requesting agent — one agent's compaction never touches another agent's memories.
 
 ---
 
