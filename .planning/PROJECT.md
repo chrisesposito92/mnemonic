@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A single Rust binary that gives any AI agent persistent memory via a simple REST API. Zero external dependencies — download and run. Designed to be the "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
+A single Rust binary that gives any AI agent persistent memory via a simple REST API. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
 
 ## Core Value
 
@@ -12,34 +12,37 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Validated
 
-- [x] Embedded SQLite with sqlite-vec for vector search in a single file — Validated in Phase 1: Foundation
-- [x] Configuration via env vars or TOML file — Validated in Phase 1: Foundation
-- [x] Bundled local embedding model (all-MiniLM-L6-v2 via candle) for zero-config inference — Validated in Phase 2: Embedding
-- [x] Optional OpenAI API fallback for embeddings — Validated in Phase 2: Embedding
+- Embedded SQLite with sqlite-vec for vector search in a single file — v1.0
+- Configuration via env vars or TOML file with validate_config() startup checks — v1.0
+- Bundled local embedding model (all-MiniLM-L6-v2 via candle) for zero-config inference — v1.0
+- Optional OpenAI API fallback for embeddings (embedding_provider config-driven) — v1.0
+- REST API for storing, searching, filtering, and deleting memories (5 endpoints) — v1.0
+- Multi-agent support via agent_id namespacing with KNN pre-filtering — v1.0
+- Session-scoped retrieval via session_id grouping — v1.0
+- Comprehensive README with quickstart, API reference, curl/Python/agent examples — v1.0
+- GitHub Actions cross-platform release workflow (linux-x86_64, macos-x86_64, macos-aarch64) — v1.0
 
-### Validated (cont.)
+### Active
 
-- [x] REST API for storing, searching, filtering, and deleting memories — Validated in Phase 3: Service and API
-- [x] Multi-agent support via agent_id namespacing — Validated in Phase 3: Service and API
-- [x] Session-scoped retrieval via session_id grouping — Validated in Phase 3: Service and API
-- [x] Clean README with quickstart, API reference, and examples — Validated in Phase 4: Distribution
+(None — define in next milestone)
 
 ### Out of Scope
 
-- Memory summarization / compaction — future milestone
-- Authentication / API keys — future milestone
-- Pluggable storage backends (Qdrant, Postgres, etc.) — future milestone
-- Web UI / dashboard — future milestone
-- gRPC support — future milestone
+- Memory summarization / compaction — requires LLM calls, conflicts with zero-config offline value
+- Authentication / API keys — premature for embeddable local tool; run behind reverse proxy
+- Pluggable storage backends (Qdrant, Postgres) — single-file SQLite is a feature, not a limitation
+- Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
+- gRPC support — doubles interface surface; REST sufficient for all reviewed use cases
+- Memory decay / TTL — surprising behavior that silently loses data
+- Multi-node / distributed mode — SQLite not designed for multi-writer distributed use
 
 ## Context
 
-- Target users are AI agent developers who need persistent memory across sessions
-- Must be a true single-binary distribution — no Python, no Docker, no external services
-- Embedding model runs locally via candle (pure Rust) for zero-dependency inference
-- sqlite-vec is the actively maintained SQLite vector extension (sqlite-vss is archived)
-- tokio-rusqlite provides async SQLite access without blocking the async runtime
-- axum is the HTTP framework for the REST API layer
+Shipped v1.0 with 1,932 lines of Rust code across 5 phases (11 plans).
+Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2).
+30 tests passing, zero compiler warnings. MIT licensed.
+Target users: AI agent developers who need persistent memory across sessions.
+Single-binary distribution — no Python, no Docker, no external services required.
 
 ## Constraints
 
@@ -54,17 +57,18 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| candle over ort for inference | Pure Rust, no ONNX Runtime dependency, enables true single-binary | Validated Phase 2 |
-| sqlite-vec over sqlite-vss | sqlite-vss is archived, sqlite-vec is actively maintained | Validated Phase 1 |
-| tokio-rusqlite for async SQLite | Avoids blocking async runtime under concurrent agent requests | Validated Phase 1 |
-| axum for HTTP | Modern, ergonomic, good ecosystem support in Rust | Validated Phase 1 |
-| rusqlite 0.37 (not 0.39) | sqlite-vec 0.1.7 has version conflict with rusqlite 0.39's libsqlite3-sys | Decided Phase 1 |
-| all-MiniLM-L6-v2 as default model | Small (~22MB), fast inference, good semantic similarity quality | Validated Phase 2 |
+| candle over ort for inference | Pure Rust, no ONNX Runtime dependency, enables true single-binary | Good — v1.0 |
+| sqlite-vec over sqlite-vss | sqlite-vss is archived, sqlite-vec is actively maintained | Good — v1.0 |
+| tokio-rusqlite for async SQLite | Avoids blocking async runtime under concurrent agent requests | Good — v1.0 |
+| axum for HTTP | Modern, ergonomic, good ecosystem support in Rust | Good — v1.0 |
+| rusqlite 0.37 (not 0.39) | sqlite-vec 0.1.7 has version conflict with rusqlite 0.39's libsqlite3-sys | Revisit — compatible but version pinned |
+| all-MiniLM-L6-v2 as default model | Small (~22MB), fast inference, good semantic similarity quality | Good — v1.0 |
+| Arc<Mutex<LocalEngineInner>> for model sharing | BertModel+Tokenizer not Send+Sync; single mutex serializes inference | Good — v1.0 |
+| zerocopy::IntoBytes for sqlite-vec MATCH | Converts Vec<f32> to raw bytes for vector parameter binding | Good — v1.0 |
+| CTE over-fetch 10x for filtered KNN search | agent_id/session_id filter applied post-KNN; over-fetch ensures enough results | Good — v1.0 |
+| validate_config() at startup | Gates startup on valid provider+key combinations; prevents silent surprises | Good — v1.0 |
+| MockEmbeddingEngine with deterministic hash vectors | Reproducible API integration tests without 90MB model download | Good — v1.0 |
 
 ---
-## Current State
 
-v1.0 milestone complete with gap closure — All 5 phases delivered. Phase 5 closed integration gaps INT-01 and INT-02: `embedding_provider` config field now drives engine selection (no longer a dead knob), `mnemonic.toml.example` includes `openai_api_key`, and all compiler warnings resolved. Single Rust binary with embedded SQLite+sqlite-vec storage, local all-MiniLM-L6-v2 embeddings via candle, REST API (5 endpoints), multi-agent namespacing, and comprehensive documentation. Zero compiler warnings, 30 tests passing. MIT licensed.
-
----
-*Last updated: 2026-03-20 after Phase 5 completion*
+*Last updated: 2026-03-20 after v1.0 milestone*
