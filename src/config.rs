@@ -11,6 +11,10 @@ pub struct Config {
     pub db_path: String,
     pub embedding_provider: String,
     pub openai_api_key: Option<String>,
+    pub llm_provider: Option<String>,
+    pub llm_api_key: Option<String>,
+    pub llm_base_url: Option<String>,
+    pub llm_model: Option<String>,
 }
 
 impl Default for Config {
@@ -20,6 +24,10 @@ impl Default for Config {
             db_path: "./mnemonic.db".to_string(),
             embedding_provider: "local".to_string(),
             openai_api_key: None,
+            llm_provider: None,
+            llm_api_key: None,
+            llm_base_url: None,
+            llm_model: None,
         }
     }
 }
@@ -27,15 +35,15 @@ impl Default for Config {
 /// Validates business-rule constraints that cannot be expressed in the type system.
 /// Call after load_config() succeeds, before any I/O.
 pub fn validate_config(config: &Config) -> anyhow::Result<()> {
+    // Embedding provider validation
     match config.embedding_provider.as_str() {
-        "local" => Ok(()),
+        "local" => {}
         "openai" => {
             if config.openai_api_key.is_none() {
                 anyhow::bail!(
                     "embedding_provider is \"openai\" but MNEMONIC_OPENAI_API_KEY is not set"
                 );
             }
-            Ok(())
         }
         other => {
             anyhow::bail!(
@@ -44,6 +52,27 @@ pub fn validate_config(config: &Config) -> anyhow::Result<()> {
             );
         }
     }
+
+    // LLM validation (independent of embedding validation)
+    if let Some(provider) = &config.llm_provider {
+        match provider.as_str() {
+            "openai" => {
+                if config.llm_api_key.is_none() {
+                    anyhow::bail!(
+                        "llm_provider is \"openai\" but MNEMONIC_LLM_API_KEY is not set"
+                    );
+                }
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown llm_provider {:?}: expected \"openai\"",
+                    other
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Loads configuration from defaults, optional TOML file, and environment variables.
@@ -77,6 +106,10 @@ mod tests {
             assert_eq!(config.db_path, "./mnemonic.db");
             assert_eq!(config.embedding_provider, "local");
             assert!(config.openai_api_key.is_none());
+            assert!(config.llm_provider.is_none());
+            assert!(config.llm_api_key.is_none());
+            assert!(config.llm_base_url.is_none());
+            assert!(config.llm_model.is_none());
             Ok(())
         });
     }
