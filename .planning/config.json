@@ -9,6 +9,8 @@
     "plan_check": true,
     "verifier": true,
     "nyquist_validation": true,
+    "ui_phase": true,
+    "ui_safety_gate": true,
     "auto_advance": true,
     "_auto_chain_active": true
   },
