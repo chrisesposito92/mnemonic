@@ -1,16 +1,16 @@
 # Feature Research
 
-**Domain:** CLI subcommands for a Rust memory-server binary (v1.3 milestone)
+**Domain:** Pluggable storage backends for a Rust memory-server binary (v1.4 milestone)
 **Researched:** 2026-03-21
-**Confidence:** HIGH (patterns sourced from redis-cli, HTTPie, ripgrep, jq, heroku-cli, clap crate docs, existing mnemonic cli.rs)
+**Confidence:** HIGH (patterns sourced from Rust trait ecosystem, qdrant-client docs, pgvector-rust, redis/agent-memory-server, production migration case studies, existing mnemonic codebase)
 
 ---
 
 ## Scope Note
 
-This document covers **only the new features for v1.3**: turning `mnemonic` from a server-with-keys-CLI into a full CLI tool where every REST operation has a matching subcommand. The v1.0/v1.1/v1.2 baseline (REST API, embeddings, compaction, auth, `mnemonic keys`) is already shipped and is a dependency, not a feature.
+This document covers **only the new features for v1.4**: adding a storage trait abstraction so the existing SQLite backend can sit behind an interface, with Qdrant and Postgres as opt-in alternatives selectable via config. The v1.0–v1.3 baseline (REST API, embeddings, compaction, auth, full CLI) is already shipped and represents the _consumer_ of these backends, not a feature here.
 
-The central question: what does a well-designed `serve / remember / recall / search / compact` CLI look like, given patterns from proven tools in the space?
+The central question: what does pluggable storage look like when the existing compaction, auth, and semantic search surface must work transparently across backends?
 
 ---
 
@@ -18,121 +18,130 @@ The central question: what does a well-designed `serve / remember / recall / sea
 
 ### Table Stakes (Users Expect These)
 
-Features any CLI for a data tool provides. Missing these makes the CLI feel like a half-finished wrapper.
+Features that any production-grade pluggable backend system provides. Missing these makes the abstraction feel like a toy.
 
 | Feature | Why Expected | Complexity | Dependencies on Existing Architecture |
 |---------|--------------|------------|---------------------------------------|
-| `mnemonic serve` subcommand that starts the HTTP server | Current default behavior (no subcommand = server) must become explicit. Every multi-command binary uses `serve` or `start` — Docker, uvicorn, gunicorn. Without this, adding subcommands breaks backward compat for existing users who run `mnemonic` raw. | LOW | Refactor `main.rs`: `None` command branch becomes `Commands::Serve`. Existing server init path is unchanged — just gated behind a variant. |
-| `mnemonic remember <content>` stores a memory | Mirrors the REST `POST /memories`. Any key-value or document store CLI has a store/set/put subcommand. Redis has `SET`, sqlite3 can `INSERT`. A memory tool without a CLI store command is incomplete. | MEDIUM | Requires embedding model load (same as server). Must call `MemoryService::create_memory`. Fast path: if server is running, can POST via HTTP instead of direct DB. See "server vs. direct" decision below. |
-| `mnemonic recall <id>` retrieves a memory by ID | Mirrors `GET /memories/:id`. Every data tool has a get-by-key command. Redis has `GET`, sqlite3 has `SELECT`. Without ID lookup, users cannot inspect a specific memory. | LOW | DB-only path — no embedding load needed. Wraps `MemoryService` or direct DB query for the `SELECT ... WHERE id = ?` case. |
-| `mnemonic search <query>` performs semantic search | Mirrors `GET /memories/search?q=`. This is Mnemonic's core value. A semantic memory tool with no CLI search is broken — it is the primary operation agents and developers would want to test interactively. | MEDIUM | Requires embedding model load to embed the query. Calls `MemoryService::search_memories`. Slow cold start (~1-2s for local model) is expected and documented. |
-| `mnemonic compact` triggers memory compaction | Mirrors `POST /memories/compact`. Compaction is already a CLI-oriented workflow (operators trigger it deliberately). Without a CLI trigger, developers must use curl, which is higher friction than the tool warrants. | LOW | Calls `CompactionService::compact`. Requires embedding model (for deduplication similarity). Dry-run flag (`--dry-run`) already exists in the REST layer and must be surfaced. |
-| Human-readable output by default | Tools like redis-cli, sqlite3, and heroku-cli all default to human-readable tabular or plain text output. Developers interacting directly expect readable output. JSON-by-default is hostile for interactive use. | LOW | Print formatted text to stdout. Use `eprintln!` for warnings (same pattern as existing `keys` CLI). |
-| `--json` flag for machine-readable output | Heroku CLI: `heroku releases --json`. ripgrep: `--json`. HTTPie: auto-detects TTY and adjusts. Scripts and agent orchestration tools need structured output. Without `--json`, piping to `jq` is impossible and shell automation breaks. | LOW | Serialize the same structs already used in HTTP responses via `serde_json::to_string`. The types (`Memory`, `SearchResultItem`, `ListResponse`) already derive `Serialize`. |
-| Exit codes: 0 on success, 1 on error | POSIX standard. Every tool from grep to redis-cli uses exit code 0/1. Shell scripts (`&&`, `||`) depend on exit codes. Without this, automation breaks silently. | LOW | Already implemented in `keys` CLI via `std::process::exit(1)`. Extend same pattern to all subcommands. |
-| Errors go to stderr, data goes to stdout | Core Unix convention (used by redis-cli, ripgrep, jq, HTTPie). "Data to stdout, messages to stderr." Allows `mnemonic search foo > results.json 2>/dev/null` without mixing error text into data stream. | LOW | Already established in `keys` CLI (`println!` for data, `eprintln!` for errors). Codify as project convention. |
-| `--agent-id` flag on remember/recall/search/compact | Multi-agent namespacing is Mnemonic's core feature. All memory operations are already scoped by `agent_id`. A CLI that cannot specify which agent's memories to operate on is unusable for the primary use case. | LOW | Map `--agent-id` flag to the `agent_id` field in the existing request structs. Already done for `keys create --agent-id`. |
-| `--limit` flag on recall and search | Mirrors `limit` query param on REST endpoints. Data tools always let users constrain result count (redis-cli `SCAN COUNT`, sqlite3 `LIMIT`). Without it, returning 10 results vs 100 requires API knowledge. | LOW | Map `--limit N` to `SearchParams.limit` / `ListParams.limit`. Default 10 (same as REST). |
+| **`StorageBackend` trait** covering all memory CRUD operations | Any backend system requires a single interface that every implementation satisfies. Without a trait, "pluggable" is just conditional code paths, not an abstraction. | MEDIUM | Must cover: `store_memory`, `get_memory`, `delete_memory`, `list_memories`, `search_memories` (KNN), `bulk_delete` (for compaction), `store_compact_run`, `get_compact_run`. All methods are currently direct `tokio_rusqlite` calls inside `MemoryService` and `CompactionService`. Both services must be refactored to hold `Arc<dyn StorageBackend>` instead of `Arc<Connection>`. |
+| **SQLite remains default with zero config change** | Existing users cannot be broken. Changing the default behavior requires explicit opt-in. Every tool with pluggable backends (n8n, Open Web UI) maintains backward compat: SQLite stays until the user changes `storage_backend` in config. | LOW | SQLite implementation of the trait wraps existing `tokio_rusqlite` code. The `db.rs` open/schema path stays identical. `service.rs` and `compaction.rs` are refactored to use the trait, not the concrete `Connection`. |
+| **Config-driven backend selection via TOML/env** | Users expect `storage_backend = "qdrant"` in `mnemonic.toml` or `MNEMONIC_STORAGE_BACKEND=qdrant` env var to switch backends. This is the same pattern already used for `embedding_provider` and `llm_provider`. Config-driven > code changes. | LOW | Extend `Config` struct with `storage_backend: String` (default `"sqlite"`), plus backend-specific fields: `qdrant_url`, `qdrant_api_key`, `qdrant_collection`, `postgres_url`. Follow existing `validate_config()` pattern: gate startup on required fields being present for the selected backend. |
+| **`validate_config()` expanded for new backends** | Startup should fail loudly if `storage_backend = "qdrant"` but `qdrant_url` is missing. Users expect the same "gates startup on valid config" behavior already present for embedding/LLM providers. | LOW | Extend the existing `validate_config()` match arm logic. No new mechanism — same pattern already ships. |
+| **Qdrant backend implementation** | Qdrant is the most-requested vector-native backend for agent memory tools. It manages embeddings as first-class data (not a bolt-on virtual table), supports advanced filtering, and is the vector database agents teams most commonly reach for. The Rust client (`qdrant-client`) is mature and async-native. | HIGH | Requires adding `qdrant-client` crate. Must map Mnemonic's `Memory` struct to Qdrant Points (payload fields + vector). `agent_id`, `session_id`, `tags`, `created_at`, `id` become payload fields. Vector = the 384-dim embedding. Search uses Qdrant's `query` with payload filters for `agent_id`. Compaction: fetch N candidate points with embeddings via scroll API, run existing clustering logic in Rust, delete old points, upsert new ones — all via Qdrant client. API key auth table: Qdrant is a vector DB, not relational — auth keys must remain in SQLite (or a separate simple file store) even when the memory backend is Qdrant. |
+| **Postgres + pgvector backend implementation** | Postgres is the "I already have Postgres" use case. Teams running Postgres in production for their app data want to co-locate agent memory without operating a second service. pgvector-rust crate provides the `Vector` type and operator support. | HIGH | Requires `sqlx` (or `tokio-postgres` + `pgvector`) crates. Schema: `memories` table with a `vector(384)` column, plus `compact_runs`. Similarity search: `ORDER BY embedding <-> $1 LIMIT N` with `WHERE agent_id = $2` filter. Compaction: same pattern as Qdrant — fetch candidates, cluster in Rust, batch delete+insert inside a transaction. API key auth: Postgres can host the `api_keys` table (all relational). This makes Postgres the only backend where auth and memories live in the same DB. |
+| **`mnemonic config` subcommand** | Users need to inspect and validate their current backend configuration without starting the server. Same pattern as Heroku CLI's `heroku config`, kubectl's `kubectl config view`. A tool that requires reading the TOML manually to know what backend is active has poor UX. | LOW | New clap subcommand. `mnemonic config show` prints current resolved config (backend, relevant URLs, no secrets). `mnemonic config validate` runs `validate_config()` and exits 0/1. Does NOT mutate config (no `set` subcommand for v1.4 — writing TOML programmatically is scope creep). |
+| **Startup error message identifies missing backend dependency** | If `qdrant_url` is set but Qdrant is unreachable, the error should say "cannot connect to Qdrant at http://localhost:6334" — not a generic connection refused. Users deploy mnemonic to production and need actionable error messages. | LOW | Ping / health check the backend at startup before accepting traffic. Qdrant: `client.health_check().await`. Postgres: connection pool creation failure is sufficient. SQLite: file open error (already exists). |
 
 ### Differentiators (Competitive Advantage)
 
-Features that are not universally expected but align with Mnemonic's positioning as a zero-friction, agent-aware tool.
+Features that are not universally expected but align with Mnemonic's positioning and solve real user pain.
 
 | Feature | Value Proposition | Complexity | Dependencies on Existing Architecture |
 |---------|-------------------|------------|---------------------------------------|
-| Fast path: CLI memory commands skip model load when server is already running | The local embedding model takes ~1-2 seconds to load. If `mnemonic serve` is already running, `mnemonic remember` can POST to it via HTTP instead of loading the model again. This would make the CLI feel instant for interactive use when the server is up. | HIGH | Requires: (1) configurable `--server` URL flag, (2) HTTP client for CLI subcommands, (3) logic to try HTTP first, fall back to direct if server not available. Adds reqwest as a CLI dependency. Complex enough to defer to v1.4 — document as future work. |
-| `mnemonic remember` accepts content from stdin | Unix pipe convention: `echo "learned X" \| mnemonic remember`. `cat notes.txt \| mnemonic remember`. HTTPie uses this pattern — stdin without positional arg = pipe input. Enables shell-scripting memory storage from any tool. | LOW | Check if content arg is absent AND stdin is not a TTY (`atty` crate or `std::io::stdin().is_terminal()`). Read stdin if so, error if neither present. |
-| `--dry-run` flag on compact | Already supported by the REST endpoint. Exposing it in the CLI allows developers to preview what compaction would do before mutating data. Ripgrep does this with `--stats` for non-mutating analysis. Unique to Mnemonic — no other memory CLI tool offers this. | LOW | Map to existing `CompactionRequest.dry_run: true`. Print "would merge N memories" message. |
-| `--threshold` flag on search | Mirrors `SearchParams.threshold` — minimum similarity score. Advanced users tuning search quality need this. jq users know they want to filter results; giving `--threshold 0.8` is more ergonomic than `\| jq '[.[] \| select(.distance < 0.2)]'`. | LOW | Map to `SearchParams.threshold`. Document valid range (0.0-1.0). Default: none (same as REST). |
-| `--session-id` flag on remember/recall/search | Session-scoped retrieval is already supported by the REST API. Exposing it in the CLI makes per-conversation memory management possible without crafting HTTP requests. | LOW | Map `--session-id` to `session_id` fields in existing request structs. Same pattern as `--agent-id`. |
-| Color-coded output for search results with similarity scores | Search results with similarity distances benefit from visual hierarchy — top results visually distinct from marginal matches. Heroku uses color for status indicators. Acceptable only when output is a TTY (disabled for pipes/JSON). | MEDIUM | Use `termcolor` or ANSI escape codes. Gate on `atty::is(atty::Stream::Stdout)`. Not essential for v1.3 — mark as P2. |
+| **`mnemonic migrate` subcommand for data portability** | The biggest pain point when switching backends is data loss. Real-world migrations (SQLite→Postgres in n8n, Postgres→Qdrant in OpenWebUI) fail because users change config and discover their data is stranded. A built-in migration command is table stakes for trusted backend switching, but the _implementation_ is a differentiator since most tools leave this to the user. | HIGH | Reads from source backend (any `StorageBackend` impl), writes to target backend. Must preserve: memory IDs, content, agent_id, session_id, tags, created_at, embeddings. Does NOT re-embed (preserves existing vectors to avoid model mismatch). Runs as a one-shot command: `mnemonic migrate --from sqlite --to qdrant`. Progress output to stderr. Atomicity: best-effort (insert-then-verify, not transactional across backends). This is a genuine differentiator — the qdrant/migration tool only handles Qdrant targets. |
+| **API key auth remains in SQLite regardless of memory backend** | Auth is relational, not vector-native. Qdrant is the wrong store for `api_keys`. Mixing auth state into the vector backend adds complexity and breaks Qdrant's data model. Keeping auth in a lightweight local SQLite file (even when memories are in Qdrant) is simpler and avoids a second Qdrant collection for non-vector data. | MEDIUM | Introduce a split: `StorageBackend` trait covers memory + compaction. `AuthBackend` (or just a hard-coded SQLite file) covers API keys. Config: `auth_db_path` (default `mnemonic-auth.db` or same `mnemonic.db`). For Postgres backend users, the option to keep auth in Postgres is a v1.5+ consideration. |
+| **Compaction works identically across all backends** | Compaction's clustering is done in Rust memory (fetch candidates → cluster → write results). The `StorageBackend` trait provides `fetch_memories_with_embeddings(agent_id, limit)` and `atomic_compact(deletions, insertions)`. This means the compaction algorithm doesn't need to know which backend is active — same logic runs against SQLite, Qdrant, or Postgres. | MEDIUM | `CompactionService` currently holds `Arc<Connection>` and runs SQL directly. Refactor to use `Arc<dyn StorageBackend>` and call trait methods. The clustering logic in `compaction.rs` is pure Rust — no SQL dependency — and moves cleanly. `atomic_compact` semantics differ: SQLite wraps in a transaction, Qdrant does delete+upsert (no cross-point transaction), Postgres wraps in a transaction. Document this semantic difference. |
+| **`mnemonic config show --json` for automation** | Shell scripts and CI pipelines that deploy mnemonic need to introspect the active backend without parsing TOML. `mnemonic config show --json` outputs `{"backend":"qdrant","qdrant_url":"http://..."}`. Extends the existing `--json` global flag convention. | LOW | Trivially extends `mnemonic config show` with `--json` serialization of the sanitized config struct (no secrets). Already a project-wide pattern. |
+| **Backend-specific health info in `/health` endpoint** | The existing `GET /health` returns `{"status":"ok"}`. With pluggable backends, operators want `{"status":"ok","backend":"qdrant","backend_status":"ok","latency_ms":3}`. This surfaces backend connectivity issues before they manifest as memory operation failures. | LOW | Extend `HealthResponse` struct with `backend` and `backend_latency_ms` fields. Each `StorageBackend` impl exposes a `health_check() -> HealthStatus` method. Minimal implementation effort, high operational value. |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| Interactive REPL mode (like sqlite3 or redis-cli) | "It would be nice to run commands interactively without relaunching." | Model cold start (1-2s) makes REPL startup cost the same as individual invocations. The REST server already IS the persistent process. Building a separate REPL duplicates the server's purpose and adds a readline/rustyline dependency for a use case that `mnemonic serve` + HTTP client already covers. | Use `mnemonic serve` as the persistent process; interact via HTTPie, curl, or any HTTP client. |
-| Background daemon mode (`mnemonic serve --daemon` / `--background`) | "I want `mnemonic serve` to run in the background without occupying a terminal." | Proper daemonization requires double-fork, pid files, signal handling — significant platform-specific complexity. Cross-platform (macOS/Linux) daemonization in Rust is non-trivial and error-prone. Systemd/launchd already provide this for users who need it. | Document systemd service file and launchd plist in README. The binary itself stays foreground. |
-| `--format table/json/csv` multi-format output | "Give me CSV for spreadsheets." | Three format renderers for every command multiplies implementation surface. CSV is lossy for nested data (tags arrays, metadata). jq already transforms JSON into any format. | `--json` + jq covers all machine formats. Human output covers the interactive case. Two modes, not three. |
-| `mnemonic delete <id>` subcommand | "I need to delete memories from the CLI." | Delete is a destructive operation. A CLI delete that bypasses confirmation adds risk (typos, scripting accidents). REST `DELETE /memories/:id` exists for programmatic deletion. If added, it needs `--confirm` or `--yes` flag — scope creep. | Document using `curl -X DELETE` for now. Add in v1.4 with explicit `--yes` flag if user demand materializes. |
-| `mnemonic import <file>` batch import | "I have a JSON file of memories to bulk load." | Batch import is a non-trivial problem: error handling per-record, deduplication behavior, partial failures. The REST API already accepts one memory at a time and can be called in a loop by a shell script. | `jq -c '.[]' memories.json \| while read m; do mnemonic remember "$m"; done` covers it. No special command needed. |
-| Automatic model download on first run | "The user shouldn't have to think about the model." | The model is already bundled in the binary for `mnemonic serve`. CLI subcommands share the same binary — no download step needed. If the model is somehow absent, a clear error is better than a silent download during what the user thinks is a fast command. | Error message: "embedding model not found; run mnemonic serve once to verify binary integrity." |
-| Server URL config in `~/.config/mnemonic/config.toml` | "I want to configure the server URL once for all CLI invocations." | For v1.3, CLI subcommands operate directly on the local DB (same path as `mnemonic serve`). There is no "server URL" concept yet — the CLI bypasses HTTP entirely. | `--db` global flag (already implemented) selects which DB file to use. Server URL concept is deferred to the fast-path HTTP optimization (v1.4+). |
+| **Auto-migrate on config change** | "When I change `storage_backend`, my data should follow automatically." | Silent data migration on startup is dangerous: partial failures leave data in inconsistent state across both backends. Users who change config accidentally could trigger a large migration. The right UX is explicit: run `mnemonic migrate` deliberately. | Detect backend mismatch (e.g., SQLite file exists but config says `qdrant`) and print a warning with the `mnemonic migrate` command. Never auto-migrate. |
+| **Simultaneous multi-backend writes** | "Write to SQLite AND Qdrant at the same time for redundancy." | Multi-backend fan-out adds distributed systems complexity: partial write failures, consistency guarantees, write amplification. For agent memory at the scale Mnemonic targets (N<100K memories), single-backend reliability is sufficient. | Choose one backend. Use OS-level backups or Qdrant's own snapshot feature for durability. |
+| **ORM-based query builder** | "Use Diesel or SeaORM to abstract SQL differences between SQLite and Postgres." | ORMs add Rust compile time, binary size, and leaky abstraction (not all SQL features map cleanly). Mnemonic already uses raw SQL with `tokio_rusqlite`. For vector operations, ORMs either don't support `<->` operators or require plugins. SeaORM doesn't natively support pgvector. | Use raw SQL for SQLite and Postgres backends (same as current approach). Qdrant uses its own gRPC/REST client — no SQL involved. |
+| **Pinecone / Weaviate / Chroma backends** | "Add Pinecone support too!" | Each additional backend multiplies trait implementation surface and test matrix. Pinecone is managed-only (no local dev). Weaviate and Chroma have Rust clients but niche user bases for Mnemonic's target audience. The three backends (SQLite, Qdrant, Postgres) cover: zero-external-dependency, vector-native, and "I already have Postgres" — the actual usage segments. | Document the `StorageBackend` trait so the community can implement additional backends. The trait is the extension point, not the binary. |
+| **Hot backend switching without restart** | "Let me change `storage_backend` in the TOML and have mnemonic switch live." | `Arc<dyn StorageBackend>` is initialized at startup and shared via `AppState`. Live-swapping it requires replacing a shared reference while requests may be in flight — complex synchronization. The operational benefit is marginal (most deploys involve restart anyway). | Restart mnemonic after changing the backend config. Document this explicitly. |
+| **Per-agent backend routing** | "Route agent A's memories to SQLite and agent B's to Qdrant." | Adds routing logic to every operation, breaks the clean trait abstraction, and creates data spread across multiple backends that `mnemonic migrate` can't handle atomically. | Use a single backend per mnemonic instance. Run two instances if isolation is required. |
+| **mnemonic config set <key> <value>** | "Let me change config from the CLI without editing TOML." | Programmatic TOML writing is fragile (comments get stripped, ordering changes, existing formatting lost). The existing env var override path is the right mechanism for scripting. | Use `MNEMONIC_STORAGE_BACKEND=qdrant mnemonic serve` for ephemeral overrides, or edit `mnemonic.toml` for permanent config. |
 
 ---
 
 ## Feature Dependencies
 
 ```
-[mnemonic serve]
-    └──requires──> [Commands enum refactor in cli.rs] (add Serve variant, make None = show help or default to Serve)
+[StorageBackend trait]
+    └──required by──> [SQLite backend] (wraps existing tokio_rusqlite code)
+    └──required by──> [Qdrant backend] (new — uses qdrant-client)
+    └──required by──> [Postgres backend] (new — uses sqlx or tokio-postgres + pgvector)
+    └──required by──> [MemoryService refactor] (holds Arc<dyn StorageBackend> not Arc<Connection>)
+    └──required by──> [CompactionService refactor] (same — trait-based fetch + atomic_compact)
 
-[mnemonic remember <content>]
-    └──requires──> [EmbeddingEngine initialization] (model load, ~1-2s cold start)
-    └──requires──> [MemoryService::create_memory] (existing — no changes)
-    └──requires──> [stdin detection] (for pipe support — new, LOW complexity)
-    └──enhances──> [mnemonic serve] (fast path: POST to running server skips model load — v1.4)
+[Config extension: storage_backend field]
+    └──required by──> [validate_config() expansion] (new backend-specific validation branches)
+    └──required by──> [startup backend initialization] (factory function: match backend → Box<dyn StorageBackend>)
 
-[mnemonic recall <id>]
-    └──requires──> [DB-only path in main.rs] (no embedding load — same fast-path as keys CLI)
-    └──requires──> [MemoryService::get_memory by ID] (may need new method if not exposed)
+[MemoryService refactor]
+    └──required by──> [Qdrant backend]
+    └──required by──> [Postgres backend]
+    └──required by──> [mnemonic migrate] (reads and writes via trait, not concrete type)
 
-[mnemonic search <query>]
-    └──requires──> [EmbeddingEngine initialization] (model load — unavoidable for semantic search)
-    └──requires──> [MemoryService::search_memories] (existing — no changes)
-    └──requires──> [--threshold, --limit, --agent-id, --session-id flags] (map to SearchParams)
+[CompactionService refactor]
+    └──required by──> [Qdrant backend] (compaction must work without SQL transactions)
+    └──required by──> [Postgres backend] (compaction in a Postgres transaction)
 
-[mnemonic compact]
-    └──requires──> [EmbeddingEngine initialization] (for similarity clustering)
-    └──requires──> [CompactionService::compact] (existing — no changes)
-    └──requires──> [--dry-run flag] (maps to existing CompactionRequest.dry_run)
+[mnemonic config subcommand]
+    └──requires──> [Config struct] (reads and displays resolved config)
+    └──enhances──> [--json flag] (trivially — same global flag pattern)
 
-[--json flag (all subcommands)]
-    └──requires──> [Memory, SearchResultItem, ListResponse already derive Serialize] (existing — no changes)
+[mnemonic migrate subcommand]
+    └──requires──> [StorageBackend trait] (reads from source impl, writes to target impl)
+    └──requires──> [All backend implementations] (both source and target must be available)
+    └──requires──> [Config extension] (needs to know source and target backend config)
 
-[stdin pipe support (remember)]
-    └──requires──> [TTY detection] (atty crate or std::io::IsTerminal — Rust 1.70+)
-    └──conflicts──> [positional <content> arg] (if stdin is a pipe, positional arg is absent)
+[Auth key isolation]
+    └──requires──> [SQLite backend] (auth stays in SQLite even when memory backend is Qdrant)
+    └──conflicts with──> [Qdrant backend for api_keys] (Qdrant is not the right store for relational auth data)
+
+[/health endpoint extension]
+    └──requires──> [StorageBackend trait: health_check() method]
+    └──enhances──> [existing HealthResponse struct] (adds backend fields)
 ```
 
 ### Dependency Notes
 
-- **`recall` is the only DB-only path:** `remember`, `search`, and `compact` all require the embedding model to be loaded. `recall <id>` is a simple `SELECT WHERE id=?` — it can follow the same fast-path as `mnemonic keys` (no model init, no validate_config). This makes `recall` feel instant while the others have the known cold-start cost.
-- **`serve` variant must be the default for backward compat:** Existing users may run `mnemonic` with no subcommand and expect it to start the server. The safest approach: `None` arm in `main.rs` continues to start the server (or shows help with a deprecation notice). `Commands::Serve` explicitly starts it. This avoids breaking existing deployments.
-- **`remember` and `search` share the model init path:** Both need the embedding engine. The model init code in `main.rs` can be extracted into a helper `init_embedding_engine(&config)` to avoid duplication across three command handlers.
-- **`compact` requires both embedding AND optional LLM engine:** Same as server init. The compact CLI path must mirror the full server init sequence for services (DB + embedding + optional LLM). This is the most expensive CLI cold start.
+- **`StorageBackend` trait is the load-bearing piece.** Every other feature in this milestone either implements it or consumes it. Phase 1 must define and stabilize the trait before any backend or consumer code is written.
+- **Auth key isolation is a design decision, not an implementation detail.** The `api_keys` table exists in SQLite today. When users switch to Qdrant, the auth system must continue to work — either by keeping a local SQLite file just for auth, or by adding an `AuthBackend` trait separately. The cleaner choice is keeping auth in a separate SQLite file, always. This avoids forcing Qdrant to store relational data it is not designed for.
+- **CompactionService is the hardest refactor.** It currently fetches embeddings via raw SQL, runs Rust clustering, and does atomic writes via a single SQLite transaction. The Qdrant equivalent has no cross-point transactions — delete and upsert are separate operations. The trait's `atomic_compact` method must document that "atomic" means best-effort for non-transactional backends (Qdrant), and true atomic for transactional backends (SQLite, Postgres).
+- **`mnemonic migrate` requires all backends to be implemented first.** It is the last feature to implement, not the first.
+- **SQLite backend implementation is just a refactor, not new code.** The current `db.rs` + `service.rs` + `compaction.rs` code becomes the `SqliteBackend` struct that implements `StorageBackend`. No functional change, only structural.
 
 ---
 
 ## MVP Definition
 
-### Ship in v1.3
+### Ship in v1.4 (This Milestone)
 
-- [ ] `mnemonic serve` — explicit subcommand to start HTTP server (backward-compat default)
-- [ ] `mnemonic remember <content>` — store a memory with `--agent-id`, `--session-id`, `--tags` flags
-- [ ] `mnemonic remember` reads from stdin when content arg absent (pipe support)
-- [ ] `mnemonic recall <id>` — retrieve a single memory by ID (DB-only fast path, no model load)
-- [ ] `mnemonic search <query>` — semantic search with `--agent-id`, `--session-id`, `--limit`, `--threshold` flags
-- [ ] `mnemonic compact` — trigger compaction with `--agent-id`, `--dry-run` flags
-- [ ] `--json` global flag on all subcommands for machine-readable output
-- [ ] Human-readable default output (memory ID + content truncated + metadata)
-- [ ] Exit code 0/1 on all paths
-- [ ] Errors to stderr, data to stdout (all subcommands)
+- [ ] `StorageBackend` trait with all memory + compaction operations defined
+- [ ] `SqliteBackend` — wraps existing code behind the trait (zero functional change)
+- [ ] `MemoryService` refactored to `Arc<dyn StorageBackend>` (removes `Arc<Connection>` coupling)
+- [ ] `CompactionService` refactored to use trait methods for fetch + atomic_compact
+- [ ] `QdrantBackend` — full implementation behind the trait
+- [ ] `PostgresBackend` — full implementation behind the trait (pgvector)
+- [ ] Config extension: `storage_backend`, `qdrant_url`, `qdrant_api_key`, `qdrant_collection`, `postgres_url`
+- [ ] `validate_config()` expanded for Qdrant and Postgres required fields
+- [ ] Startup backend health check with actionable error messages
+- [ ] Auth keys always remain in SQLite (isolated from memory backend)
+- [ ] `mnemonic config show` subcommand (read-only, with `--json`)
+- [ ] `mnemonic config validate` subcommand (runs validate_config, exits 0/1)
+- [ ] `/health` endpoint extended with `backend` and `backend_latency_ms` fields
 
-### Add After Validation (v1.4+)
+### Add After Validation (v1.5+)
 
-- [ ] Fast path: CLI subcommands POST to running server via HTTP (skip model load) — add when users report cold-start friction
-- [ ] `mnemonic delete <id>` with explicit `--yes` confirmation flag
-- [ ] Color-coded search output with similarity score indicators (TTY-only)
-- [ ] `mnemonic keys rotate <id>` — zero-downtime key rotation helper
+- [ ] `mnemonic migrate --from <backend> --to <backend>` — high value but requires all backends stable first; the data portability guarantee is most credible when backends are proven
+- [ ] `mnemonic config set <key> <value>` — only if users report TOML editing friction at scale
+- [ ] Auth keys in Postgres when Postgres is the memory backend — eliminates the split-DB concern for Postgres users
+- [ ] Additional community backends (Weaviate, Chroma) — document the trait, let community implement
 
-### Confirmed Out of Scope (v1.3)
+### Confirmed Out of Scope (v1.4)
 
-- [ ] Interactive REPL mode — `mnemonic serve` IS the persistent process
-- [ ] Background daemon mode — use systemd/launchd
-- [ ] `--format csv/table/json` multi-format — `--json` + jq covers it
-- [ ] `mnemonic import <file>` — shell loop + `mnemonic remember` covers it
-- [ ] Server URL config (`~/.config/mnemonic/`) — CLI operates on local DB directly
+- [ ] Auto-migrate on config change — too dangerous
+- [ ] Multi-backend fan-out writes — distributed systems complexity without proportionate value
+- [ ] ORM-based query builder — binary bloat, no vector support
+- [ ] Pinecone / Weaviate / Chroma backends — document trait for community extension instead
+- [ ] Hot backend switching without restart — requires complex shared-ref swap
+- [ ] Per-agent backend routing — breaks trait abstraction, creates multi-backend data spread
+- [ ] `mnemonic config set` — TOML writing is fragile; env vars cover the scripting use case
 
 ---
 
@@ -140,126 +149,81 @@ Features that are not universally expected but align with Mnemonic's positioning
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| `mnemonic serve` subcommand + backward compat | HIGH | LOW | P1 |
-| `mnemonic remember <content>` | HIGH | MEDIUM | P1 |
-| Stdin pipe support for `remember` | HIGH | LOW | P1 |
-| `mnemonic recall <id>` (fast path) | HIGH | LOW | P1 |
-| `mnemonic search <query>` | HIGH | MEDIUM | P1 |
-| `mnemonic compact` with `--dry-run` | MEDIUM | MEDIUM | P1 |
-| `--json` flag (all subcommands) | HIGH | LOW | P1 |
-| `--agent-id` / `--session-id` on all commands | HIGH | LOW | P1 |
-| `--limit` / `--threshold` on search | MEDIUM | LOW | P1 |
-| Exit code 0/1 + stderr/stdout discipline | HIGH | LOW | P1 |
-| `mnemonic delete <id>` | MEDIUM | LOW | P2 |
-| Color-coded search output (TTY-only) | LOW | MEDIUM | P3 |
-| Fast path: HTTP to running server | HIGH | HIGH | P2 (v1.4) |
+| `StorageBackend` trait definition | HIGH | MEDIUM | P1 — everything else is blocked on this |
+| SQLite backend (refactor existing code) | HIGH | LOW | P1 — preserves existing users |
+| `MemoryService` + `CompactionService` refactor | HIGH | MEDIUM | P1 — consumers of the trait |
+| Config extension + validate_config expansion | HIGH | LOW | P1 — config-driven switching is the UX |
+| `QdrantBackend` implementation | HIGH | HIGH | P1 — primary new backend |
+| `PostgresBackend` implementation | HIGH | HIGH | P1 — "I already have Postgres" use case |
+| Auth key SQLite isolation design | HIGH | MEDIUM | P1 — correctness concern, not a feature |
+| Startup backend health check | MEDIUM | LOW | P1 — operational necessity |
+| `mnemonic config show` + `validate` subcommands | MEDIUM | LOW | P1 — UX without this is "read the TOML" |
+| `/health` endpoint extension | MEDIUM | LOW | P2 |
+| `mnemonic migrate` subcommand | HIGH | HIGH | P2 (v1.5) — needs all backends stable first |
+| `mnemonic config show --json` | LOW | LOW | P2 — easy extension of existing pattern |
 
 **Priority key:**
-- P1: Must have for v1.3 to feel like a complete CLI
-- P2: High value, add when possible (v1.3 or v1.4)
+- P1: Must have for v1.4 to be a working backend abstraction
+- P2: High value, add when possible (v1.4 end or v1.5)
 - P3: Nice to have, future consideration
 
 ---
 
-## CLI UX Reference: Patterns from Established Tools
+## Cross-Cutting Concerns: Existing Features vs. Backend Abstraction
 
-### Output Format Conventions
+The existing features (v1.0–v1.3) are consumers of the storage backend. Each has specific requirements the `StorageBackend` trait must satisfy.
 
-**From Heroku CLI (highest relevance — similar developer tool audience):**
-- Default output is grep-parseable human text with column headers
-- `--json` returns a JSON array, enables `jq` composition
-- Stdout for data, stderr for progress/errors
-- Tables with fixed-width columns (already established in `mnemonic keys list`)
+### Compaction (v1.1)
 
-**From ripgrep:**
-- `--json` emits newline-delimited JSON objects (one per match) rather than a JSON array
-- Enables streaming: `rg --json | jq 'select(.type=="match")'`
-- For memory search results (N matches), newline-delimited JSON per result is more composable than a wrapped array
-- Recommendation: `--json` on search emits one JSON object per line (the `SearchResultItem` struct)
+Compaction requires: (1) fetching candidate memories with their embeddings for a given `agent_id`, (2) writing a compact run audit log entry, (3) an atomic operation that deletes source memories and inserts merged memories in one logical transaction.
 
-**From HTTPie:**
-- Auto-detects TTY: pretty-printed colored output for terminals, raw JSON when piped
-- This is the ideal UX but requires `atty` crate and adds complexity
-- For v1.3: `--json` flag is explicit opt-in; auto-detect is a P2 enhancement
+For SQLite: this is a single SQL transaction. For Postgres: same. For Qdrant: delete and upsert are separate gRPC calls — "atomic" means sequential with error rollback, not true ACID. The trait must document this semantic difference.
 
-**From redis-cli:**
-- No output on success for mutating commands (`SET key val` returns `OK`, not the value)
-- Read commands return just the value, no decoration
-- Error output: `(error) ERR ...` with parenthetical prefix
-- Mnemonic analogy: `mnemonic remember` returns the memory ID on success (one line, pipeable)
+The `StorageBackend` trait method `atomic_compact(run_id, agent_id, deletions: Vec<String>, insertions: Vec<MemoryWithEmbedding>) -> Result<()>` encapsulates this complexity. Each backend implements whatever "atomic" means for its model.
 
-**From sqlite3 CLI:**
-- `.mode` command switches output format (not applicable to Mnemonic's subcommand model)
-- Default output is pipe-separated values — too raw for humans
-- Mnemonic should NOT follow sqlite3's default output; use Heroku-style tabular output
+### Auth (v1.2)
 
-### Input Conventions
+The `api_keys` table is relational: lookup by key hash, join with `agent_id` scopes, revocation. This is a poor fit for Qdrant (a vector DB) or for a generic `StorageBackend` trait focused on memories. Auth must be a parallel concern, not a `StorageBackend` method.
 
-**Positional argument for primary data:**
-```
-mnemonic remember "The user prefers dark mode"
-mnemonic recall 01920abc-...
-mnemonic search "user interface preferences"
-```
+Decision: `api_keys` always lives in a SQLite file (default: same `mnemonic.db`, or a separate `mnemonic-auth.db` if the memory backend is non-SQLite). The `AuthService` holds its own `Arc<tokio_rusqlite::Connection>` independently of the memory backend. This is a split that the `AppState` must reflect: `memory_backend: Arc<dyn StorageBackend>` and `auth_db: Arc<tokio_rusqlite::Connection>`.
 
-**Flags for metadata/filters:**
-```
-mnemonic remember "content" --agent-id claude --session-id sess_001 --tags "ui,preferences"
-mnemonic search "dark mode" --agent-id claude --limit 5 --threshold 0.7
-mnemonic compact --agent-id claude --dry-run
-```
+### CLI Subcommands (v1.3)
 
-**Stdin for pipe workflows (remember only):**
-```
-echo "learned from conversation" | mnemonic remember --agent-id claude
-cat meeting_notes.txt | mnemonic remember --agent-id assistant --tags "meetings"
-```
-
-### Error Handling Conventions
-
-Based on clap + existing `mnemonic keys` implementation:
-- Invalid args: clap handles automatically with usage message
-- DB errors: `eprintln!("error: {}", e); std::process::exit(1)`
-- Not found (recall by ID): `eprintln!("error: memory '{}' not found", id); std::process::exit(1)`
-- Model load failure: `eprintln!("error: failed to load embedding model: {}", e); std::process::exit(1)`
-- Empty result (search/recall): print "No memories found." to stdout (not an error), exit 0
-
-### Cold Start Warning
-
-The local embedding model (all-MiniLM-L6-v2) takes 1-2 seconds to load. This affects `remember`, `search`, and `compact`. Conventions from tools with known startup costs (Java CLIs, Python ML tools):
-- Do NOT print a spinner or progress bar for v1.3 (adds complexity)
-- DO print a startup message to stderr if startup exceeds 1 second: `"loading embedding model..."` (stderr only, invisible in pipes)
-- For `--json` mode, suppress all startup messages (pure data to stdout, silencing stderr is user's responsibility with `2>/dev/null`)
+The CLI subcommands (`remember`, `recall`, `search`, `compact`) all currently initialize the DB via `db::open()`. After refactoring, they must initialize the appropriate backend via the factory function. The tiered init pattern (DB-only for `recall`/`keys`, full for `remember`/`search`) still applies — but "DB-only" now means "lightweight backend init" (SQLite opens the file; Qdrant creates a client connection; Postgres creates a connection pool). The fast path is maintained by not loading the embedding model, not by skipping backend init.
 
 ---
 
 ## Competitor / Reference Analysis
 
-| Feature | redis-cli | sqlite3 | ripgrep | HTTPie | Mnemonic v1.3 |
-|---------|-----------|---------|---------|--------|----------------|
-| Default output format | Human (REPL) | Pipe-separated | Colored matches | Pretty-printed | Human tabular |
-| Machine-readable flag | None (REPL mode) | `.mode json` | `--json` | Auto (TTY detect) | `--json` |
-| Stdin for data | Via pipe to REPL | Via pipe to REPL | Query via stdin | Request body via pipe | `remember` reads stdin |
-| Exit codes | 0/1 | 0/1 | 0/1 (found/not found) | 0/1 | 0/1 |
-| Error stream | stdout (REPL) | stdout (REPL) | stderr | stderr | stderr |
-| Subcommand model | No (REPL) | No (REPL) | No (single purpose) | No (single purpose) | Yes (`clap` derive) |
-| Slow startup warning | N/A | N/A | N/A | N/A | stderr "loading..." |
+| Feature | redis/agent-memory-server | Open Web UI | Mnemonic v1.4 |
+|---------|--------------------------|-------------|----------------|
+| Pluggable backend mechanism | Factory pattern (Python) | Env var `DATABASE_URL` | Rust trait + config |
+| Default backend | Redis | SQLite | SQLite |
+| Postgres support | No (Redis-centric) | Yes (via SQLAlchemy) | Yes (via pgvector-rust) |
+| Qdrant support | Yes (primary vector DB) | Yes (separate collection) | Yes (via qdrant-client) |
+| Migration tool | No | No | `mnemonic migrate` (v1.5) |
+| Auth backend isolation | N/A | SQLite always for auth | SQLite always for auth |
+| Backend health in /health | No | No | Yes (latency + status) |
+| Config subcommand | No | No | `mnemonic config show/validate` |
 
 ---
 
 ## Sources
 
-- [Heroku CLI Style Guide](https://devcenter.heroku.com/articles/cli-style-guide) — stdout/stderr split, `--json` flag, table format, flag-vs-positional conventions. HIGH confidence.
-- [HTTPie Redirected Output docs](https://httpie.io/docs/cli/redirected-output) — TTY detection for auto pretty/plain mode. HIGH confidence (official docs).
-- [ripgrep `--json` output docs](https://learnbyexample.github.io/learn_gnugrep_ripgrep/ripgrep.html) — newline-delimited JSON for streaming composability. MEDIUM confidence.
-- [CLI best practices (HackMD)](https://hackmd.io/@arturtamborski/cli-best-practices) — stdout/stderr discipline, exit codes. MEDIUM confidence.
-- [Rust CLI patterns 2026 (dasroot.net)](https://dasroot.net/posts/2026/02/rust-cli-patterns-clap-cargo-configuration/) — clap derive subcommand patterns. MEDIUM confidence.
-- [Cloudflare workers-sdk discussion: stderr for logs](https://github.com/cloudflare/workers-sdk/discussions/2940) — rationale for reserving stdout for machine-readable output. HIGH confidence.
-- Mnemonic `src/cli.rs` — existing keys CLI conventions (stdout/stderr split, table format, fast path without model load). HIGH confidence (primary source).
-- Mnemonic `src/service.rs` — existing `SearchParams`, `ListParams`, `Memory`, `SearchResultItem` structs. HIGH confidence (primary source).
-- Mnemonic `src/main.rs` — existing dispatch pattern, model init sequence, fast path for keys. HIGH confidence (primary source).
-- [14 tips for amazing CLIs (DEV Community)](https://dev.to/wesen/14-great-tips-to-make-amazing-cli-applications-3gp3) — input/output design patterns. MEDIUM confidence.
+- [qdrant-client Rust docs](https://docs.rs/qdrant-client/latest/qdrant_client/index.html) — `Qdrant::from_url`, `create_collection`, `upsert_points`, `query`, `delete_points` APIs. HIGH confidence (official docs).
+- [pgvector-rust GitHub](https://github.com/pgvector/pgvector-rust) — `Vector` type, `<->` operator support for tokio-postgres and sqlx. HIGH confidence (official repo).
+- [redis/agent-memory-server GitHub](https://github.com/redis/agent-memory-server) — Pluggable memory vector database factory pattern reference. MEDIUM confidence (README-level).
+- [Migrating Vector Embeddings from PostgreSQL to Qdrant (Medium)](https://0xhagen.medium.com/migrating-vector-embeddings-from-postgresql-to-qdrant-challenges-learnings-and-insights-f101f42f78f5) — Real-world migration pitfalls: type mismatches, scroll API patterns, delete-after-insert workflow. MEDIUM confidence (practitioner post).
+- [Qdrant migration tool](https://qdrant.tech/blog/beta-database-migration-tool/) — What Qdrant's own migration tool covers (and what it doesn't: no SQLite source). MEDIUM confidence (official blog).
+- [n8n SQLite→Postgres migration](https://community.n8n.io/t/how-to-migrate-from-sqlite-to-postgres/97414) — User pain: "changing DATABASE_URL does not migrate data." Validates `mnemonic migrate` as a real need. MEDIUM confidence (community forum).
+- [pgvector vs Qdrant comparison (TigerData)](https://www.tigerdata.com/blog/pgvector-vs-qdrant) — Backend selection tradeoffs: Postgres for teams already on Postgres, Qdrant for vector-native workloads. HIGH confidence (detailed technical comparison).
+- [Working with data storages in Rust (Medium)](https://medium.com/@disserman/working-with-data-storages-in-rust-a1428fd9ba2c) — Rust storage trait abstraction patterns, async_trait usage. MEDIUM confidence.
+- [async-fn in trait stabilized (Rust Blog)](https://blog.rust-lang.org/inside-rust/2022/11/17/async-fn-in-trait-nightly/) — Rust 1.75 stabilized async fn in traits; `async_trait` macro still needed for object-safe dyn traits with async methods. HIGH confidence (official Rust blog).
+- Mnemonic `src/service.rs` — `MemoryService` struct, `Memory`, `SearchResultItem`, `ListParams`, `SearchParams` types. HIGH confidence (primary source).
+- Mnemonic `src/compaction.rs` — `CompactionService`, clustering logic, `atomic_compact` semantics needed from trait. HIGH confidence (primary source).
+- Mnemonic `src/config.rs` — `Config` struct, `validate_config()` pattern, `load_config()`. HIGH confidence (primary source).
+- Mnemonic `src/auth.rs` — API key table design, auth middleware. HIGH confidence (primary source — auth isolation decision).
 
 ---
-*Feature research for: Mnemonic v1.3 CLI subcommands (serve, remember, recall, search, compact)*
+*Feature research for: Mnemonic v1.4 Pluggable Storage Backends*
 *Researched: 2026-03-21*
