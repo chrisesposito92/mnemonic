@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Pluggable Storage Backends
-status: defining_requirements
+status: ready_to_plan
 stopped_at: null
 last_updated: "2026-03-21T17:00:00.000Z"
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -19,14 +19,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-21)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Defining requirements for v1.4 Pluggable Storage Backends
+**Current focus:** Phase 21 — Storage Trait and SQLite Backend
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-03-21 — Milestone v1.4 started
+Phase: 21 of 24 (Storage Trait and SQLite Backend)
+Plan: — of — in current phase
+Status: Ready to plan
+Last activity: 2026-03-21 — Roadmap created for v1.4
+
+Progress: [░░░░░░░░░░] 0% (0/4 phases complete)
 
 ## Performance Metrics
 
@@ -50,16 +52,24 @@ Last activity: 2026-03-21 — Milestone v1.4 started
 
 See PROJECT.md Key Decisions table for complete log.
 
+Recent decisions affecting v1.4:
+- Use #[async_trait] (not native async fn in traits) — native async fn is not dyn-compatible as of early 2026
+- KeyService stays on direct Arc<Connection> — auth must not route through a potentially remote StorageBackend
+- StorageBackend distance contract is lower-is-better — Qdrant scores (higher-is-better) must be converted via `1.0 - score`
+- backend-qdrant and backend-postgres are optional Cargo features — default binary carries zero new dependencies
+- Compact_run audit records for Qdrant go in a companion SQLite file (design decision to confirm in Phase 21 planning)
+
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-None.
+- Phase 23 (Qdrant) needs research during planning: scroll API pagination for compaction candidates and payload index creation syntax in qdrant-client 1.17
+- Compact_run audit log design for non-relational backends is an open design decision — must be settled in Phase 21 planning before Phase 23 implementation
 
 ## Session Continuity
 
 Last session: 2026-03-21
-Stopped at: Milestone v1.3 complete
+Stopped at: Roadmap created — ready to plan Phase 21
 Resume file: None

@@ -6,6 +6,7 @@
 - ✅ **v1.1 Memory Compaction** — Phases 6-9 (shipped 2026-03-20)
 - ✅ **v1.2 Authentication / API Keys** — Phases 10-14 (shipped 2026-03-21)
 - ✅ **v1.3 CLI** — Phases 15-20 (shipped 2026-03-21)
+- 🚧 **v1.4 Pluggable Storage Backends** — Phases 21-24 (in progress)
 
 ## Phases
 
@@ -53,6 +54,63 @@
 
 </details>
 
+### v1.4 Pluggable Storage Backends (In Progress)
+
+**Milestone Goal:** Make the storage layer pluggable via a trait so users can swap SQLite for Qdrant or Postgres, with a `mnemonic config` CLI for backend inspection — SQLite remains the zero-config default.
+
+- [ ] **Phase 21: Storage Trait and SQLite Backend** - Define StorageBackend async trait, wrap existing code in SqliteBackend, refactor MemoryService and CompactionService to Arc<dyn StorageBackend>, all 239 tests green
+- [ ] **Phase 22: Config Extension, Backend Factory, and Config CLI** - Extend config with storage_provider and backend credential fields, expand validate_config(), wire backend factory in main.rs, add mnemonic config show subcommand and health backend reporting
+- [ ] **Phase 23: Qdrant Backend** - Implement QdrantBackend behind backend-qdrant feature flag with score-to-distance normalization and multi-agent payload filtering
+- [ ] **Phase 24: Postgres Backend** - Implement PostgresBackend behind backend-postgres feature flag with pgvector cosine distance and transactional compaction
+
+## Phase Details
+
+### Phase 21: Storage Trait and SQLite Backend
+**Goal**: The storage layer is decoupled from SQLite via a clean async trait — all existing functionality is preserved with zero behavior change and all 239 tests pass
+**Depends on**: Phase 20 (v1.3 complete)
+**Requirements**: STOR-01, STOR-02, STOR-03, STOR-04, STOR-05
+**Success Criteria** (what must be TRUE):
+  1. `cargo test` reports 239 tests passing after the refactor — no regressions
+  2. MemoryService and CompactionService no longer hold a direct tokio-rusqlite connection — they hold Arc<dyn StorageBackend>
+  3. KeyService is unchanged — it still holds its direct Arc<Connection> with no StorageBackend involvement
+  4. A new StorageBackend implementor can be added by creating a struct in src/storage/ without modifying MemoryService or CompactionService
+  5. Search results from SqliteBackend are always lower-is-better distance values, matching the documented trait contract
+**Plans**: TBD
+
+### Phase 22: Config Extension, Backend Factory, and Config CLI
+**Goal**: Users can select a storage backend via config, get actionable errors on misconfiguration, inspect current config from the terminal, and see the active backend reported by the health endpoint
+**Depends on**: Phase 21
+**Requirements**: CONF-01, CONF-02, CONF-03, CONF-04
+**Success Criteria** (what must be TRUE):
+  1. `mnemonic config show` prints current configuration with secret fields redacted (api keys shown as ****)
+  2. Setting `storage_provider = "qdrant"` without `qdrant_url` causes startup to exit with a clear actionable error message before accepting traffic
+  3. `GET /health` response includes a `backend` field showing the active storage backend name
+  4. `mnemonic config show --json` produces machine-readable output for CI/CD pipeline use
+**Plans**: TBD
+
+### Phase 23: Qdrant Backend
+**Goal**: Users with a Qdrant instance can run Mnemonic against it by installing with `--features backend-qdrant` and setting qdrant_url — all memory and compaction operations work correctly
+**Depends on**: Phase 22
+**Requirements**: QDRT-01, QDRT-02, QDRT-03, QDRT-04
+**Success Criteria** (what must be TRUE):
+  1. `cargo build --features backend-qdrant` compiles without errors and produces a binary that connects to Qdrant at startup
+  2. Semantic search against Qdrant returns results in lower-is-better distance order — the same ranking direction as SQLite results
+  3. Memories stored under different agent_ids via Qdrant are isolated — searching as agent A does not return agent B's memories
+  4. Running `mnemonic compact` with the Qdrant backend deduplicates memories — operation completes without panicking despite non-transactional semantics
+  5. The default binary built without `--features backend-qdrant` has zero qdrant-client dependency in its binary
+**Plans**: TBD
+
+### Phase 24: Postgres Backend
+**Goal**: Users with a Postgres+pgvector instance can run Mnemonic against it by installing with `--features backend-postgres` and setting postgres_url — all memory and compaction operations including atomic compaction work correctly
+**Depends on**: Phase 23
+**Requirements**: PGVR-01, PGVR-02, PGVR-03, PGVR-04
+**Success Criteria** (what must be TRUE):
+  1. `cargo build --features backend-postgres` compiles without errors and produces a binary that creates the memories table with a vector(384) column at startup
+  2. Semantic search via pgvector cosine distance (`<=>`) returns results ranked correctly — similar memories rank higher than dissimilar ones
+  3. Memories stored under different agent_ids via Postgres are isolated — SQL WHERE filtering on agent_id prevents cross-agent data leakage
+  4. Compaction on the Postgres backend is fully atomic — if the process is interrupted mid-compact, the database is left in a consistent state with no partial writes
+**Plans**: TBD
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -77,3 +135,7 @@
 | 18. search subcommand | v1.3 | 2/2 | Complete | 2026-03-21 |
 | 19. compact subcommand | v1.3 | 2/2 | Complete | 2026-03-21 |
 | 20. output polish | v1.3 | 2/2 | Complete | 2026-03-21 |
+| 21. Storage Trait and SQLite Backend | v1.4 | 0/? | Not started | - |
+| 22. Config Extension, Backend Factory, and Config CLI | v1.4 | 0/? | Not started | - |
+| 23. Qdrant Backend | v1.4 | 0/? | Not started | - |
+| 24. Postgres Backend | v1.4 | 0/? | Not started | - |

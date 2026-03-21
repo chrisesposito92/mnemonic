@@ -57,29 +57,29 @@ Requirements for pluggable storage backends. Each maps to roadmap phases.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STOR-01 | — | Pending |
-| STOR-02 | — | Pending |
-| STOR-03 | — | Pending |
-| STOR-04 | — | Pending |
-| STOR-05 | — | Pending |
-| QDRT-01 | — | Pending |
-| QDRT-02 | — | Pending |
-| QDRT-03 | — | Pending |
-| QDRT-04 | — | Pending |
-| PGVR-01 | — | Pending |
-| PGVR-02 | — | Pending |
-| PGVR-03 | — | Pending |
-| PGVR-04 | — | Pending |
-| CONF-01 | — | Pending |
-| CONF-02 | — | Pending |
-| CONF-03 | — | Pending |
-| CONF-04 | — | Pending |
+| STOR-01 | Phase 21 | Pending |
+| STOR-02 | Phase 21 | Pending |
+| STOR-03 | Phase 21 | Pending |
+| STOR-04 | Phase 21 | Pending |
+| STOR-05 | Phase 21 | Pending |
+| CONF-01 | Phase 22 | Pending |
+| CONF-02 | Phase 22 | Pending |
+| CONF-03 | Phase 22 | Pending |
+| CONF-04 | Phase 22 | Pending |
+| QDRT-01 | Phase 23 | Pending |
+| QDRT-02 | Phase 23 | Pending |
+| QDRT-03 | Phase 23 | Pending |
+| QDRT-04 | Phase 23 | Pending |
+| PGVR-01 | Phase 24 | Pending |
+| PGVR-02 | Phase 24 | Pending |
+| PGVR-03 | Phase 24 | Pending |
+| PGVR-04 | Phase 24 | Pending |
 
 **Coverage:**
 - v1.4 requirements: 17 total
-- Mapped to phases: 0
-- Unmapped: 17
+- Mapped to phases: 17
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-21*
-*Last updated: 2026-03-21 after initial definition*
+*Last updated: 2026-03-21 — traceability mapped after roadmap creation*
