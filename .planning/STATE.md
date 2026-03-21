@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Authentication / API Keys
 status: unknown
-stopped_at: Phase 11 context gathered
-last_updated: "2026-03-21T01:01:32.531Z"
+stopped_at: Completed 11-01-PLAN.md
+last_updated: "2026-03-21T01:27:00.483Z"
 progress:
   total_phases: 5
-  completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  completed_phases: 2
+  total_plans: 3
+  completed_plans: 3
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 10 — auth-schema-foundation
+**Current focus:** Phase 11 — keyservice-core
 
 ## Current Position
 
-Phase: 11
-Plan: Not started
+Phase: 11 (keyservice-core) — EXECUTING
+Plan: 1 of 1
 
 ## Performance Metrics
 
@@ -50,6 +50,8 @@ Recent decisions affecting v1.2:
 - [Phase 10]: Refactored ApiError::IntoResponse to per-variant body handling (Option A) to accommodate richer 401 response body with auth_mode and hint fields
 - [Phase 10]: Per-item #[allow(dead_code)] on key_service field (AppState) and KeyService stub methods — no module-level suppression
 - [Phase 10]: Bare module paths in main.rs for auth (auth::KeyService) matching compaction/service pattern
+- [Phase 11-keyservice-core]: rand::rand_core re-export path used for OsRng import with rand 0.9 (not standalone rand_core crate)
+- [Phase 11-keyservice-core]: ORDER BY created_at DESC, id DESC for deterministic list ordering when timestamps collide within same second
 
 ### Pending Todos
 
@@ -62,6 +64,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-21T01:01:32.529Z
-Stopped at: Phase 11 context gathered
-Resume file: .planning/phases/11-keyservice-core/11-CONTEXT.md
+Last session: 2026-03-21T01:27:00.481Z
+Stopped at: Completed 11-01-PLAN.md
+Resume file: None

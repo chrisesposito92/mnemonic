@@ -34,7 +34,7 @@
 **Milestone Goal:** Add optional API key authentication so mnemonic can be safely deployed on a network — scoped to agent namespaces, enforced in middleware, off by default for local dev.
 
 - [x] **Phase 10: Auth Schema Foundation** - DB table, error variant, and module skeleton that all auth logic builds on (completed 2026-03-20)
-- [ ] **Phase 11: KeyService Core** - Business logic for key creation, listing, revocation, validation, and secure hashing
+- [x] **Phase 11: KeyService Core** - Business logic for key creation, listing, revocation, validation, and secure hashing (completed 2026-03-21)
 - [ ] **Phase 12: Auth Middleware** - Axum middleware that enforces authentication and injects AuthContext into requests
 - [ ] **Phase 13: HTTP Wiring and REST Key Endpoints** - Attach middleware to router, add key management REST endpoints, enforce scope at handler layer
 - [ ] **Phase 14: CLI Key Management** - `mnemonic keys` subcommand for creating, listing, and revoking keys from the terminal
@@ -65,9 +65,9 @@ Plans:
   3. Admin revokes a key by ID; subsequent validation of that key returns an error
   4. A key scoped to `agent-x` cannot be validated against memories for `agent-y` (scope is stored on the key record)
   5. Key comparison uses constant-time BLAKE3 hash comparison — `==` is never used on raw or hashed key values
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
-- [ ] 11-01-PLAN.md — Implement create/list/revoke/validate with BLAKE3 hashing, constant-time comparison, and unit tests
+- [x] 11-01-PLAN.md — Implement create/list/revoke/validate with BLAKE3 hashing, constant-time comparison, and unit tests
 
 ### Phase 12: Auth Middleware
 **Goal**: Every matched route checks authentication via the middleware, with open mode and health-check exemption working correctly
@@ -118,7 +118,7 @@ Plans:
 | 8. Compaction Core | v1.1 | 2/2 | Complete | 2026-03-20 |
 | 9. HTTP Integration | v1.1 | 1/1 | Complete | 2026-03-20 |
 | 10. Auth Schema Foundation | v1.2 | 2/2 | Complete    | 2026-03-20 |
-| 11. KeyService Core | v1.2 | 0/1 | Not started | - |
+| 11. KeyService Core | v1.2 | 1/1 | Complete   | 2026-03-21 |
 | 12. Auth Middleware | v1.2 | 0/? | Not started | - |
 | 13. HTTP Wiring and REST Key Endpoints | v1.2 | 0/? | Not started | - |
 | 14. CLI Key Management | v1.2 | 0/? | Not started | - |
