@@ -19,7 +19,7 @@ Requirements for API key authentication milestone. Each maps to roadmap phases.
 - [x] **AUTH-01**: Requests with a valid Bearer token in the Authorization header are authenticated
 - [x] **AUTH-02**: Requests with an invalid or revoked token receive 401 Unauthorized
 - [x] **AUTH-03**: When no API keys exist in the database, all requests are allowed (open mode)
-- [ ] **AUTH-04**: A scoped key's agent_id overrides the client-supplied agent_id, preventing cross-agent access
+- [x] **AUTH-04**: A scoped key's agent_id overrides the client-supplied agent_id, preventing cross-agent access
 - [x] **AUTH-05**: GET /health is accessible without authentication regardless of auth mode
 
 ### Infrastructure
@@ -69,7 +69,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AUTH-01 | Phase 12 | Complete |
 | AUTH-02 | Phase 12 | Complete |
 | AUTH-03 | Phase 12 | Complete |
-| AUTH-04 | Phase 13 | Pending |
+| AUTH-04 | Phase 13 | Complete |
 | AUTH-05 | Phase 12 | Complete |
 | INFRA-01 | Phase 10 | Complete |
 | INFRA-02 | Phase 11 | Complete |

@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Authentication / API Keys
 status: unknown
-stopped_at: Completed 12-01-PLAN.md
-last_updated: "2026-03-21T01:59:51.009Z"
+stopped_at: Completed 13-01-PLAN.md
+last_updated: "2026-03-21T02:30:02.143Z"
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 6
+  completed_plans: 5
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 12 — auth-middleware
+**Current focus:** Phase 13 — http-wiring-and-rest-key-endpoints
 
 ## Current Position
 
-Phase: 13
-Plan: Not started
+Phase: 13 (http-wiring-and-rest-key-endpoints) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -55,6 +55,9 @@ Recent decisions affecting v1.2:
 - [Phase 12]: route_layer() not layer() for middleware scoping prevents 401 on unmatched routes
 - [Phase 12]: Open mode (zero active keys) passes through unconditionally — revoking only key re-enables open mode by design (D-05)
 - [Phase 12]: Test for revoked-token requires second active key to keep auth mode on; single key revoke = open mode
+- [Phase 13]: enforce_scope as free function (not method) keeps scope logic uniform and pure across all 4 relevant handlers
+- [Phase 13]: delete_memory_handler uses direct DB ownership lookup (get_memory_agent_id) instead of enforce_scope — path param has no agent_id to compare against
+- [Phase 13]: Option<Extension<AuthContext>> (optional) preserves open-mode and wildcard-key behavior without middleware changes
 
 ### Pending Todos
 
@@ -67,6 +70,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-21T01:56:20.601Z
-Stopped at: Completed 12-01-PLAN.md
+Last session: 2026-03-21T02:30:02.142Z
+Stopped at: Completed 13-01-PLAN.md
 Resume file: None

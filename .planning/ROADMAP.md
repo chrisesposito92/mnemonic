@@ -93,9 +93,9 @@ Plans:
   3. `GET /keys` returns all key metadata with no raw token values
   4. `DELETE /keys/:id` revokes a key and subsequent requests with that key return 401
   5. Server startup log (first request or startup hook) confirms open or authenticated mode
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
-- [ ] 13-01-PLAN.md — Scope enforcement: Forbidden error variant, enforce_scope helper, modify 5 handlers
+- [x] 13-01-PLAN.md — Scope enforcement: Forbidden error variant, enforce_scope helper, modify 5 handlers
 - [ ] 13-02-PLAN.md — Key management REST endpoints and 8 integration tests
 
 ### Phase 14: CLI Key Management
@@ -125,5 +125,5 @@ Plans:
 | 10. Auth Schema Foundation | v1.2 | 2/2 | Complete    | 2026-03-20 |
 | 11. KeyService Core | v1.2 | 1/1 | Complete    | 2026-03-21 |
 | 12. Auth Middleware | v1.2 | 1/1 | Complete    | 2026-03-21 |
-| 13. HTTP Wiring and REST Key Endpoints | v1.2 | 0/2 | Not started | - |
+| 13. HTTP Wiring and REST Key Endpoints | v1.2 | 1/2 | In Progress|  |
 | 14. CLI Key Management | v1.2 | 0/? | Not started | - |
