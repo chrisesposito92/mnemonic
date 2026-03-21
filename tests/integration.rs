@@ -1482,6 +1482,150 @@ async fn test_compact_http_agent_isolation() {
     assert_eq!(json["memories"][0]["content"], "agent B private http memory");
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Auth Middleware Integration Tests (Phase 12)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Creates a test app with one active API key.
+/// Returns (Router, raw_token) for auth tests that need a valid token.
+async fn build_auth_app() -> (axum::Router, String) {
+    let (state, _) = build_test_state().await;
+    let (_key, raw_token) = state
+        .key_service
+        .create("test-key".to_string(), None)
+        .await
+        .unwrap();
+    (build_router(state), raw_token)
+}
+
+/// AUTH-01: Valid Bearer token allows the request through.
+#[tokio::test]
+async fn test_auth_valid_token_allows() {
+    let (app, token) = build_auth_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// AUTH-02: Invalid token returns 401.
+#[tokio::test]
+async fn test_auth_invalid_token_rejects() {
+    let (app, _valid_token) = build_auth_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .header("authorization", "Bearer mnk_0000000000000000000000000000000000000000000000000000000000000000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "unauthorized");
+}
+
+/// AUTH-02: Revoked token returns 401 (while another active key keeps auth mode active).
+#[tokio::test]
+async fn test_auth_revoked_token_rejects() {
+    let (state, _) = build_test_state().await;
+    // Create two keys: revoke the first, keep the second active so auth mode stays on.
+    let (api_key, raw_token) = state
+        .key_service
+        .create("revoke-test".to_string(), None)
+        .await
+        .unwrap();
+    let (_active_key, _active_token) = state
+        .key_service
+        .create("active-key".to_string(), None)
+        .await
+        .unwrap();
+    state.key_service.revoke(&api_key.id).await.unwrap();
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .header("authorization", format!("Bearer {}", raw_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// AUTH-03: Open mode (zero keys) allows all requests without auth header.
+#[tokio::test]
+async fn test_auth_open_mode_allows() {
+    // Fresh DB with zero keys — open mode
+    let app = build_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// AUTH-05: GET /health returns 200 without auth header even when auth is active.
+#[tokio::test]
+async fn test_auth_health_no_token() {
+    let (app, _token) = build_auth_app().await;
+    // No Authorization header — health should still return 200
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["status"], "ok");
+}
+
+/// Malformed Authorization header (not "Bearer <token>" format) returns 400.
+#[tokio::test]
+async fn test_auth_malformed_header_400() {
+    let (app, _token) = build_auth_app().await;
+    // "Token" instead of "Bearer" — malformed
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .header("authorization", "Token some-value")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = response_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("Bearer"), "error message should mention Bearer format");
+}
+
 /// Validation: empty agent_id returns 400, threshold out of range returns 400,
 /// max_candidates=0 returns 400.
 #[tokio::test]
