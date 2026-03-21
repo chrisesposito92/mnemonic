@@ -251,6 +251,100 @@ async fn revoke_key_handler(
     Ok(Json(serde_json::json!({ "revoked": true, "id": id })))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::AuthContext;
+
+    fn open_mode() -> Option<AuthContext> {
+        None
+    }
+
+    fn wildcard_key() -> AuthContext {
+        AuthContext {
+            key_id: "key-wildcard".to_string(),
+            allowed_agent_id: None,
+        }
+    }
+
+    fn scoped_key(agent_id: &str) -> AuthContext {
+        AuthContext {
+            key_id: "key-scoped".to_string(),
+            allowed_agent_id: Some(agent_id.to_string()),
+        }
+    }
+
+    /// AUTH-04: open mode (no AuthContext) passes through without enforcement.
+    #[test]
+    fn test_enforce_scope_open_mode_returns_ok_none() {
+        let result = enforce_scope(open_mode().as_ref(), Some("agent-x"));
+        assert!(result.is_ok(), "open mode must not return an error");
+        assert!(result.unwrap().is_none(), "open mode must return None so caller uses original value");
+    }
+
+    /// AUTH-04: wildcard key (allowed_agent_id=None) passes the requested agent_id through unchanged.
+    #[test]
+    fn test_enforce_scope_wildcard_key_passes_requested_agent_id_through() {
+        let ctx = wildcard_key();
+        let result = enforce_scope(Some(&ctx), Some("agent-x"));
+        assert!(result.is_ok(), "wildcard key must not error");
+        assert_eq!(
+            result.unwrap(),
+            Some("agent-x".to_string()),
+            "wildcard key must pass through the client-supplied agent_id"
+        );
+    }
+
+    /// AUTH-04: scoped key with no requested agent_id forces the key's scope as effective agent_id.
+    #[test]
+    fn test_enforce_scope_scoped_key_forces_scope_when_no_requested_agent_id() {
+        let ctx = scoped_key("agent-A");
+        let result = enforce_scope(Some(&ctx), None);
+        assert!(result.is_ok(), "scoped key with no requested agent_id must not error");
+        assert_eq!(
+            result.unwrap(),
+            Some("agent-A".to_string()),
+            "scoped key must force its own agent_id when none is requested"
+        );
+    }
+
+    /// AUTH-04: scoped key with matching requested agent_id returns that agent_id.
+    #[test]
+    fn test_enforce_scope_scoped_key_allows_matching_agent_id() {
+        let ctx = scoped_key("agent-A");
+        let result = enforce_scope(Some(&ctx), Some("agent-A"));
+        assert!(result.is_ok(), "matching agent_id must not return an error");
+        assert_eq!(
+            result.unwrap(),
+            Some("agent-A".to_string()),
+            "matching agent_id must be returned as the effective agent_id"
+        );
+    }
+
+    /// AUTH-04: scoped key with mismatched requested agent_id returns Forbidden error.
+    #[test]
+    fn test_enforce_scope_scoped_key_rejects_mismatched_agent_id_with_forbidden() {
+        let ctx = scoped_key("agent-A");
+        let result = enforce_scope(Some(&ctx), Some("agent-B"));
+        assert!(result.is_err(), "mismatched agent_id must return an error");
+        match result.unwrap_err() {
+            ApiError::Forbidden(detail) => {
+                assert!(
+                    detail.contains("agent-A"),
+                    "Forbidden detail must mention the allowed agent, got: {}",
+                    detail
+                );
+                assert!(
+                    detail.contains("agent-B"),
+                    "Forbidden detail must mention the requested agent, got: {}",
+                    detail
+                );
+            }
+            other => panic!("expected ApiError::Forbidden, got {:?}", other),
+        }
+    }
+}
+
 /// Binds a TCP listener and serves the axum application.
 pub async fn serve(
     config: &crate::config::Config,

@@ -142,3 +142,29 @@ impl From<tokio_rusqlite::Error> for ApiError {
         ApiError::Internal(MnemonicError::Db(DbError::Query(e.to_string())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt;
+
+    /// AUTH-04: ApiError::Forbidden returns HTTP 403 with {"error":"forbidden","detail":"..."}.
+    #[tokio::test]
+    async fn test_forbidden_variant_returns_403_with_correct_body() {
+        let err = ApiError::Forbidden("key scoped to agent-A cannot access agent-B".to_string());
+        let response = err.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(json["error"], "forbidden", "error field must be literal string 'forbidden'");
+        assert_eq!(
+            json["detail"],
+            "key scoped to agent-A cannot access agent-B",
+            "detail field must contain the message passed to Forbidden"
+        );
+    }
+}
