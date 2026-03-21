@@ -81,6 +81,47 @@
 
 ---
 
+## Milestone: v1.2 — Authentication / API Keys
+
+**Shipped:** 2026-03-21
+**Phases:** 5 | **Plans:** 8
+
+### What Was Built
+- Auth schema foundation (api_keys DDL, Unauthorized error variant, auth module skeleton)
+- KeyService with BLAKE3 hashing, constant-time comparison, and create/list/revoke/validate methods
+- Axum auth middleware via route_layer with Bearer token enforcement and open-mode bypass
+- REST key management endpoints (POST/GET/DELETE /keys) with scope enforcement across all handlers
+- CLI key management (`mnemonic keys create/list/revoke`) with dual-mode binary (DB-only fast path)
+
+### What Worked
+- Layered phase approach (schema -> service -> middleware -> HTTP -> CLI) prevented cross-phase rework
+- Per-request COUNT for open mode detection (instead of startup flag) enabled live auth mode switching without restart
+- route_layer() scoping prevented 401 on unmatched routes — an early architectural decision that saved debugging time
+- Scope enforcement as a free function (not method) kept handlers uniform and testable in isolation
+- Dual-mode binary architecture parsed CLI args before any initialization, guaranteeing fast CLI path
+
+### What Was Inefficient
+- SUMMARY.md `requirements_completed` frontmatter missing in 9 of 8 plan summaries (same bookkeeping gap as v1.0/v1.1) — tech debt flagged in audit
+- Phase 10 required per-item #[allow(dead_code)] annotations on stub types; cleaned up by Phase 12 as stubs got consumed
+
+### Patterns Established
+- `route_layer()` not `layer()` for middleware that should only apply to matched routes
+- Option<Extension<AuthContext>> for optional auth context (preserves open-mode behavior without middleware changes)
+- CLI module as self-contained unit, wired into main.rs dual-dispatch
+- `find_by_display_id` pattern — hash-derived 8-char prefix for human-friendly key identification
+
+### Key Lessons
+1. Dead code annotations on stubs are acceptable when phases build incrementally — just track cleanup in later phases
+2. SUMMARY frontmatter requirements_completed gap persists across all 3 milestones; consider making it part of execution, not retroactive audit
+3. Per-request mode detection > startup flags when the mode can change at runtime (key creation/revocation)
+4. Auth middleware scoping choice (route_layer vs layer) has outsized impact — decide it early and document why
+
+### Cost Observations
+- Model mix: balanced profile throughout
+- Notable: 5 phases in 2 days with 66 commits; deepest phase (13) required splitting into 2 plans for scope enforcement + REST endpoints
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -89,6 +130,7 @@
 |-----------|--------|-------|------------|
 | v1.0 | 5 | 11 | Baseline — established GSD workflow with audit-driven gap closure |
 | v1.1 | 4 | 6 | Pattern mirroring reduced design overhead; tiered delivery (Tier 1/2) |
+| v1.2 | 5 | 8 | Layered auth (schema->service->middleware->HTTP->CLI); per-request mode detection |
 
 ### Cumulative Quality
 
@@ -96,8 +138,10 @@
 |-----------|-------|---------------|---------|
 | v1.0 | 30 | Yes | COMPLIANT |
 | v1.1 | 68 (35 unit + 33 integration) | Yes | COMPLIANT |
+| v1.2 | 194 (57 unit + 53 integration) | Yes | COMPLIANT |
 
 ### Top Lessons (Verified Across Milestones)
 
-1. Milestone audits before shipping catch integration gaps that per-phase verification misses
-2. Mirror existing trait patterns when adding new engines — consistent architecture and near-zero design friction (validated v1.0 EmbeddingEngine -> v1.1 SummarizationEngine)
+1. Milestone audits before shipping catch integration gaps that per-phase verification misses (v1.0, v1.1, v1.2)
+2. Mirror existing trait patterns when adding new engines — consistent architecture and near-zero design friction (v1.0 EmbeddingEngine -> v1.1 SummarizationEngine)
+3. SUMMARY frontmatter `requirements_completed` field is consistently skipped during execution — recurring debt across all 3 milestones; needs process fix

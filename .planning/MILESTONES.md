@@ -1,5 +1,33 @@
 # Milestones
 
+## v1.2 Authentication / API Keys (Shipped: 2026-03-21)
+
+**Phases completed:** 5 phases, 8 plans, 10 tasks
+
+**Key accomplishments:**
+
+- Auth schema foundation with api_keys DDL, Unauthorized error variant, and auth module wired into AppState with startup auth-mode log (OPEN/ACTIVE)
+- KeyService with BLAKE3 hashing, OsRng token generation, and constant_time_eq_32 validation — create/list/revoke/validate with 11 unit tests
+- Axum auth middleware via route_layer with Bearer token enforcement, open-mode bypass (per-request COUNT, no startup flag), and health-check exemption
+- Scope enforcement across 5 handlers and REST key management endpoints (POST/GET/DELETE /keys) with 8 integration tests proving AUTH-04 end-to-end
+- CLI key management (`mnemonic keys create/list/revoke`) with dual-mode binary — fast DB-only path, no embedding model loading
+
+**Delivered:** Optional API key authentication with agent-scoped namespace isolation, REST key management, and CLI tooling — off by default, auth activates live when keys exist.
+
+**Stats:**
+
+- Lines of Rust: 5,925 (total)
+- Lines changed: +10,077 / -112
+- Files modified: 53
+- Commits: 66
+- Timeline: 2026-03-19 → 2026-03-21 (2 days)
+- Tests: 194 passing (57 unit + 53 integration), zero compiler warnings
+- Requirements: 15/15 satisfied
+- Nyquist: COMPLIANT (all 5 phases)
+- Git range: feat(10-01) → docs(phase-14)
+
+---
+
 ## v1.1 Memory Compaction (Shipped: 2026-03-20)
 
 **Phases completed:** 4 phases, 6 plans, 11 tasks

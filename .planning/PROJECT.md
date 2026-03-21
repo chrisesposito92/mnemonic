@@ -8,16 +8,11 @@ A single Rust binary that gives any AI agent persistent memory via a simple REST
 
 Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run.
 
-## Current Milestone: v1.2 Authentication / API Keys
+## Current State
 
-**Goal:** Add optional API key authentication so mnemonic can be safely deployed on a network — scoped to agent namespaces, enforced in middleware, off by default for local dev.
+v1.2 shipped. 14 phases complete across 3 milestones.
 
-**Target features:**
-- API key authentication via Bearer token (mnk_... prefix)
-- Keys scoped to specific agent_ids for enforced namespace isolation
-- CLI key management (mnemonic keys create/list/revoke)
-- Optional — open mode by default, auth activates when keys exist
-- Axum middleware layer checking Authorization headers
+**Next milestone:** Not yet planned — run `/gsd:new-milestone` to define v1.3+ scope.
 
 ## Requirements
 
@@ -44,20 +39,21 @@ Any AI agent can store and semantically search memories out of the box with zero
 - Dry-run compaction preview (no data mutation) — v1.1
 - Compaction response with old-to-new ID mapping for stale cache updates — v1.1
 - Multi-agent namespace isolation during compaction — v1.1
+- API key authentication via Authorization: Bearer mnk_... headers — v1.2
+- API keys scoped to specific agent_ids for enforced namespace isolation — v1.2
+- CLI key management commands (mnemonic keys create/list/revoke) — v1.2
+- Optional auth — open mode by default, auth activates when keys exist — v1.2
+- Axum auth middleware enforcement across all protected endpoints — v1.2
 
 ### Active
 
-- [x] API key authentication via Authorization: Bearer mnk_... headers — v1.2 Phase 12
-- [x] API keys scoped to specific agent_ids for enforced namespace isolation — v1.2 Phase 13
-- [x] CLI key management commands (mnemonic keys create/list/revoke) — v1.2 Phase 14
-- [x] Optional auth — open mode by default, auth activates when keys exist — v1.2 Phase 12
-- [x] Axum middleware layer for auth enforcement across all endpoints — v1.2 Phase 12
+(None yet — define next milestone to populate)
 
 ### Out of Scope
 
 - Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
-- Authentication / API keys — ~~premature for embeddable local tool~~ → **promoted to Active in v1.2** (compaction raised destructive-operation stakes; network deployment needs baseline auth)
+- ~~Authentication / API keys~~ → **shipped in v1.2** (promoted from out-of-scope after compaction raised destructive-operation stakes)
 - Pluggable storage backends (Qdrant, Postgres) — single-file SQLite is a feature, not a limitation
 - Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
 - gRPC support — doubles interface surface; REST sufficient for all reviewed use cases
@@ -68,9 +64,9 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ## Context
 
-v1.2 complete with 14 phases (22 plans total: 11 v1.0 + 6 v1.1 + 5 v1.2).
+v1.2 shipped with 14 phases (22 plans total: 11 v1.0 + 6 v1.1 + 5 v1.2).
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI).
-57 unit + 53 integration tests passing, zero compiler errors. MIT licensed.
+5,925 lines of Rust. 57 unit + 53 integration tests passing (194 total), zero compiler warnings. MIT licensed.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
 CLI: `mnemonic keys create/list/revoke` — fast path (DB only, no model loading).
 Auth middleware enforces Bearer token authentication on all /memories and /keys endpoints with open mode bypass. Scoped keys enforce namespace isolation at the handler layer.
@@ -130,4 +126,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after Phase 14 (cli-key-management) complete — CLI key management, v1.2 milestone complete*
+*Last updated: 2026-03-21 after v1.2 milestone*

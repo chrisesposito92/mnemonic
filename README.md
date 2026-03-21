@@ -2,15 +2,18 @@
 
 Framework-agnostic agent memory server — persistent semantic memory via a simple REST API.
 
-Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. No external services, no configuration required — it works out of the box with a bundled embedding model.
+Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. Optionally protect your instance with API key authentication — scoped to individual agents for enforced namespace isolation. No external services, no configuration required — it works out of the box with a bundled embedding model.
 
 ## Table of Contents
 
 - [Quickstart](#quickstart)
 - [Concepts](#concepts)
 - [Configuration](#configuration)
+- [Authentication](#authentication)
 - [API Reference](#api-reference)
   - [POST /memories/compact](#post-memoriescompact)
+  - [Key Management](#key-management-endpoints)
+- [CLI](#cli)
 - [Usage Examples](#usage-examples)
 - [How It Works](#how-it-works)
 - [Contributing](#contributing)
@@ -96,6 +99,48 @@ embedding_provider = "local"
 ```
 
 Set `MNEMONIC_CONFIG_PATH` to point to a different TOML file location.
+
+---
+
+## Authentication
+
+Mnemonic supports optional API key authentication. **By default, auth is off** — all requests are allowed (open mode). Auth activates automatically when you create your first API key, and deactivates if all keys are revoked. No restart required.
+
+### Quick Setup
+
+```bash
+# Create an API key (server does NOT need to be running)
+./mnemonic keys create --name "my-agent-key"
+# Output: mnk_abc123...  ← copy this, it's shown only once
+
+# Use the key in requests
+curl -H "Authorization: Bearer mnk_abc123..." http://localhost:8080/memories
+```
+
+### How It Works
+
+- **Open mode** (default): No keys exist → all requests pass through. Zero friction for local dev.
+- **Authenticated mode**: At least one key exists → all `/memories/*` and `/keys/*` endpoints require a valid `Authorization: Bearer mnk_...` header.
+- **`GET /health`** is always public, regardless of auth mode.
+- Mode switches live — creating a key enables auth, revoking all keys disables it.
+
+### Scoped Keys
+
+Keys can be scoped to a specific `agent_id` for enforced namespace isolation:
+
+```bash
+# Create a key scoped to "research-bot"
+./mnemonic keys create --name "research-key" --scope research-bot
+
+# This key can only access research-bot's memories
+# Requests with this key that target a different agent_id get 403 Forbidden
+```
+
+An unscoped key (no `--scope`) can access all agents' memories.
+
+### Key Format
+
+Keys use the `mnk_` prefix followed by 32 random bytes (base64url-encoded). Keys are hashed with BLAKE3 before storage — the raw key is shown exactly once at creation and cannot be retrieved.
 
 ---
 
@@ -346,6 +391,116 @@ curl -s -X POST http://localhost:8080/memories/compact \
 
 ---
 
+### Key Management Endpoints
+
+> These endpoints require authentication when auth is active (any key exists). An unscoped key can manage all keys; scope is enforced only on memory endpoints.
+
+#### POST /keys
+
+Create a new API key.
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | no | `null` | Human-readable label for the key |
+| `agent_id` | string | no | `null` | Scope to this agent's memories only |
+
+**Response 201:**
+```json
+{
+  "id": "019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f",
+  "name": "my-agent-key",
+  "display_id": "a1b2c3d4",
+  "agent_id": null,
+  "created_at": "2026-03-21 01:00:00",
+  "revoked_at": null,
+  "raw_key": "mnk_abc123..."
+}
+```
+
+> `raw_key` is returned only on creation — it cannot be retrieved again.
+
+**curl:**
+```bash
+curl -s -X POST http://localhost:8080/keys \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer mnk_admin_key..." \
+  -d '{"name": "research-key", "agent_id": "research-bot"}'
+```
+
+---
+
+#### GET /keys
+
+List all API keys with metadata (no raw keys).
+
+**Response 200:**
+```json
+{
+  "keys": [
+    {
+      "id": "019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f",
+      "name": "my-agent-key",
+      "display_id": "a1b2c3d4",
+      "agent_id": null,
+      "created_at": "2026-03-21 01:00:00",
+      "revoked_at": null
+    }
+  ]
+}
+```
+
+**curl:**
+```bash
+curl -s http://localhost:8080/keys \
+  -H "Authorization: Bearer mnk_admin_key..."
+```
+
+---
+
+#### DELETE /keys/:id
+
+Revoke an API key by UUID. The key is immediately invalidated.
+
+**Response 200:**
+```json
+{
+  "id": "019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f",
+  "revoked": true
+}
+```
+
+**curl:**
+```bash
+curl -s -X DELETE http://localhost:8080/keys/019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f \
+  -H "Authorization: Bearer mnk_admin_key..."
+```
+
+---
+
+## CLI
+
+Mnemonic includes a built-in CLI for key management. CLI commands operate directly on the database — the server does not need to be running. The embedding model is never loaded for CLI commands, so they start instantly.
+
+```bash
+# Create a key
+./mnemonic keys create --name "my-key"
+./mnemonic keys create --name "scoped-key" --scope research-bot
+
+# List all keys
+./mnemonic keys list
+
+# Revoke a key (by UUID or 8-char display ID)
+./mnemonic keys revoke 019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f
+./mnemonic keys revoke a1b2c3d4
+
+# Start the server (default behavior, same as before)
+./mnemonic
+```
+
+---
+
 ## Usage Examples
 
 ### curl Workflow
@@ -391,34 +546,37 @@ A simple wrapper class using only the `requests` library:
 import requests
 
 class MnemonicClient:
-    def __init__(self, base_url="http://localhost:8080"):
+    def __init__(self, base_url="http://localhost:8080", api_key=None):
         self.base_url = base_url
+        self.headers = {}
+        if api_key:
+            self.headers["Authorization"] = f"Bearer {api_key}"
 
     def store(self, content, agent_id=None, session_id=None, tags=None):
         payload = {"content": content}
         if agent_id:    payload["agent_id"] = agent_id
         if session_id:  payload["session_id"] = session_id
         if tags:        payload["tags"] = tags
-        r = requests.post(f"{self.base_url}/memories", json=payload)
+        r = requests.post(f"{self.base_url}/memories", json=payload, headers=self.headers)
         r.raise_for_status()
         return r.json()
 
     def search(self, query, agent_id=None, limit=10):
         params = {"q": query, "limit": limit}
         if agent_id: params["agent_id"] = agent_id
-        r = requests.get(f"{self.base_url}/memories/search", params=params)
+        r = requests.get(f"{self.base_url}/memories/search", params=params, headers=self.headers)
         r.raise_for_status()
         return r.json()["memories"]
 
     def list(self, agent_id=None, limit=20, offset=0):
         params = {"limit": limit, "offset": offset}
         if agent_id: params["agent_id"] = agent_id
-        r = requests.get(f"{self.base_url}/memories", params=params)
+        r = requests.get(f"{self.base_url}/memories", params=params, headers=self.headers)
         r.raise_for_status()
         return r.json()
 
     def delete(self, memory_id):
-        r = requests.delete(f"{self.base_url}/memories/{memory_id}")
+        r = requests.delete(f"{self.base_url}/memories/{memory_id}", headers=self.headers)
         r.raise_for_status()
         return r.json()
 
@@ -426,7 +584,7 @@ class MnemonicClient:
         payload = {"agent_id": agent_id, "dry_run": dry_run}
         if threshold is not None:  payload["threshold"] = threshold
         if max_candidates is not None: payload["max_candidates"] = max_candidates
-        r = requests.post(f"{self.base_url}/memories/compact", json=payload)
+        r = requests.post(f"{self.base_url}/memories/compact", json=payload, headers=self.headers)
         r.raise_for_status()
         return r.json()
 ```
@@ -434,7 +592,8 @@ class MnemonicClient:
 **Basic usage:**
 
 ```python
-client = MnemonicClient()
+client = MnemonicClient()  # No auth (open mode)
+# client = MnemonicClient(api_key="mnk_abc123...")  # With auth
 
 # Store memories
 client.store("Python 3.12 introduces type parameter syntax", agent_id="research-bot", tags=["python"])
@@ -547,6 +706,8 @@ def handle_tool_call(tool_name, args, agent_id):
 ## How It Works
 
 Mnemonic stores memories in a single SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector similarity search. When you POST a memory, Mnemonic embeds the content using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) (~22 MB), a compact but high-quality sentence embedding model, running locally via [candle](https://github.com/huggingface/candle) — a pure-Rust ML framework with no native library dependencies. The model is downloaded from HuggingFace Hub on first run and cached at `~/.cache/huggingface/`. When you search, your query is embedded with the same model and KNN vector search finds the closest memories by L2 distance. Optionally, you can switch to OpenAI `text-embedding-3-small` by setting `MNEMONIC_OPENAI_API_KEY` — no other configuration needed.
+
+**Authentication** is optional and activates automatically when API keys exist. Keys are hashed with BLAKE3 and compared in constant time. Each key can be scoped to a specific `agent_id`, enforcing namespace isolation at the handler layer — a scoped key physically cannot access another agent's memories. When no keys exist, all requests pass through (open mode). The `GET /health` endpoint is always public.
 
 **Compaction** works in two tiers. **Tier 1 (default)** uses vector cosine similarity to cluster near-duplicate memories and merges them algorithmically — tags are unioned, timestamps take the earliest, and content is concatenated. No LLM required. **Tier 2 (opt-in)** activates when `MNEMONIC_LLM_PROVIDER` is configured — clustered memories are sent to the LLM for rich summarization instead of simple concatenation. If the LLM call fails, compaction falls back to Tier 1 automatically. All merges are atomic (single SQLite transaction) and scoped to the requesting agent — one agent's compaction never touches another agent's memories.
 
