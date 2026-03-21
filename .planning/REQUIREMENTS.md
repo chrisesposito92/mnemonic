@@ -30,9 +30,9 @@ Requirements for API key authentication milestone. Each maps to roadmap phases.
 
 ### CLI
 
-- [ ] **CLI-01**: `mnemonic keys create` creates an API key and displays the raw key
-- [ ] **CLI-02**: `mnemonic keys list` displays all keys with metadata
-- [ ] **CLI-03**: `mnemonic keys revoke` invalidates a key by ID or prefix
+- [x] **CLI-01**: `mnemonic keys create` creates an API key and displays the raw key
+- [x] **CLI-02**: `mnemonic keys list` displays all keys with metadata
+- [x] **CLI-03**: `mnemonic keys revoke` invalidates a key by ID or prefix
 
 ## Future Requirements
 
@@ -74,9 +74,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFRA-01 | Phase 10 | Complete |
 | INFRA-02 | Phase 11 | Complete |
 | INFRA-03 | Phase 10 | Complete |
-| CLI-01 | Phase 14 | Pending |
-| CLI-02 | Phase 14 | Pending |
-| CLI-03 | Phase 14 | Pending |
+| CLI-01 | Phase 14 | Complete |
+| CLI-02 | Phase 14 | Complete |
+| CLI-03 | Phase 14 | Complete |
 
 **Coverage:**
 - v1.2 requirements: 15 total

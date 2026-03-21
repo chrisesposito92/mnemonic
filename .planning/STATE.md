@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Authentication / API Keys
 status: unknown
-stopped_at: Completed 13-02-PLAN.md
-last_updated: "2026-03-21T02:40:45.964Z"
+stopped_at: Completed 14-01-PLAN.md
+last_updated: "2026-03-21T03:14:15.879Z"
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 8
+  completed_plans: 7
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 13 — http-wiring-and-rest-key-endpoints
+**Current focus:** Phase 14 — cli-key-management
 
 ## Current Position
 
-Phase: 14
-Plan: Not started
+Phase: 14 (cli-key-management) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -60,6 +60,8 @@ Recent decisions affecting v1.2:
 - [Phase 13]: Option<Extension<AuthContext>> (optional) preserves open-mode and wildcard-key behavior without middleware changes
 - [Phase 13-http-wiring-and-rest-key-endpoints]: Key handlers skip enforce_scope — any authenticated key can manage keys; scope enforcement is for memory access only
 - [Phase 13-http-wiring-and-rest-key-endpoints]: POST /keys returns 201 (creates resource); DELETE /keys/:id returns 200 with body for consistency with memory delete pattern
+- [Phase 14]: #[derive(Clone)] added to KeyService — Arc<Connection> is Clone, required for CLI test pattern
+- [Phase 14]: CLI module (src/cli.rs) as self-contained module — wired into main.rs in Plan 02
 
 ### Pending Todos
 
@@ -72,6 +74,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-21T02:36:24.792Z
-Stopped at: Completed 13-02-PLAN.md
+Last session: 2026-03-21T03:14:15.877Z
+Stopped at: Completed 14-01-PLAN.md
 Resume file: None
