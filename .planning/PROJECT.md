@@ -8,11 +8,17 @@ A single Rust binary that gives any AI agent persistent memory via a simple REST
 
 Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run.
 
-## Current State
+## Current Milestone: v1.3 CLI
 
-v1.2 shipped. 14 phases complete across 3 milestones.
+**Goal:** Turn the single binary into a full CLI tool with subcommands for every operation — serve the API, store/recall/search memories, compact, and manage keys, all from the terminal.
 
-**Next milestone:** Not yet planned — run `/gsd:new-milestone` to define v1.3+ scope.
+**Target features:**
+- `mnemonic serve` — start the HTTP server (current default behavior)
+- `mnemonic remember` — store a memory directly from CLI
+- `mnemonic recall` — retrieve memories by ID or filter
+- `mnemonic search` — semantic search from CLI
+- `mnemonic compact` — trigger compaction from CLI
+- `mnemonic keys` — existing key management (already shipped)
 
 ## Requirements
 
@@ -47,7 +53,7 @@ v1.2 shipped. 14 phases complete across 3 milestones.
 
 ### Active
 
-(None yet — define next milestone to populate)
+(Defining requirements for v1.3 CLI)
 
 ### Out of Scope
 
@@ -126,4 +132,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after v1.2 milestone*
+*Last updated: 2026-03-21 after v1.3 milestone started*
