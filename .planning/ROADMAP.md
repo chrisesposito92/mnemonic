@@ -107,7 +107,10 @@ Plans:
   2. `mnemonic keys list` prints a table of key metadata (name, prefix, scope, created date) with no raw tokens
   3. `mnemonic keys revoke <id>` revokes the key and confirms revocation; the server rejects that key on the next request
   4. The `keys` subcommand starts in under 1 second — the embedding model is never loaded on the CLI path
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 14-01-PLAN.md — Add clap dependency, CLI module with clap structs and handler functions, find_by_display_id KeyService method
+- [ ] 14-02-PLAN.md — Restructure main.rs for dual-mode CLI/server dispatch, end-to-end verification
 
 ## Progress
 
@@ -126,4 +129,4 @@ Plans:
 | 11. KeyService Core | v1.2 | 1/1 | Complete    | 2026-03-21 |
 | 12. Auth Middleware | v1.2 | 1/1 | Complete    | 2026-03-21 |
 | 13. HTTP Wiring and REST Key Endpoints | v1.2 | 2/2 | Complete    | 2026-03-21 |
-| 14. CLI Key Management | v1.2 | 0/? | Not started | - |
+| 14. CLI Key Management | v1.2 | 0/2 | Not started | - |
