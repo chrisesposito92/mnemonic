@@ -2,14 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Pluggable Storage Backends
-status: ready_to_plan
-stopped_at: null
-last_updated: "2026-03-21T17:00:00.000Z"
+status: planning
+stopped_at: Phase 21 context gathered
+last_updated: "2026-03-21T16:39:23.666Z"
+last_activity: 2026-03-21 — Roadmap created for v1.4
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -53,6 +55,7 @@ Progress: [░░░░░░░░░░] 0% (0/4 phases complete)
 See PROJECT.md Key Decisions table for complete log.
 
 Recent decisions affecting v1.4:
+
 - Use #[async_trait] (not native async fn in traits) — native async fn is not dyn-compatible as of early 2026
 - KeyService stays on direct Arc<Connection> — auth must not route through a potentially remote StorageBackend
 - StorageBackend distance contract is lower-is-better — Qdrant scores (higher-is-better) must be converted via `1.0 - score`
@@ -70,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-21
-Stopped at: Roadmap created — ready to plan Phase 21
-Resume file: None
+Last session: 2026-03-21T16:39:23.664Z
+Stopped at: Phase 21 context gathered
+Resume file: .planning/phases/21-storage-trait-and-sqlite-backend/21-CONTEXT.md
