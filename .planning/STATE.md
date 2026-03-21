@@ -19,7 +19,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 11 — keyservice-core
+**Current focus:** Phase 12 — auth-middleware
 
 ## Current Position
 
@@ -30,8 +30,8 @@ Plan: Not started
 
 **Velocity:**
 
-- Total plans completed: 17 (11 v1.0 + 6 v1.1)
-- v1.2 plans completed: 0
+- Total plans completed: 18 (11 v1.0 + 6 v1.1 + 1 v1.2)
+- v1.2 plans completed: 1
 
 ## Accumulated Context
 
@@ -59,11 +59,11 @@ None.
 
 ### Blockers/Concerns
 
-- Display ID for keys list: must use hash-derived ID, not raw key prefix (PITFALLS.md Auth Pitfall 7)
+- ~~Display ID for keys list~~ — resolved Phase 11: `display_id = hashed_key[..8]` (hash-derived, not raw prefix)
 - Open mode + invalid token edge case: must return 401, not passthrough (PITFALLS.md Auth Pitfall 10)
 
 ## Session Continuity
 
-Last session: 2026-03-21T01:27:00.481Z
-Stopped at: Completed 11-01-PLAN.md
+Last session: 2026-03-21
+Stopped at: Phase 11 complete, ready to plan Phase 12
 Resume file: None
