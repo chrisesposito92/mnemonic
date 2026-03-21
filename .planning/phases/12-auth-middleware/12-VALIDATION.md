@@ -1,10 +1,11 @@
 ---
 phase: 12
 slug: auth-middleware
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: complete
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-20
+validated: 2026-03-21
 ---
 
 # Phase 12 — Validation Strategy
@@ -38,10 +39,12 @@ created: 2026-03-20
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 12-01-01 | 01 | 1 | AUTH-01 | integration | `cargo test --test integration auth` | ✅ | ⬜ pending |
-| 12-01-02 | 01 | 1 | AUTH-02 | integration | `cargo test --test integration auth` | ✅ | ⬜ pending |
-| 12-01-03 | 01 | 1 | AUTH-03 | integration | `cargo test --test integration auth` | ✅ | ⬜ pending |
-| 12-01-04 | 01 | 1 | AUTH-05 | integration | `cargo test --test integration auth` | ✅ | ⬜ pending |
+| 12-01-01 | 01 | 1 | AUTH-01 | integration | `cargo test test_auth_valid_token_allows` | ✅ | ✅ green |
+| 12-01-02 | 01 | 1 | AUTH-02 | integration | `cargo test test_auth_invalid_token_rejects test_auth_revoked_token_rejects` | ✅ | ✅ green |
+| 12-01-03 | 01 | 1 | AUTH-03 | integration | `cargo test test_auth_open_mode_allows` | ✅ | ✅ green |
+| 12-01-04 | 01 | 1 | AUTH-05 | integration | `cargo test test_auth_health_no_token` | ✅ | ✅ green |
+| 12-01-05 | 01 | 1 | AUTH-02 (missing header) | integration | `cargo test test_auth_missing_header_rejects` | ✅ | ✅ green |
+| 12-01-06 | 01 | 1 | Malformed header → 400 | integration | `cargo test test_auth_malformed_header_400` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -61,11 +64,21 @@ created: 2026-03-20
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** complete
+
+---
+
+## Validation Audit 2026-03-21
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 1 |
+| Resolved | 1 |
+| Escalated | 0 |
