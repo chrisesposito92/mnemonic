@@ -31,6 +31,9 @@ tokenizers = "0.22"
 async-trait = "0.1"
 reqwest = { version = "0.13", features = ["json"] }
 zerocopy = { version = "0.8", features = ["derive"] }
+blake3 = "1.8"
+constant_time_eq = "0.4"
+rand = { version = "0.9", features = ["std", "std_rng", "os_rng"] }
 
 [dev-dependencies]
 figment = { version = "0.10", features = ["toml", "env", "test"] }
