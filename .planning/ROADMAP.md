@@ -63,7 +63,9 @@
   2. `mnemonic` (no args) still starts the HTTP server — no behavior change for existing deployments
   3. `mnemonic --help` shows `serve` in the subcommands list alongside `keys`
   4. All existing integration tests pass without modification after the Commands enum expansion
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 15-01-PLAN.md — Add Serve variant, convert dispatch to match, add help-text integration tests
 
 ### Phase 16: recall subcommand
 **Goal**: Users can retrieve and list memories from the terminal in under 100ms without loading the embedding model
@@ -137,7 +139,7 @@
 | 12. Auth Middleware | v1.2 | 1/1 | Complete | 2026-03-21 |
 | 13. HTTP Wiring and REST Key Endpoints | v1.2 | 2/2 | Complete | 2026-03-21 |
 | 14. CLI Key Management | v1.2 | 2/2 | Complete | 2026-03-21 |
-| 15. serve subcommand + CLI scaffolding | v1.3 | 0/TBD | Not started | - |
+| 15. serve subcommand + CLI scaffolding | v1.3 | 0/1 | Planned | - |
 | 16. recall subcommand | v1.3 | 0/TBD | Not started | - |
 | 17. remember subcommand | v1.3 | 0/TBD | Not started | - |
 | 18. search subcommand | v1.3 | 0/TBD | Not started | - |
