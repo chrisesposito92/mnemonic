@@ -48,13 +48,24 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-(None — planning next milestone)
+<!-- v1.4 Pluggable Storage Backends -->
+
+(Defining requirements — see REQUIREMENTS.md)
+
+## Current Milestone: v1.4 Pluggable Storage Backends
+
+**Goal:** Make the storage layer pluggable via a trait so users can swap SQLite for Qdrant, Postgres, or other backends — with a `mnemonic config` CLI for managing backend selection.
+
+**Target features:**
+- Storage trait abstraction behind which SQLite, Qdrant, and Postgres can sit
+- `mnemonic config` subcommand for viewing/switching backend configuration
+- SQLite remains the zero-config default — new backends are opt-in
 
 ### Out of Scope
 
 - Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
-- Pluggable storage backends (Qdrant, Postgres) — single-file SQLite is a feature, not a limitation
+- ~~Pluggable storage backends (Qdrant, Postgres)~~ — Promoted to Active in v1.4
 - Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
 - gRPC support — doubles interface surface; REST sufficient for all reviewed use cases
 - Memory decay / TTL — surprising behavior that silently loses data
@@ -68,7 +79,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ## Context
 
-v1.3 shipped with 20 phases (36 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3).
+v1.3 shipped with 20 phases (36 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3). v1.4 adds pluggable storage backends — SQLite remains default, with Qdrant and Postgres as opt-in alternatives behind a trait abstraction.
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output).
 22,198 lines of Rust. 239 tests passing, zero compiler warnings. MIT licensed.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
@@ -135,4 +146,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after v1.3 milestone*
+*Last updated: 2026-03-21 after v1.4 milestone start*

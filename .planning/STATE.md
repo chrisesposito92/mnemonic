@@ -1,15 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.3
-milestone_name: CLI
-status: shipped
-stopped_at: Milestone v1.3 complete
-last_updated: "2026-03-21T16:30:00.000Z"
+milestone: v1.4
+milestone_name: Pluggable Storage Backends
+status: defining_requirements
+stopped_at: null
+last_updated: "2026-03-21T17:00:00.000Z"
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 11
-  completed_plans: 11
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # Project State
@@ -19,12 +19,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-21)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Planning next milestone
+**Current focus:** Defining requirements for v1.4 Pluggable Storage Backends
 
 ## Current Position
 
-Milestone: v1.3 CLI — SHIPPED 2026-03-21
-Next: `/gsd:new-milestone`
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-21 — Milestone v1.4 started
 
 ## Performance Metrics
 
