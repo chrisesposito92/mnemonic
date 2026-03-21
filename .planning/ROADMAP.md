@@ -36,7 +36,7 @@
 - [x] **Phase 10: Auth Schema Foundation** - DB table, error variant, and module skeleton that all auth logic builds on (completed 2026-03-20)
 - [x] **Phase 11: KeyService Core** - Business logic for key creation, listing, revocation, validation, and secure hashing (completed 2026-03-21)
 - [x] **Phase 12: Auth Middleware** - Axum middleware that enforces authentication and injects AuthContext into requests (completed 2026-03-21)
-- [ ] **Phase 13: HTTP Wiring and REST Key Endpoints** - Attach middleware to router, add key management REST endpoints, enforce scope at handler layer
+- [x] **Phase 13: HTTP Wiring and REST Key Endpoints** - Attach middleware to router, add key management REST endpoints, enforce scope at handler layer (completed 2026-03-21)
 - [ ] **Phase 14: CLI Key Management** - `mnemonic keys` subcommand for creating, listing, and revoking keys from the terminal
 
 ## Phase Details
@@ -93,10 +93,10 @@ Plans:
   3. `GET /keys` returns all key metadata with no raw token values
   4. `DELETE /keys/:id` revokes a key and subsequent requests with that key return 401
   5. Server startup log (first request or startup hook) confirms open or authenticated mode
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [x] 13-01-PLAN.md — Scope enforcement: Forbidden error variant, enforce_scope helper, modify 5 handlers
-- [ ] 13-02-PLAN.md — Key management REST endpoints and 8 integration tests
+- [x] 13-02-PLAN.md — Key management REST endpoints and 8 integration tests
 
 ### Phase 14: CLI Key Management
 **Goal**: Admin can manage API keys from the terminal without starting the full server or loading the embedding model
@@ -125,5 +125,5 @@ Plans:
 | 10. Auth Schema Foundation | v1.2 | 2/2 | Complete    | 2026-03-20 |
 | 11. KeyService Core | v1.2 | 1/1 | Complete    | 2026-03-21 |
 | 12. Auth Middleware | v1.2 | 1/1 | Complete    | 2026-03-21 |
-| 13. HTTP Wiring and REST Key Endpoints | v1.2 | 1/2 | In Progress|  |
+| 13. HTTP Wiring and REST Key Endpoints | v1.2 | 2/2 | Complete   | 2026-03-21 |
 | 14. CLI Key Management | v1.2 | 0/? | Not started | - |

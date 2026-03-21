@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Authentication / API Keys
 status: unknown
-stopped_at: Completed 13-01-PLAN.md
-last_updated: "2026-03-21T02:30:02.143Z"
+stopped_at: Completed 13-02-PLAN.md
+last_updated: "2026-03-21T02:36:24.793Z"
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Project State
@@ -58,6 +58,8 @@ Recent decisions affecting v1.2:
 - [Phase 13]: enforce_scope as free function (not method) keeps scope logic uniform and pure across all 4 relevant handlers
 - [Phase 13]: delete_memory_handler uses direct DB ownership lookup (get_memory_agent_id) instead of enforce_scope — path param has no agent_id to compare against
 - [Phase 13]: Option<Extension<AuthContext>> (optional) preserves open-mode and wildcard-key behavior without middleware changes
+- [Phase 13-http-wiring-and-rest-key-endpoints]: Key handlers skip enforce_scope — any authenticated key can manage keys; scope enforcement is for memory access only
+- [Phase 13-http-wiring-and-rest-key-endpoints]: POST /keys returns 201 (creates resource); DELETE /keys/:id returns 200 with body for consistency with memory delete pattern
 
 ### Pending Todos
 
@@ -70,6 +72,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-21T02:30:02.142Z
-Stopped at: Completed 13-01-PLAN.md
+Last session: 2026-03-21T02:36:24.792Z
+Stopped at: Completed 13-02-PLAN.md
 Resume file: None
