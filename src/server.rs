@@ -1,8 +1,10 @@
 use axum::{
     extract::{Path, Query, State},
+    middleware,
     routing::{delete, get, post},
     Json, Router,
 };
+use crate::auth::auth_middleware;
 use serde_json::Value;
 use tracing_subscriber::prelude::*;
 use crate::compaction::CompactRequest;
@@ -27,18 +29,33 @@ pub fn init_tracing() {
 pub struct AppState {
     pub service: std::sync::Arc<crate::service::MemoryService>,
     pub compaction: std::sync::Arc<crate::compaction::CompactionService>,
-    #[allow(dead_code)] // No route middleware until Phase 12
     pub key_service: std::sync::Arc<crate::auth::KeyService>,
 }
 
 /// Constructs the axum Router with all routes wired to AppState.
+///
+/// Protected routes (`/memories*`) are wrapped with `route_layer` so the auth
+/// middleware only applies to matched routes, not unmatched ones (per D-01, D-02).
+/// Public routes (`/health`) have no auth middleware applied.
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))
+    // Protected routes: auth middleware applies via route_layer (per D-01, D-02)
+    let protected = Router::new()
         .route("/memories", post(create_memory_handler).get(list_memories_handler))
         .route("/memories/search", get(search_memories_handler))
         .route("/memories/{id}", delete(delete_memory_handler))
         .route("/memories/compact", post(compact_memories_handler))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    // Public routes: no auth middleware (per D-07, D-08)
+    let public = Router::new()
+        .route("/health", get(health_handler));
+
+    Router::new()
+        .merge(protected)
+        .merge(public)
         .with_state(state)
 }
 

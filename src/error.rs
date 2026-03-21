@@ -82,7 +82,6 @@ pub enum ApiError {
     BadRequest(String),
     #[error("not found")]
     NotFound,
-    #[allow(dead_code)] // No callers in Phase 10 — used starting Phase 12
     #[error("unauthorized: {0}")]
     Unauthorized(String),
     #[error("internal error: {0}")]

@@ -8,9 +8,15 @@ use tokio_rusqlite::Connection;
 use constant_time_eq::constant_time_eq_32;
 use rand::rngs::OsRng;
 use rand::TryRngCore;
+use axum::{
+    extract::State,
+    http::Request,
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
+use crate::server::AppState;
 
 /// A row from the `api_keys` table.
-#[allow(dead_code)] // Phase 12: used by CLI (Phase 14) and HTTP handlers (Phase 13)
 #[derive(Debug, Clone)]
 pub struct ApiKey {
     pub id: String,
@@ -22,7 +28,6 @@ pub struct ApiKey {
 }
 
 /// Per-request authentication result, injected into request extensions by the auth middleware.
-#[allow(dead_code)] // Phase 12: auth middleware
 #[derive(Debug, Clone)]
 pub struct AuthContext {
     pub key_id: String,
@@ -202,6 +207,82 @@ impl KeyService {
             })
             .await
             .map_err(crate::error::DbError::from)
+    }
+}
+
+/// Axum middleware that enforces API key authentication on protected routes.
+///
+/// Behavior:
+/// - Open mode (zero active keys): all requests pass through unconditionally.
+/// - Auth active: requires `Authorization: Bearer <token>` header.
+/// - Missing header: 401 Unauthorized.
+/// - Malformed header (not "Bearer <token>" format): 400 Bad Request.
+/// - Invalid/revoked token: 401 Unauthorized.
+/// - DB error on key count: 401 Unauthorized (fail safe).
+pub async fn auth_middleware(
+    State(state): State<AppState>,
+    mut req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    // Phase 1: Open mode check — per-request COUNT query (per D-04)
+    match state.key_service.count_active_keys().await {
+        Ok(0) => {
+            // Open mode: pass through unconditionally, no header inspection (per D-05)
+            return next.run(req).await;
+        }
+        Err(e) => {
+            // DB error — fail safe by blocking (not allowing through)
+            tracing::error!(error = %e, "auth: DB error counting active keys");
+            return crate::error::ApiError::Unauthorized(
+                "auth service unavailable".to_string()
+            ).into_response();
+        }
+        Ok(_) => {} // Auth active — continue to header parsing
+    }
+
+    // Phase 2: Extract and parse Authorization header (per D-09, D-10)
+    let auth_header = req.headers().get(axum::http::header::AUTHORIZATION);
+
+    let bearer_token = match auth_header {
+        None => {
+            // Missing header when auth active -> 401 (per D-10)
+            return crate::error::ApiError::Unauthorized(
+                "missing Authorization header".to_string()
+            ).into_response();
+        }
+        Some(value) => {
+            let raw = match value.to_str() {
+                Ok(s) => s,
+                Err(_) => {
+                    return crate::error::ApiError::BadRequest(
+                        "Authorization header contains invalid characters".to_string()
+                    ).into_response();
+                }
+            };
+            match raw.strip_prefix("Bearer ") {
+                Some(token) if !token.is_empty() => token.to_string(),
+                _ => {
+                    // Malformed (not "Bearer <token>") -> 400 (per D-09)
+                    return crate::error::ApiError::BadRequest(
+                        "Authorization header must use format: Bearer <token>".to_string()
+                    ).into_response();
+                }
+            }
+        }
+    };
+
+    // Phase 3: Validate token via KeyService (per D-11, D-12)
+    match state.key_service.validate(&bearer_token).await {
+        Ok(auth_context) => {
+            req.extensions_mut().insert(auth_context);
+            next.run(req).await
+        }
+        Err(_) => {
+            // Invalid or revoked token -> 401 (per D-11)
+            crate::error::ApiError::Unauthorized(
+                "invalid or revoked API key".to_string()
+            ).into_response()
+        }
     }
 }
 
