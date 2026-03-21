@@ -79,7 +79,9 @@ Plans:
   3. When zero active keys exist in the DB, all requests are allowed through (open mode — no restart needed)
   4. `GET /health` returns 200 even when auth is active and no Authorization header is present
   5. A request with a malformed Authorization header (not `Bearer <token>`) returns 400, not a panic or 500
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 12-01-PLAN.md — Implement auth_middleware, restructure build_router with route_layer, add 6 integration tests
 
 ### Phase 13: HTTP Wiring and REST Key Endpoints
 **Goal**: Key management is accessible via REST, auth middleware is attached to all protected routes, and scoped keys enforce namespace isolation at the handler layer
@@ -119,6 +121,6 @@ Plans:
 | 9. HTTP Integration | v1.1 | 1/1 | Complete | 2026-03-20 |
 | 10. Auth Schema Foundation | v1.2 | 2/2 | Complete    | 2026-03-20 |
 | 11. KeyService Core | v1.2 | 1/1 | Complete    | 2026-03-21 |
-| 12. Auth Middleware | v1.2 | 0/? | Not started | - |
+| 12. Auth Middleware | v1.2 | 0/1 | Not started | - |
 | 13. HTTP Wiring and REST Key Endpoints | v1.2 | 0/? | Not started | - |
 | 14. CLI Key Management | v1.2 | 0/? | Not started | - |
