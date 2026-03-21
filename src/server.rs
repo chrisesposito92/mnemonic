@@ -4,6 +4,12 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+
+#[derive(serde::Deserialize)]
+struct CreateKeyRequest {
+    name: String,
+    agent_id: Option<String>,
+}
 use crate::auth::{auth_middleware, AuthContext};
 use serde_json::Value;
 use tracing_subscriber::prelude::*;
@@ -44,6 +50,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/memories/search", get(search_memories_handler))
         .route("/memories/{id}", delete(delete_memory_handler))
         .route("/memories/compact", post(compact_memories_handler))
+        // Key management endpoints (D-18, D-19)
+        .route("/keys", post(create_key_handler).get(list_keys_handler))
+        .route("/keys/{id}", delete(revoke_key_handler))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -188,6 +197,58 @@ async fn compact_memories_handler(
     }
     let response = state.compaction.compact(body).await?;
     Ok(Json(serde_json::to_value(response).unwrap()))
+}
+
+/// POST /keys — creates a new API key and returns the raw token (shown once).
+async fn create_key_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreateKeyRequest>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
+    let (api_key, raw_token) = state.key_service.create(body.name, body.agent_id).await
+        .map_err(|e| ApiError::Internal(crate::error::MnemonicError::Db(e)))?;
+    // CRITICAL: Do NOT log raw_token (PITFALLS.md Auth Pitfall 6)
+    tracing::info!(key_id = %api_key.id, agent_id = ?api_key.agent_id, "API key created");
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({
+            "key": {
+                "id": api_key.id,
+                "name": api_key.name,
+                "display_id": api_key.display_id,
+                "agent_id": api_key.agent_id,
+                "created_at": api_key.created_at
+            },
+            "raw_token": raw_token
+        })),
+    ))
+}
+
+/// GET /keys — returns all key metadata, never including raw token or hashed_key.
+async fn list_keys_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let keys = state.key_service.list().await
+        .map_err(|e| ApiError::Internal(crate::error::MnemonicError::Db(e)))?;
+    Ok(Json(serde_json::json!({
+        "keys": keys.iter().map(|k| serde_json::json!({
+            "id": k.id,
+            "name": k.name,
+            "display_id": k.display_id,
+            "agent_id": k.agent_id,
+            "created_at": k.created_at,
+            "revoked_at": k.revoked_at
+        })).collect::<Vec<_>>()
+    })))
+}
+
+/// DELETE /keys/:id — revokes a key (soft delete). Returns confirmation.
+async fn revoke_key_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.key_service.revoke(&id).await
+        .map_err(|e| ApiError::Internal(crate::error::MnemonicError::Db(e)))?;
+    Ok(Json(serde_json::json!({ "revoked": true, "id": id })))
 }
 
 /// Binds a TCP listener and serves the axum application.
