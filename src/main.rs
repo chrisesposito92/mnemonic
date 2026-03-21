@@ -1,6 +1,8 @@
 use anyhow::Result;
+use clap::Parser;
 
 mod auth;
+mod cli;
 mod compaction;
 mod config;
 mod db;
@@ -12,6 +14,41 @@ mod summarization;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse CLI args FIRST — before any I/O or initialization (per D-04)
+    let cli_args = cli::Cli::parse();
+
+    // CLI path: keys subcommand → minimal init, fast exit (per D-04, D-05)
+    if let Some(cli::Commands::Keys(keys_args)) = cli_args.command {
+        // 1. Register sqlite-vec (must be before db::open — Pitfall 3)
+        db::register_sqlite_vec();
+
+        // 2. Load config for db_path only — skip validate_config (Pitfall 1: would
+        //    reject OpenAI configs when OPENAI_API_KEY is missing, but CLI doesn't
+        //    use embeddings at all)
+        let mut config = config::load_config()
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        // 3. Apply --db override if provided (per D-07)
+        if let Some(db_override) = cli_args.db {
+            config.db_path = db_override;
+        }
+
+        // 4. Open DB and apply schema
+        let conn = db::open(&config).await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let conn_arc = std::sync::Arc::new(conn);
+
+        // 5. Construct KeyService (only service needed for CLI)
+        let key_service = auth::KeyService::new(conn_arc);
+
+        // 6. Run the keys subcommand and exit
+        // NOTE: No tracing init (D-21), no embedding model, no LLM engine,
+        //       no MemoryService, no CompactionService, no server bind
+        cli::run_keys(keys_args.subcommand, key_service).await;
+        return Ok(());
+    }
+
+    // Server path — existing initialization (unchanged from here down)
     // 1. Register sqlite-vec BEFORE any Connection::open
     db::register_sqlite_vec();
 
