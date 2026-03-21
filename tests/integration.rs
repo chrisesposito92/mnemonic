@@ -1626,6 +1626,26 @@ async fn test_auth_malformed_header_400() {
     assert!(json["error"].as_str().unwrap().contains("Bearer"), "error message should mention Bearer format");
 }
 
+/// Missing Authorization header on a protected route when auth is active returns 401.
+#[tokio::test]
+async fn test_auth_missing_header_rejects() {
+    let (app, _token) = build_auth_app().await;
+    // No Authorization header — auth is active (one key exists), so 401 is required
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "unauthorized");
+}
+
 /// Validation: empty agent_id returns 400, threshold out of range returns 400,
 /// max_candidates=0 returns 400.
 #[tokio::test]
