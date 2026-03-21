@@ -9,10 +9,10 @@ Requirements for API key authentication milestone. Each maps to roadmap phases.
 
 ### Key Management
 
-- [ ] **KEY-01**: Admin can create an API key with optional name and optional agent_id scope, receiving the raw key (mnk_...) exactly once
-- [ ] **KEY-02**: Admin can list all API keys showing name, prefix, scope, and creation date — never the full key
-- [ ] **KEY-03**: Admin can revoke a key, immediately preventing its use on subsequent requests
-- [ ] **KEY-04**: API key can be scoped to a specific agent_id, restricting access to only that agent's memories
+- [x] **KEY-01**: Admin can create an API key with optional name and optional agent_id scope, receiving the raw key (mnk_...) exactly once
+- [x] **KEY-02**: Admin can list all API keys showing name, prefix, scope, and creation date — never the full key
+- [x] **KEY-03**: Admin can revoke a key, immediately preventing its use on subsequent requests
+- [x] **KEY-04**: API key can be scoped to a specific agent_id, restricting access to only that agent's memories
 
 ### Authentication
 
@@ -25,7 +25,7 @@ Requirements for API key authentication milestone. Each maps to roadmap phases.
 ### Infrastructure
 
 - [x] **INFRA-01**: api_keys table is created via idempotent SQLite migration on startup
-- [ ] **INFRA-02**: Key hashes use BLAKE3 with constant-time comparison to prevent timing attacks
+- [x] **INFRA-02**: Key hashes use BLAKE3 with constant-time comparison to prevent timing attacks
 - [x] **INFRA-03**: Server startup log announces whether running in open or authenticated mode
 
 ### CLI
@@ -62,17 +62,17 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| KEY-01 | Phase 11 | Pending |
-| KEY-02 | Phase 11 | Pending |
-| KEY-03 | Phase 11 | Pending |
-| KEY-04 | Phase 11 | Pending |
+| KEY-01 | Phase 11 | Complete |
+| KEY-02 | Phase 11 | Complete |
+| KEY-03 | Phase 11 | Complete |
+| KEY-04 | Phase 11 | Complete |
 | AUTH-01 | Phase 12 | Pending |
 | AUTH-02 | Phase 12 | Pending |
 | AUTH-03 | Phase 12 | Pending |
 | AUTH-04 | Phase 13 | Pending |
 | AUTH-05 | Phase 12 | Pending |
 | INFRA-01 | Phase 10 | Complete |
-| INFRA-02 | Phase 11 | Pending |
+| INFRA-02 | Phase 11 | Complete |
 | INFRA-03 | Phase 10 | Complete |
 | CLI-01 | Phase 14 | Pending |
 | CLI-02 | Phase 14 | Pending |
