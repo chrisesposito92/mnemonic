@@ -1697,3 +1697,359 @@ async fn test_compact_http_validation() {
     let json = response_json(response).await;
     assert_eq!(json["error"], "max_candidates must be greater than 0");
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Scope Enforcement & Key Endpoint Tests (Phase 13)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Creates a test app with a scoped key (agent_id = "agent-A").
+/// Returns (AppState, Router, raw_token).
+async fn build_scoped_auth_app() -> (AppState, axum::Router, String) {
+    let (state, _) = build_test_state().await;
+    let (_key, raw_token) = state
+        .key_service
+        .create("scoped-key".to_string(), Some("agent-A".to_string()))
+        .await
+        .unwrap();
+    let app = build_router(state.clone());
+    (state, app, raw_token)
+}
+
+/// AUTH-04-a: Scoped key for agent-A + body agent_id agent-B returns 403.
+#[tokio::test]
+async fn test_scope_mismatch_returns_403() {
+    let (_state, app, token) = build_scoped_auth_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/memories")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&serde_json::json!({
+                    "content": "some memory",
+                    "agent_id": "agent-B"
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "forbidden");
+    let detail = json["detail"].as_str().unwrap_or("");
+    assert!(detail.contains("agent-A"), "detail must mention agent-A, got: {}", detail);
+    assert!(detail.contains("agent-B"), "detail must mention agent-B, got: {}", detail);
+}
+
+/// AUTH-04-b: Scoped key for agent-A + no agent_id in body -> memory created with agent_id = "agent-A".
+#[tokio::test]
+async fn test_scope_forces_agent_id() {
+    let (state, _, token) = build_scoped_auth_app().await;
+
+    // POST /memories with no agent_id
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/memories")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&serde_json::json!({
+                    "content": "forced scope memory"
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // GET /memories — verify agent_id is "agent-A"
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    let memories = json["memories"].as_array().unwrap();
+    assert!(!memories.is_empty(), "should have at least 1 memory");
+    assert_eq!(memories[0]["agent_id"], "agent-A", "forced scope should set agent_id to agent-A");
+}
+
+/// AUTH-04-c: Wildcard key + body agent_id "any-agent" -> 201 success.
+#[tokio::test]
+async fn test_wildcard_key_passes_through() {
+    // build_auth_app creates a wildcard key (agent_id = None)
+    let (app, token) = build_auth_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/memories")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&serde_json::json!({
+                    "content": "wildcard memory",
+                    "agent_id": "any-agent"
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = response_json(response).await;
+    assert_eq!(json["agent_id"], "any-agent");
+}
+
+/// AUTH-04-d: Scoped key for agent-A + DELETE memory owned by agent-B -> 403.
+#[tokio::test]
+async fn test_scoped_delete_wrong_owner_403() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, _) = build_test_state().await;
+
+    // Create a memory owned by agent-B directly via service (bypassing auth)
+    let memory_b = state.service.create_memory(CreateMemoryRequest {
+        content: "agent-B private memory".to_string(),
+        agent_id: Some("agent-B".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // Create a scoped key for agent-A
+    let (_key, token_a) = state
+        .key_service
+        .create("scoped-a".to_string(), Some("agent-A".to_string()))
+        .await
+        .unwrap();
+
+    // Attempt DELETE as agent-A -> should get 403
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/memories/{}", memory_b.id))
+                .header("authorization", format!("Bearer {}", token_a))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "forbidden");
+}
+
+/// AUTH-04-e: Scoped key for agent-A + DELETE memory owned by agent-A -> 200.
+#[tokio::test]
+async fn test_scoped_delete_own_memory_ok() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, _) = build_test_state().await;
+
+    // Create a scoped key for agent-A
+    let (_key, token_a) = state
+        .key_service
+        .create("scoped-a-ok".to_string(), Some("agent-A".to_string()))
+        .await
+        .unwrap();
+
+    // Create a memory owned by agent-A directly via service
+    let memory_a = state.service.create_memory(CreateMemoryRequest {
+        content: "agent-A memory to delete".to_string(),
+        agent_id: Some("agent-A".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // DELETE as agent-A -> should succeed with 200
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/memories/{}", memory_a.id))
+                .header("authorization", format!("Bearer {}", token_a))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["id"], memory_a.id);
+}
+
+/// KEY-endpoint-a: POST /keys in open mode returns 201 with raw_token and key metadata.
+#[tokio::test]
+async fn test_post_keys_creates_key() {
+    // In open mode (zero keys), no auth needed
+    let app = build_test_app().await;
+    let response = app
+        .oneshot(json_request("POST", "/keys", serde_json::json!({"name": "my-key"})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = response_json(response).await;
+
+    // raw_token must be present and start with "mnk_"
+    let raw_token = json["raw_token"].as_str().expect("raw_token must be a string");
+    assert!(raw_token.starts_with("mnk_"), "raw_token must start with mnk_, got: {}", raw_token);
+
+    // key object must have required fields
+    let key = &json["key"];
+    assert!(key["id"].is_string(), "key.id must be a string");
+    assert_eq!(key["name"], "my-key");
+    assert!(key["display_id"].is_string(), "key.display_id must be a string");
+    assert!(key["created_at"].is_string(), "key.created_at must be a string");
+}
+
+/// KEY-endpoint-b: GET /keys returns key metadata array; no raw_token or hashed_key fields.
+#[tokio::test]
+async fn test_get_keys_no_raw_token() {
+    let (state, _) = build_test_state().await;
+
+    // Create a key via service directly
+    let (_key, first_token) = state
+        .key_service
+        .create("first-key".to_string(), None)
+        .await
+        .unwrap();
+
+    // Create a second key via HTTP (requires auth from first key)
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/keys")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", first_token))
+                .body(Body::from(serde_json::to_string(&serde_json::json!({"name": "second-key"})).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // GET /keys with auth
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/keys")
+                .header("authorization", format!("Bearer {}", first_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    let keys = json["keys"].as_array().expect("response must have keys array");
+    assert!(!keys.is_empty(), "keys array must not be empty");
+
+    // Verify no element has raw_token or hashed_key
+    for key in keys {
+        assert!(key["raw_token"].is_null(), "raw_token must not appear in GET /keys response");
+        assert!(key["hashed_key"].is_null(), "hashed_key must not appear in GET /keys response");
+        assert!(key["id"].is_string(), "each key must have an id");
+        assert!(key["name"].is_string(), "each key must have a name");
+        assert!(key["display_id"].is_string(), "each key must have a display_id");
+        assert!(key["created_at"].is_string(), "each key must have a created_at");
+    }
+}
+
+/// KEY-endpoint-c: DELETE /keys/:id revokes key; subsequent requests with that key return 401.
+#[tokio::test]
+async fn test_delete_key_revokes_access() {
+    let (state, _) = build_test_state().await;
+
+    // Create first key (will be the "admin" key used to make requests)
+    let (key1, token1) = state
+        .key_service
+        .create("admin-key".to_string(), None)
+        .await
+        .unwrap();
+
+    // Create second key to be revoked (via HTTP with first key auth)
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/keys")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token1))
+                .body(Body::from(serde_json::to_string(&serde_json::json!({"name": "to-revoke"})).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let create_json = response_json(response).await;
+    let token2 = create_json["raw_token"].as_str().unwrap().to_string();
+    let key2_id = create_json["key"]["id"].as_str().unwrap().to_string();
+
+    // Verify token2 works before revocation
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .header("authorization", format!("Bearer {}", token2))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "token2 should work before revocation");
+
+    // DELETE /keys/:id using token1 to revoke key2
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/keys/{}", key2_id))
+                .header("authorization", format!("Bearer {}", token1))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["revoked"], true);
+
+    // Also revoke key1 to make room — but keep key1 active so auth mode stays on
+    // token2 is now revoked, verify it returns 401
+    // (key1 is still active, so auth mode remains on)
+    let _ = key1; // keep key1 alive
+
+    let app = build_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/memories")
+                .header("authorization", format!("Bearer {}", token2))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "revoked token2 should return 401");
+}
