@@ -13,7 +13,7 @@ Mnemonic is a single binary that gives any AI agent durable, semantically search
 - [API Reference](#api-reference)
   - [POST /memories/compact](#post-memoriescompact)
   - [Key Management](#key-management-endpoints)
-- [CLI](#cli)
+- [CLI](#cli) (serve, remember, recall, search, compact, keys)
 - [Usage Examples](#usage-examples)
 - [How It Works](#how-it-works)
 - [Contributing](#contributing)
@@ -481,22 +481,42 @@ curl -s -X DELETE http://localhost:8080/keys/019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5
 
 ## CLI
 
-Mnemonic includes a built-in CLI for key management. CLI commands operate directly on the database — the server does not need to be running. The embedding model is never loaded for CLI commands, so they start instantly.
+Mnemonic includes a full CLI with subcommands for every operation. CLI commands operate directly on the database — the server does not need to be running. All subcommands support `--json` for machine-readable output.
 
 ```bash
-# Create a key
+# Start the server (explicit or implicit — both work)
+./mnemonic serve
+./mnemonic
+
+# Store a memory (positional argument or stdin pipe)
+./mnemonic remember "The user prefers dark mode"
+./mnemonic remember "Meeting notes from standup" --agent-id my-agent --tags work,meetings
+echo "piped content" | ./mnemonic remember --agent-id my-agent
+
+# List and retrieve memories (fast — no model loading, ~50ms)
+./mnemonic recall
+./mnemonic recall --agent-id my-agent --limit 10
+./mnemonic recall --id 019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f
+
+# Semantic search
+./mnemonic search "what does the user prefer?"
+./mnemonic search "tall buildings" --agent-id research-bot --limit 5 --threshold 0.8
+
+# Compact similar memories
+./mnemonic compact --agent-id my-agent
+./mnemonic compact --dry-run                    # preview without mutating
+./mnemonic compact --threshold 0.85             # custom similarity threshold
+
+# Manage API keys
 ./mnemonic keys create --name "my-key"
 ./mnemonic keys create --name "scoped-key" --scope research-bot
-
-# List all keys
 ./mnemonic keys list
-
-# Revoke a key (by UUID or 8-char display ID)
-./mnemonic keys revoke 019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f
 ./mnemonic keys revoke a1b2c3d4
 
-# Start the server (default behavior, same as before)
-./mnemonic
+# JSON output (works on all subcommands)
+./mnemonic recall --json
+./mnemonic search "query" --json
+./mnemonic keys list --json
 ```
 
 ---
