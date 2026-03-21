@@ -68,30 +68,30 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLI-01 | — | Pending |
-| CLI-02 | — | Pending |
-| REM-01 | — | Pending |
-| REM-02 | — | Pending |
-| REM-03 | — | Pending |
-| REM-04 | — | Pending |
-| RCL-01 | — | Pending |
-| RCL-02 | — | Pending |
-| RCL-03 | — | Pending |
-| SRC-01 | — | Pending |
-| SRC-02 | — | Pending |
-| CMP-01 | — | Pending |
-| CMP-02 | — | Pending |
-| CMP-03 | — | Pending |
-| OUT-01 | — | Pending |
-| OUT-02 | — | Pending |
-| OUT-03 | — | Pending |
-| OUT-04 | — | Pending |
+| CLI-01 | Phase 15 | Pending |
+| CLI-02 | Phase 15 | Pending |
+| REM-01 | Phase 17 | Pending |
+| REM-02 | Phase 17 | Pending |
+| REM-03 | Phase 17 | Pending |
+| REM-04 | Phase 17 | Pending |
+| RCL-01 | Phase 16 | Pending |
+| RCL-02 | Phase 16 | Pending |
+| RCL-03 | Phase 16 | Pending |
+| SRC-01 | Phase 18 | Pending |
+| SRC-02 | Phase 18 | Pending |
+| CMP-01 | Phase 19 | Pending |
+| CMP-02 | Phase 19 | Pending |
+| CMP-03 | Phase 19 | Pending |
+| OUT-01 | Phase 20 | Pending |
+| OUT-02 | Phase 20 | Pending |
+| OUT-03 | Phase 20 | Pending |
+| OUT-04 | Phase 20 | Pending |
 
 **Coverage:**
 - v1.3 requirements: 18 total
-- Mapped to phases: 0
-- Unmapped: 18
+- Mapped to phases: 18
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-21*
-*Last updated: 2026-03-21 after initial definition*
+*Last updated: 2026-03-21 after roadmap creation (v1.3)*
