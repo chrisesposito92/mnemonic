@@ -125,5 +125,5 @@ Plans:
 | 10. Auth Schema Foundation | v1.2 | 2/2 | Complete    | 2026-03-20 |
 | 11. KeyService Core | v1.2 | 1/1 | Complete    | 2026-03-21 |
 | 12. Auth Middleware | v1.2 | 1/1 | Complete    | 2026-03-21 |
-| 13. HTTP Wiring and REST Key Endpoints | v1.2 | 2/2 | Complete   | 2026-03-21 |
+| 13. HTTP Wiring and REST Key Endpoints | v1.2 | 2/2 | Complete    | 2026-03-21 |
 | 14. CLI Key Management | v1.2 | 0/? | Not started | - |
