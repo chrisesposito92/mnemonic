@@ -16,11 +16,11 @@ Requirements for API key authentication milestone. Each maps to roadmap phases.
 
 ### Authentication
 
-- [ ] **AUTH-01**: Requests with a valid Bearer token in the Authorization header are authenticated
-- [ ] **AUTH-02**: Requests with an invalid or revoked token receive 401 Unauthorized
-- [ ] **AUTH-03**: When no API keys exist in the database, all requests are allowed (open mode)
+- [x] **AUTH-01**: Requests with a valid Bearer token in the Authorization header are authenticated
+- [x] **AUTH-02**: Requests with an invalid or revoked token receive 401 Unauthorized
+- [x] **AUTH-03**: When no API keys exist in the database, all requests are allowed (open mode)
 - [ ] **AUTH-04**: A scoped key's agent_id overrides the client-supplied agent_id, preventing cross-agent access
-- [ ] **AUTH-05**: GET /health is accessible without authentication regardless of auth mode
+- [x] **AUTH-05**: GET /health is accessible without authentication regardless of auth mode
 
 ### Infrastructure
 
@@ -66,11 +66,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | KEY-02 | Phase 11 | Complete |
 | KEY-03 | Phase 11 | Complete |
 | KEY-04 | Phase 11 | Complete |
-| AUTH-01 | Phase 12 | Pending |
-| AUTH-02 | Phase 12 | Pending |
-| AUTH-03 | Phase 12 | Pending |
+| AUTH-01 | Phase 12 | Complete |
+| AUTH-02 | Phase 12 | Complete |
+| AUTH-03 | Phase 12 | Complete |
 | AUTH-04 | Phase 13 | Pending |
-| AUTH-05 | Phase 12 | Pending |
+| AUTH-05 | Phase 12 | Complete |
 | INFRA-01 | Phase 10 | Complete |
 | INFRA-02 | Phase 11 | Complete |
 | INFRA-03 | Phase 10 | Complete |
