@@ -49,7 +49,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 - [x] API key authentication via Authorization: Bearer mnk_... headers — v1.2 Phase 12
 - [x] API keys scoped to specific agent_ids for enforced namespace isolation — v1.2 Phase 13
-- [ ] CLI key management commands (mnemonic keys create/list/revoke)
+- [x] CLI key management commands (mnemonic keys create/list/revoke) — v1.2 Phase 14
 - [x] Optional auth — open mode by default, auth activates when keys exist — v1.2 Phase 12
 - [x] Axum middleware layer for auth enforcement across all endpoints — v1.2 Phase 12
 
@@ -68,10 +68,11 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ## Context
 
-v1.2 in progress with 13 phases complete (20 plans total: 11 v1.0 + 6 v1.1 + 3 v1.2).
-Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth).
-53 tests passing (unit + integration), zero compiler errors. MIT licensed.
+v1.2 complete with 14 phases (22 plans total: 11 v1.0 + 6 v1.1 + 5 v1.2).
+Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI).
+57 unit + 53 integration tests passing, zero compiler errors. MIT licensed.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
+CLI: `mnemonic keys create/list/revoke` — fast path (DB only, no model loading).
 Auth middleware enforces Bearer token authentication on all /memories and /keys endpoints with open mode bypass. Scoped keys enforce namespace isolation at the handler layer.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required.
@@ -129,4 +130,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after Phase 13 (http-wiring-and-rest-key-endpoints) complete — REST key management + scoped namespace isolation at handler layer*
+*Last updated: 2026-03-21 after Phase 14 (cli-key-management) complete — CLI key management, v1.2 milestone complete*
