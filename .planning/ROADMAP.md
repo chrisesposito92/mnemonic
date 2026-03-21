@@ -75,7 +75,10 @@
   3. KeyService is unchanged — it still holds its direct Arc<Connection> with no StorageBackend involvement
   4. A new StorageBackend implementor can be added by creating a struct in src/storage/ without modifying MemoryService or CompactionService
   5. Search results from SqliteBackend are always lower-is-better distance values, matching the documented trait contract
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 21-01-PLAN.md — Define StorageBackend trait, shared types, and SqliteBackend implementation
+- [ ] 21-02-PLAN.md — Refactor services to use StorageBackend, update all wiring, verify 239 tests pass
 
 ### Phase 22: Config Extension, Backend Factory, and Config CLI
 **Goal**: Users can select a storage backend via config, get actionable errors on misconfiguration, inspect current config from the terminal, and see the active backend reported by the health endpoint
@@ -135,7 +138,7 @@
 | 18. search subcommand | v1.3 | 2/2 | Complete | 2026-03-21 |
 | 19. compact subcommand | v1.3 | 2/2 | Complete | 2026-03-21 |
 | 20. output polish | v1.3 | 2/2 | Complete | 2026-03-21 |
-| 21. Storage Trait and SQLite Backend | v1.4 | 0/? | Not started | - |
+| 21. Storage Trait and SQLite Backend | v1.4 | 0/2 | Not started | - |
 | 22. Config Extension, Backend Factory, and Config CLI | v1.4 | 0/? | Not started | - |
 | 23. Qdrant Backend | v1.4 | 0/? | Not started | - |
 | 24. Postgres Backend | v1.4 | 0/? | Not started | - |
