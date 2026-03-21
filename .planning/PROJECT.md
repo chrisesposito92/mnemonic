@@ -2,23 +2,11 @@
 
 ## What This Is
 
-A single Rust binary that gives any AI agent persistent memory via a simple REST API — including agent-triggered memory compaction with optional LLM summarization. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
+A single Rust binary that gives any AI agent persistent memory via a simple REST API and full CLI — including agent-triggered memory compaction with optional LLM summarization, API key authentication, and terminal-native subcommands for every operation. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
 
 ## Core Value
 
 Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run.
-
-## Current Milestone: v1.3 CLI
-
-**Goal:** Turn the single binary into a full CLI tool with subcommands for every operation — serve the API, store/recall/search memories, compact, and manage keys, all from the terminal.
-
-**Target features:**
-- `mnemonic serve` — start the HTTP server (current default behavior)
-- `mnemonic remember` — store a memory directly from CLI
-- `mnemonic recall` — retrieve memories by ID or filter
-- `mnemonic search` — semantic search from CLI
-- `mnemonic compact` — trigger compaction from CLI
-- `mnemonic keys` — existing key management (already shipped)
 
 ## Requirements
 
@@ -50,23 +38,22 @@ Any AI agent can store and semantically search memories out of the box with zero
 - CLI key management commands (mnemonic keys create/list/revoke) — v1.2
 - Optional auth — open mode by default, auth activates when keys exist — v1.2
 - Axum auth middleware enforcement across all protected endpoints — v1.2
+- `mnemonic serve` subcommand with backward-compatible bare invocation — v1.3
+- `mnemonic recall` subcommand with list, get-by-id, and filter flags (DB-only, no model loading) — v1.3
+- `mnemonic remember` subcommand with positional/stdin content, agent/session/tag metadata — v1.3
+- `mnemonic search` subcommand with semantic search, ranked results, and filtering flags — v1.3
+- `mnemonic compact` subcommand with dry-run, agent scoping, and threshold control — v1.3
+- Global `--json` flag for machine-readable output across all subcommands — v1.3
+- Consistent exit codes (0 success, 1 error) and stdout/stderr separation — v1.3
 
 ### Active
 
-- `mnemonic compact` subcommand for triggering compaction from CLI — v1.3 (Phase 19, next)
-
-### Recently Validated
-
-- `mnemonic search` subcommand for semantic search from CLI with ranked results and filtering flags — Validated in Phase 18: search-subcommand
-- `mnemonic serve` subcommand with backward-compatible bare invocation — v1.3 (Phase 15)
-- `mnemonic recall` subcommand with list, get-by-id, and filter flags (DB-only, no model loading) — Validated in Phase 16: recall-subcommand
-- `mnemonic remember` subcommand with positional/stdin content, agent/session/tag metadata, medium-init helper — Validated in Phase 17: remember-subcommand
+(None — planning next milestone)
 
 ### Out of Scope
 
 - Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
-- ~~Authentication / API keys~~ → **shipped in v1.2** (promoted from out-of-scope after compaction raised destructive-operation stakes)
 - Pluggable storage backends (Qdrant, Postgres) — single-file SQLite is a feature, not a limitation
 - Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
 - gRPC support — doubles interface surface; REST sufficient for all reviewed use cases
@@ -74,15 +61,19 @@ Any AI agent can store and semantically search memories out of the box with zero
 - Multi-node / distributed mode — SQLite not designed for multi-writer distributed use
 - Session-scoped compaction — agent_id scoping sufficient; session_id adds complexity
 - DBSCAN/HDBSCAN clustering — overkill for N<500; greedy pairwise with single threshold is simpler and sufficient
+- Interactive REPL mode — model cold start makes REPL startup same as individual invocations; server already IS the persistent process
+- Background daemon mode (--daemon) — platform-specific complexity; systemd/launchd handle this better
+- Multi-format output (--format csv/table/json) — --json + jq covers all machine formats; two modes (human/JSON) not three
+- Automatic model download — model is bundled in binary; clear error better than silent download
 
 ## Context
 
-v1.2 shipped with 14 phases (22 plans total: 11 v1.0 + 6 v1.1 + 5 v1.2).
-Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI).
-5,925 lines of Rust. 57 unit + 53 integration tests passing (194 total), zero compiler warnings. MIT licensed.
+v1.3 shipped with 20 phases (36 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3).
+Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output).
+22,198 lines of Rust. 239 tests passing, zero compiler warnings. MIT licensed.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
-CLI: `mnemonic serve` starts HTTP server (also default with no args), `mnemonic keys create/list/revoke` and `mnemonic recall` — fast path (DB only, no model loading). `mnemonic remember` and `mnemonic search` — medium-init path (DB + embedding, no server) for storing and searching memories from CLI.
-Auth middleware enforces Bearer token authentication on all /memories and /keys endpoints with open mode bypass. Scoped keys enforce namespace isolation at the handler layer.
+CLI: 6 subcommands — `serve`, `remember`, `recall`, `search`, `compact`, `keys` — all with `--json` flag, consistent exit codes, stdout/stderr separation.
+Init tiers: DB-only (~50ms) for keys/recall, medium (DB+embedding, ~2-3s) for remember/search, full (DB+embedding+LLM) for compact.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required.
 
@@ -120,6 +111,11 @@ Single-binary distribution — no Python, no Docker, no external services requir
 | POST /memories/compact returns 200 (not 201) | Compaction mutates data but does not create a new addressable resource | Good — v1.1 |
 | route_layer() not layer() for auth middleware | Prevents 401 on unmatched routes; only matched protected routes hit middleware | Good — v1.2 |
 | Per-request COUNT for open mode (not startup flag) | Auth activates/deactivates live when keys are created/revoked — no restart needed | Good — v1.2 |
+| Tiered init helpers (init_db / init_db_and_embedding / init_compaction) | Minimal resource loading per subcommand; recall stays fast at ~50ms | Good — v1.3 |
+| Early validation before model load | Empty content/query rejected before 2-3s embedding model load | Good — v1.3 |
+| Direct rusqlite seeding for fast-path tests | Avoids embedding model overhead in recall/keys tests; seed_memory() pattern | Good — v1.3 |
+| Global --json on Cli struct (not per-subcommand) | One extraction point in main.rs; consistent across all handlers | Good — v1.3 |
+| stderr audit trail regardless of --json mode | Operators always see progress; scripts parse stdout only | Good — v1.3 |
 
 ## Evolution
 
@@ -139,4 +135,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after Phase 18 (search subcommand) complete*
+*Last updated: 2026-03-21 after v1.3 milestone*

@@ -1,5 +1,34 @@
 # Milestones
 
+## v1.3 CLI (Shipped: 2026-03-21)
+
+**Phases completed:** 6 phases, 11 plans, 19 tasks
+
+**Key accomplishments:**
+
+- CLI scaffolding with `mnemonic serve` subcommand and backward-compatible bare invocation via Commands enum dispatch
+- Fast-path `mnemonic recall` subcommand with DB-only init (~50ms), list/get-by-id/filter modes, and shared init_db() helper
+- `mnemonic remember` subcommand with stdin pipe support, medium-init embedding helper, and full agent/session/tag metadata
+- `mnemonic search` subcommand with semantic search, distance-ranked tabular output, and early empty-query validation
+- `mnemonic compact` subcommand with full CompactionService init, dry-run preview, agent scoping, and threshold control
+- Global `--json` flag across all subcommands with consistent exit codes and stdout/stderr separation
+
+**Delivered:** Full CLI toolset — every operation available from the terminal: serve, remember, recall, search, compact, and key management, with machine-readable JSON output and consistent exit codes.
+
+**Stats:**
+
+- Lines of Rust: 22,198 (total)
+- Lines changed: +12,891 / -160
+- Files modified: 55
+- Commits: 70
+- Timeline: 2026-03-19 → 2026-03-21 (2 days)
+- Tests: 239 passing, zero compiler warnings
+- Requirements: 18/18 satisfied
+- Nyquist: COMPLIANT (all 6 phases)
+- Git range: feat(15-01) → docs(v1.3)
+
+---
+
 ## v1.2 Authentication / API Keys (Shipped: 2026-03-21)
 
 **Phases completed:** 5 phases, 8 plans, 10 tasks

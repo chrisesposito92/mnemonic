@@ -122,6 +122,51 @@
 
 ---
 
+## Milestone: v1.3 — CLI
+
+**Shipped:** 2026-03-21
+**Phases:** 6 | **Plans:** 11
+
+### What Was Built
+- CLI scaffolding with `mnemonic serve` subcommand and backward-compatible bare invocation
+- `mnemonic recall` with DB-only fast path (~50ms), list/get-by-id/filter modes
+- `mnemonic remember` with stdin pipe support and full agent/session/tag metadata
+- `mnemonic search` with semantic search, distance-ranked tabular output, and filter flags
+- `mnemonic compact` with dry-run preview, agent scoping, and threshold control
+- Global `--json` flag across all subcommands with consistent exit codes and stdout/stderr separation
+
+### What Worked
+- Tiered init helpers (init_db / init_db_and_embedding / init_compaction) kept resource loading minimal per subcommand — recall stays fast at ~50ms
+- Early validation before model load (empty content/query rejected before 2-3s embedding load) — pattern established in Phase 17, reused in 18-20
+- Zero new Cargo.toml dependencies for entire milestone — all needs covered by existing locked stack
+- Sequential phase dependency chain (15→16→17→18→19→20) meant each phase built cleanly on the prior one's init helpers
+- Direct rusqlite seeding for fast-path integration tests avoided embedding model overhead in recall/keys tests
+- Global --json on Cli struct (single extraction point in main.rs) made output consistency trivial across all handlers
+
+### What Was Inefficient
+- Phase 16 recall one-liner SUMMARY was empty (tool extraction returned "One-liner:" with no content) — minor bookkeeping gap
+- init_compaction() could not reuse init_db_and_embedding() due to different return types (MemoryService vs individual components for CompactionService) — acceptable but a small violation of DRY
+
+### Patterns Established
+- Tiered init helpers: init_db (DB-only, ~50ms), init_db_and_embedding (DB+model, ~2-3s), init_compaction (DB+model+LLM)
+- Early input validation before expensive initialization (empty string check before model load)
+- Global flag extraction before match dispatch in main.rs (avoids Rust partial-move errors)
+- seed_memory() for fast-path tests vs `mnemonic remember` for embedding-dependent tests
+- stderr audit trail regardless of --json mode (operators always see progress, scripts parse stdout)
+
+### Key Lessons
+1. Init tier design is critical for CLI UX — recall at ~50ms feels instant while remember at ~2-3s is acceptable with user feedback
+2. Rust partial-move compile errors are the #1 recurring pattern in CLI dispatch — extract values before match arms
+3. Direct rusqlite seeding vs mnemonic remember for test setup is a deliberate choice: use seed_memory() when embeddings don't matter, use the binary when they do (compact needs real embeddings for clustering)
+4. Global flags on the Cli struct (not per-subcommand) ensure consistency without per-handler plumbing
+
+### Cost Observations
+- Model mix: balanced profile throughout
+- Notable: 6 phases in 2 days with 70 commits; most phases completed in single sessions
+- Test suite grew from 194 → 239 (45 new tests, all CLI integration)
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -131,6 +176,7 @@
 | v1.0 | 5 | 11 | Baseline — established GSD workflow with audit-driven gap closure |
 | v1.1 | 4 | 6 | Pattern mirroring reduced design overhead; tiered delivery (Tier 1/2) |
 | v1.2 | 5 | 8 | Layered auth (schema->service->middleware->HTTP->CLI); per-request mode detection |
+| v1.3 | 6 | 11 | Tiered init helpers for CLI UX; zero new dependencies; global --json consistency |
 
 ### Cumulative Quality
 
@@ -139,9 +185,12 @@
 | v1.0 | 30 | Yes | COMPLIANT |
 | v1.1 | 68 (35 unit + 33 integration) | Yes | COMPLIANT |
 | v1.2 | 194 (57 unit + 53 integration) | Yes | COMPLIANT |
+| v1.3 | 239 (63 unit + 55+54 integration) | Yes | COMPLIANT |
 
 ### Top Lessons (Verified Across Milestones)
 
-1. Milestone audits before shipping catch integration gaps that per-phase verification misses (v1.0, v1.1, v1.2)
+1. Milestone audits before shipping catch integration gaps that per-phase verification misses (v1.0, v1.1, v1.2, v1.3)
 2. Mirror existing trait patterns when adding new engines — consistent architecture and near-zero design friction (v1.0 EmbeddingEngine -> v1.1 SummarizationEngine)
-3. SUMMARY frontmatter `requirements_completed` field is consistently skipped during execution — recurring debt across all 3 milestones; needs process fix
+3. SUMMARY frontmatter `requirements_completed` field is consistently skipped during execution — recurring debt across all 4 milestones; needs process fix
+4. Init tier design is load-bearing for CLI UX — users feel the difference between 50ms and 3s (v1.3)
+5. Zero new dependencies for an entire milestone is achievable when the foundation is well-designed (v1.3)
