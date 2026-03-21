@@ -21,3 +21,6 @@ target
 #.idea/
 
 idea.md
+
+# Runtime database
+mnemonic.db
