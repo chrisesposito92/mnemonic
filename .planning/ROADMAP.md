@@ -37,7 +37,7 @@
 - [x] **Phase 11: KeyService Core** - Business logic for key creation, listing, revocation, validation, and secure hashing (completed 2026-03-21)
 - [x] **Phase 12: Auth Middleware** - Axum middleware that enforces authentication and injects AuthContext into requests (completed 2026-03-21)
 - [x] **Phase 13: HTTP Wiring and REST Key Endpoints** - Attach middleware to router, add key management REST endpoints, enforce scope at handler layer (completed 2026-03-21)
-- [ ] **Phase 14: CLI Key Management** - `mnemonic keys` subcommand for creating, listing, and revoking keys from the terminal
+- [x] **Phase 14: CLI Key Management** - `mnemonic keys` subcommand for creating, listing, and revoking keys from the terminal (completed 2026-03-21)
 
 ## Phase Details
 
@@ -107,10 +107,10 @@ Plans:
   2. `mnemonic keys list` prints a table of key metadata (name, prefix, scope, created date) with no raw tokens
   3. `mnemonic keys revoke <id>` revokes the key and confirms revocation; the server rejects that key on the next request
   4. The `keys` subcommand starts in under 1 second — the embedding model is never loaded on the CLI path
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [x] 14-01-PLAN.md — Add clap dependency, CLI module with clap structs and handler functions, find_by_display_id KeyService method
-- [ ] 14-02-PLAN.md — Restructure main.rs for dual-mode CLI/server dispatch, end-to-end verification
+- [x] 14-02-PLAN.md — Restructure main.rs for dual-mode CLI/server dispatch, end-to-end verification
 
 ## Progress
 
@@ -129,4 +129,4 @@ Plans:
 | 11. KeyService Core | v1.2 | 1/1 | Complete    | 2026-03-21 |
 | 12. Auth Middleware | v1.2 | 1/1 | Complete    | 2026-03-21 |
 | 13. HTTP Wiring and REST Key Endpoints | v1.2 | 2/2 | Complete    | 2026-03-21 |
-| 14. CLI Key Management | v1.2 | 1/2 | In Progress|  |
+| 14. CLI Key Management | v1.2 | 2/2 | Complete   | 2026-03-21 |

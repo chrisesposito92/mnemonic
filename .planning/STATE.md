@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Authentication / API Keys
 status: unknown
-stopped_at: Completed 14-01-PLAN.md
-last_updated: "2026-03-21T03:14:15.879Z"
+stopped_at: "Checkpoint: Task 2 - Verify end-to-end CLI key management (human-verify)"
+last_updated: "2026-03-21T03:18:14.780Z"
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 8
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # Project State
@@ -62,6 +62,8 @@ Recent decisions affecting v1.2:
 - [Phase 13-http-wiring-and-rest-key-endpoints]: POST /keys returns 201 (creates resource); DELETE /keys/:id returns 200 with body for consistency with memory delete pattern
 - [Phase 14]: #[derive(Clone)] added to KeyService — Arc<Connection> is Clone, required for CLI test pattern
 - [Phase 14]: CLI module (src/cli.rs) as self-contained module — wired into main.rs in Plan 02
+- [Phase 14]: CLI args parsed first via cli::Cli::parse() before any initialization — guarantees fast path without I/O
+- [Phase 14]: CLI path skips validate_config to avoid OpenAI key requirement when embeddings not needed
 
 ### Pending Todos
 
@@ -74,6 +76,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-21T03:14:15.877Z
-Stopped at: Completed 14-01-PLAN.md
+Last session: 2026-03-21T03:18:08.443Z
+Stopped at: Checkpoint: Task 2 - Verify end-to-end CLI key management (human-verify)
 Resume file: None
