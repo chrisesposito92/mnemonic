@@ -126,4 +126,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-20 after v1.2 milestone started*
+*Last updated: 2026-03-21 after Phase 11 (keyservice-core) complete — KeyService CRUD + BLAKE3 hashing implemented*
