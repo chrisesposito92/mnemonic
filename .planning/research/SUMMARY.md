@@ -1,208 +1,209 @@
 # Project Research Summary
 
 **Project:** Mnemonic — Rust agent memory server
-**Domain:** Embedded vector search + local ML inference + REST API with optional authentication (v1.2)
-**Researched:** 2026-03-20
-**Confidence:** HIGH
+**Domain:** Rust single-binary CLI tool with embedded vector search and local ML inference (v1.3 — CLI subcommands)
+**Researched:** 2026-03-21
+**Confidence:** HIGH (all four research files sourced from direct codebase inspection, official docs, and verified benchmarks)
 
 ## Executive Summary
 
-Mnemonic is a single-binary Rust server providing persistent, searchable memory for AI agents via a REST API. The v1.1 milestone (memory compaction) is already shipped, and this research covers v1.2: optional API key authentication that keeps the binary zero-config for local development while making it safe to expose on a network. The established pattern for this class of tool — shared with Ollama, Home Assistant, and similar local-first infrastructure — is "open by default, auth activates on first key creation." Research confirms that all authentication infrastructure can be built on the existing dependency set with five targeted additions (rand_core, blake3, hex, constant_time_eq, clap), with no architectural rework required.
+Mnemonic v1.3 is a targeted, well-scoped milestone: turn an existing server binary with a `keys` CLI into a full CLI tool where every REST operation — `serve`, `remember`, `recall`, `search`, `compact` — has a matching subcommand. The research is exceptionally high-confidence because this is an extension of shipped code, not greenfield work. The architectural pattern is already established by the v1.2 `keys` subcommand: CLI handlers call service layer methods directly (bypassing HTTP), and the dispatch tier matches initialization cost to subcommand requirements. The only new patterns introduced in v1.3 are a medium-init tier (DB + embedding model, ~2-3s cold start) and five new handler functions in `cli.rs`.
 
-The recommended approach follows the four-layer architecture already established (HTTP handlers -> service layer -> DB/embedding engines -> SQLite storage). Auth adds a single new source file (`auth.rs`) containing `KeyService`, `AuthContext`, and the axum middleware function, plus one new `api_keys` table in SQLite. Scoped keys (each key constrained to one `agent_id`) provide genuine multi-agent namespace isolation without any changes to the existing memory service or compaction service. The dual-mode binary pattern (clap subcommand dispatch) keeps CLI key management and server startup in one binary by guarding the embedding model load behind the server code path only.
+The recommended approach is strictly additive. No new modules, no new files beyond what already exist, and no new Cargo.toml dependencies. The five new subcommands slot into the existing `Commands` enum and dispatch pattern in `main.rs`, the existing `MemoryService` and `CompactionService` methods are called directly without modification, and the existing `cli.rs` module gains the handler implementations. The entire v1.3 delta is concentrated in two files: `cli.rs` (major additions) and `main.rs` (modified dispatch). SQLite WAL mode, already enabled, handles concurrent CLI + server access safely without any application-level locking.
 
-The dominant risks are security correctness issues specific to auth implementation: timing attacks from non-constant-time key comparison (a real CVE filed against vLLM in 2025 for exactly this pattern, rated High), horizontal privilege escalation via `agent_id` override (the middleware validates the key but handlers must use the authorized scope from extensions — not the request body), and health endpoint lockout when middleware is applied globally. Recovery from these mistakes is costly (rotate all keys, audit access logs, notify affected users), so they must be verified before any production deployment. Each has a well-defined prevention strategy documented in PITFALLS.md.
+The key risk is cold-start UX: `remember`, `search`, and `compact` all load the local embedding model (~2-3s). This is a known, accepted cost documented in the research — the mitigation for interactive use (HTTP fast path to a running server) is explicitly scoped to v1.4. The v1.3 approach is correct: build the direct-DB path first, ship it, then optimize based on user feedback. The `recall` subcommand is the one fast-path operation (DB only, ~50ms) and should be implemented before the embedding-dependent commands to validate the dispatch infrastructure at low cost.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The existing stack is locked and needs no changes for authentication logic. All auth infrastructure is covered by five new dependencies. The binary already uses `reqwest 0.13` for LLM embedding fallback — this constraint blocked `async-openai` (which pins reqwest 0.12) and confirms the no-new-HTTP-client policy for v1.1. The same constraint continues to apply. The `rusqlite 0.37` pin must not be upgraded; sqlite-vec 0.1.7 has a documented conflict with rusqlite 0.39's libsqlite3-sys.
+The v1.3 stack is identical to v1.2. Zero new dependencies are required. The existing clap 4.6 (derive), tokio-rusqlite 0.7, candle/hf-hub (for local embedding), serde_json, and sqlite-vec 0.1.7 cover all v1.3 needs. Stdin TTY detection for `mnemonic remember` pipe support uses `std::io::IsTerminal` — available in Rust 1.70+ stdlib with no external crate needed.
 
-**New dependencies for v1.2:**
-- `rand_core 0.9` (os_rng feature): OS-provided cryptographic entropy for key generation — minimal crate; full `rand` adds PRNGs and distributions this use case does not need
-- `blake3 1.8`: Key hashing at rest — fast (appropriate for high-entropy tokens, unlike Argon2/bcrypt designed for low-entropy passwords), pure Rust, zero C dependencies, verified at 1.8.3 on docs.rs
-- `hex 0.4`: Encode/decode BLAKE3 hashes for SQLite TEXT storage — round-trip via `hex::encode()` / `hex::decode()`
-- `constant_time_eq 0.4`: Constant-time 32-byte comparison (`constant_time_eq_32()`) — simpler API than `subtle` for this specific use case
-- `clap 4.6` (derive feature): CLI subcommand dispatch for `mnemonic keys create/list/revoke`
+**Core technologies (locked from v1.2):**
+- **clap 4.6 (derive):** Subcommand parsing — derive macros generate all boilerplate; already used for `keys` CLI
+- **tokio-rusqlite 0.7:** Async SQLite access — all CLI handlers use `conn.call()` pattern, same as server
+- **candle-core + hf-hub:** Local ML inference — medium-init branches load the embedding model on demand via `tokio::task::spawn_blocking`
+- **serde_json:** Structured output — `--json` flag on all subcommands requires zero new work; types already derive `Serialize`
+- **sqlite-vec 0.1.7:** KNN vector search — `search` subcommand uses the same `search_memories()` method as the HTTP handler
 
-**Locked existing stack (no changes needed):**
-- tokio 1 / axum 0.8: async runtime and HTTP server; axum's `middleware::from_fn_with_state` is the auth middleware mechanism
-- rusqlite 0.37 (bundled) + sqlite-vec 0.1.7: vector KNN search and all schema work
-- candle 0.9 + tokenizers 0.22 + hf-hub 0.5: local ML inference (untouched by auth)
-- reqwest 0.13 + serde_json 1: HTTP client and serialization (reused for LLM provider)
-- figment 0.10: config (TOML + env vars, extended transparently for any new keys)
-
-**No changes to existing dependency versions required.**
+**No new Cargo.toml entries required for v1.3.**
 
 ### Expected Features
 
-**Must have (v1.2 table stakes):**
-- Bearer token via `Authorization` header — RFC 7235 standard; any other transport is an anti-pattern
-- `mnk_` prefix on generated keys — identifiable in logs, grep output, and secret scanners (Stripe, GitHub, PyPI all use this pattern for the same reason)
-- Keys stored as BLAKE3 hashes only, never plaintext — OWASP requirement; leaked DB must not expose credentials
-- Key shown once at creation, never retrievable again — universal pattern (Stripe, GitHub, Anthropic)
-- 401 on invalid/missing key when auth is active; 403 for valid key accessing wrong agent namespace
-- Open mode (no auth when zero active keys exist) — preserves zero-config local dev experience; Ollama uses the same model
-- CLI key management: `mnemonic keys create/list/revoke` — without CLI, users must craft raw HTTP to manage credentials; this is an unacceptable DX gap
-- Immediate key revocation — `DELETE /keys/:id` must take effect on the next request with no cache lag
-- `agent_id`-scoped keys — genuine differentiator; a compromised agent key cannot read another agent's memories
-- Admin/wildcard key (`agent_id IS NULL`) — needed for orchestrators managing multiple agents
+Research sourced from redis-cli, HTTPie, ripgrep, heroku-cli, clap docs, and direct inspection of the existing `mnemonic keys` CLI conventions.
 
-**Should have (differentiators already defined in scope):**
-- `last_used_at` timestamp per key — lets operators identify active vs. stale keys
-- `description` field per key — human label for `keys list` output (users cannot tell keys apart from metadata alone)
+**Must have (table stakes — P1 for v1.3):**
+- `mnemonic serve` — explicit subcommand with backward-compat default (no args = server still starts)
+- `mnemonic remember <content>` — store memory with `--agent-id`, `--session-id`, `--tags` flags; stdin pipe support
+- `mnemonic recall <id>` — retrieve by ID or structured filter (DB-only, no model load, fast path ~50ms)
+- `mnemonic search <query>` — semantic search with `--agent-id`, `--limit`, `--threshold` flags
+- `mnemonic compact` — trigger compaction with `--agent-id`, `--dry-run` flags
+- `--json` flag on all subcommands — newline-delimited JSON for composability with `jq`
+- Exit code 0/1, errors to stderr, data to stdout — Unix convention, already established in `keys` CLI
+- `--agent-id` and `--session-id` on all data commands — multi-agent namespacing is Mnemonic's core value
 
-**Defer to v1.3+:**
-- Key rotation helper (`mnemonic keys rotate`) — create + revoke covers v1.2 needs
-- Rate limiting per key — premature for target user base (individual developers, small teams)
-- Per-endpoint permission scopes — unnecessary complexity at current scale
-- Expiry dates on keys — enterprise deployment context only
+**Should have (differentiators — P1/P2):**
+- Stdin pipe support on `remember` — `echo "learned X" | mnemonic remember` follows Unix convention; zero additional dependencies via `std::io::IsTerminal`
+- `--dry-run` on `compact` — already supported by REST API; surfaces it to CLI operators without new code
+- `--threshold` on `search` — advanced users tuning search quality; maps directly to existing `SearchParams`
+
+**Defer to v1.4+:**
+- HTTP fast path: CLI subcommands POST to running server to skip model cold-start (~2s)
+- `mnemonic delete <id>` with explicit `--yes` confirmation flag
+- Color-coded search output with similarity score indicators (TTY-only)
 
 **Confirmed out of scope:**
-- JWT / OAuth / OIDC — violates zero-external-dependency principle
-- Web UI for key management — violates single-binary principle (PROJECT.md)
-- Argon2/bcrypt for key hashing — wrong tool for high-entropy random token use case (adds 100ms+ latency per request for no security benefit)
+- Interactive REPL mode — anti-feature; `mnemonic serve` IS the persistent process
+- Background daemon mode — use systemd/launchd; daemonization is platform-specific complexity
+- `--format csv/table/json` multi-format — `--json` + jq covers all machine formats
+- `mnemonic import <file>` — shell loop + `mnemonic remember` covers it
 
 ### Architecture Approach
 
-The v1.2 architecture is additive: one new source file, five modified files, one new DB table. The existing 4-layer architecture (HTTP handlers -> service layer -> embedding/summarization engines -> SQLite) is preserved intact. Auth enforcement lives entirely at the handler boundary via `AuthContext` injected by middleware — neither `MemoryService` nor `CompactionService` need to know about authentication. The dual-mode binary pattern branches in `main()` via clap: the `keys` subcommand path opens only the DB (skipping the ~2-second embedding model load), while the server path follows v1.1 startup exactly.
+The architecture is an extension of the proven v1.2 pattern: a tiered initialization dispatch in `main.rs` that selects the minimum startup cost for each subcommand, with thin CLI handler functions in `cli.rs` that call service layer methods directly. No new module structure is introduced; the delta is approximately 200-300 lines across two existing files.
 
-**Major components (v1.2 additions):**
-1. `src/auth.rs` (new) — `KeyService` (create/list/revoke/validate/has_active_keys), `ApiKey` struct, `AuthContext` struct, `auth_middleware` fn, `generate_raw_token()`, `blake3_hex()`
-2. `api_keys` table (new in `db.rs`) — `id`, `name`, `prefix`, `hashed_key`, `agent_id` (nullable = wildcard), `created_at`, `revoked_at`; index on `hashed_key` (auth middleware does this lookup on every request)
-3. `main.rs` (modified) — clap CLI parse, dual-mode dispatch (server vs. key management), embedding model load guarded behind server path
-4. `server.rs` (modified) — `AppState` gains `key_service: Arc<KeyService>`, router gains `route_layer` for auth middleware with `/health` excluded via split-router pattern
-5. `error.rs` (modified) — additive `Unauthorized` variant on `ApiError`
+**Major components (all existing, roles unchanged):**
+1. **`main.rs` dispatch** — routes to the correct init tier (minimal, medium, or full server) based on the `Commands` variant; gains 5 new branches and a shared `init_db_and_embedding()` helper
+2. **`cli.rs` handlers** — thin functions that parse CLI args, call service methods, and format output; gains `run_remember`, `run_recall`, `run_search`, `run_compact`
+3. **`MemoryService` / `CompactionService`** — unchanged; CLI callers use the same methods as HTTP handlers with no duplication of business logic
+4. **SQLite + WAL mode** — unchanged; concurrent CLI + server access is safe by design
 
-**Key pattern — `route_layer` not `layer`:** Using `layer()` runs auth on all requests including unmatched routes, returning 401 instead of 404 (leaks auth configuration, breaks routing semantics). Using `route_layer()` runs auth only on matched routes.
+**Init tiers (critical architectural pattern):**
+- Minimal (DB only, ~50ms): `recall`, `keys` — structured filter queries; no embedding needed
+- Medium (DB + embedding, ~2-3s): `remember`, `search`, `compact` — all require the local ML model
+- Full (DB + embedding + LLM + server bind): `serve` — existing behavior, unchanged
 
-**Key pattern — `AuthContext` in request extensions, not `AppState`:** Per-request state must not go into shared `AppState` (which is shared across concurrent requests). Request extensions are per-request.
-
-**Key pattern — scope enforcement at handler boundary, not service layer:** Handlers extract `agent_id` from `Extension<AuthContext>`, not from the request body. If the key is scoped to `agent-x`, the handler forces `agent_id = "agent-x"` regardless of what the client sends. Services remain unaware of auth — no changes to `MemoryService` or `CompactionService`.
+**Key patterns:**
+- Direct service calls, not HTTP — CLI never calls the running server; works whether server is up or not
+- Output design: ID on line 1 (pipeable), tabular for lists, errors to stderr, `--json` for machine output
+- `serve` as named subcommand with `None` fallback — `mnemonic` (no args) still starts the server; backward compat preserved
 
 ### Critical Pitfalls
 
-**v1.2 auth-specific (highest priority — security mistakes with costly recovery):**
+The PITFALLS.md covers the full v1.0 through v1.2 history. The most relevant for v1.3 implementation are:
 
-1. **Timing attack via non-constant-time key comparison** — CVE GHSA-wr9h-g72x-mwhm was filed against vLLM in 2025 for exactly this pattern (rated High severity). The `==` operator short-circuits on the first mismatched byte; over a local network an attacker can reconstruct the key character by character using latency measurements. Use `constant_time_eq::constant_time_eq_32()` on BLAKE3 hash bytes; never use `==` or `String::eq()` on key values.
+1. **Loading embedding model for `recall`** — `recall` is a structured filter query; loading the model adds ~2s to a command that should be <100ms. Use minimal init (DB only) for `recall`. This is the most likely mistake when copy-pasting from the medium-init branches.
 
-2. **Horizontal privilege escalation (scope enforcement gap)** — Key for agent-A accepts `agent_id: "agent-B"` in the request body, granting cross-namespace read/write access. This is an IDOR (Insecure Direct Object Reference) pattern. Prevention: middleware injects authorized `agent_id` into request extensions after key lookup; handlers must extract `agent_id` from `Extension<AuthContext>`, never from `Query<>` or `Json<>`. Test: key for agent-A + request body `agent_id: "agent-B"` must return 403.
+2. **CLI commands going through HTTP** — implementing `mnemonic remember` as an HTTP client that calls `POST /memories` requires the server to be running, adds network stack overhead, and complicates auth. Call service methods directly; SQLite WAL handles concurrent access transparently.
 
-3. **Health endpoint behind auth breaks monitoring** — Applying auth via `layer()` (not `route_layer()`) intercepts `/health`, causing Docker/K8s health checks to return 401 and trigger container restart loops. Prevention: split router pattern — `protected` Router wrapped with `route_layer(auth_middleware)` merged with a `public` Router containing only `/health`.
+3. **Blocking the tokio runtime during model load** — `LocalEngine::new()` is blocking (HF Hub I/O, model weight parsing). Must use `tokio::task::spawn_blocking(|| LocalEngine::new()).await??` — the same pattern already used in the server path.
 
-4. **Migration cliff on upgrade** — Auth enabled by config flag or binary version immediately locks out existing deployments the moment they upgrade. Prevention: auto-activate auth on first key creation only (check `SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL`); use `CREATE TABLE IF NOT EXISTS` for migration; log startup auth mode prominently.
+4. **Duplicating init logic across dispatch branches** — three medium-init branches (`remember`, `search`, `compact`) that each copy-paste the DB + embedding setup block become a maintenance hazard. Extract `init_db_and_embedding(config: &Config)` as a private helper in `main.rs`.
 
-5. **Plaintext key storage in SQLite** — A single DB file read (backup, misconfigured permissions, path traversal) exposes all credentials. Prevention: store `blake3::hash(key)` as hex string; raw key printed once via `println!` only, never via `tracing::*!`, never stored anywhere.
+5. **Reimplementing business logic in CLI handlers** — `run_search` should call `service.search_memories()`, not reconstruct the SQL query. CLI handlers are thin wrappers: parse args, call service, format output.
 
-**Pre-existing critical pitfalls (v1.0/v1.1, must remain addressed):**
-
-6. **Non-atomic compaction merge** — Deleting source memories before confirming merged memory write causes permanent data loss on crash. Pattern: compute embedding and LLM summary outside any transaction; then insert + delete inside a single `conn.call(|c| { tx })` that never crosses an async boundary.
-
-7. **Cross-namespace compaction** — Clustering without `WHERE agent_id = ?` filter merges memories from different agents silently. Compaction must require `agent_id` and enforce it as a hard filter in all clustering SQL.
-
-8. **Wrong embedding pooling** — all-MiniLM-L6-v2 requires mean pooling with attention mask weighting. CLS token or simple mean produces silent semantic search quality degradation with no error signal.
+6. **Breaking backward compat on the no-subcommand default** — existing deployments run `mnemonic` with no args and expect the server to start. The `None` arm in dispatch must continue starting the server. `Commands::Serve` is additive; the default behavior is unchanged.
 
 ## Implications for Roadmap
 
-Based on component dependencies identified in ARCHITECTURE.md and the risk profile from PITFALLS.md, v1.2 has a clear 5-phase build order. The single architectural constraint driving order: the `api_keys` table and `Unauthorized` error variant must exist before any auth logic can be written or tested.
+Based on the combined research, the natural build order is defined by two constraints: (1) dependencies between subcommands on the `init_db_and_embedding` helper, and (2) the principle of validating new dispatch infrastructure at lowest cost before adding expensive initialization paths.
 
-### Phase 1: Auth Schema Foundation
-**Rationale:** All other v1.2 work depends on the DB table existing. Schema migration is the zero-risk starting point — pure DDL additions following existing patterns in `db.rs::open()`, immediately verifiable with a startup test on a v1.1 database.
-**Delivers:** `api_keys` table in SQLite with correct indexes; `Unauthorized` variant in `ApiError` with 401 response; `pub mod auth` in `lib.rs`
-**Uses:** Existing `rusqlite`, `tokio-rusqlite`, `thiserror` — zero new dependencies in this phase
-**Avoids:** Migration cliff pitfall (use `CREATE TABLE IF NOT EXISTS`; integration test that starts server on existing v1.1 DB); missing hash index (index on `hashed_key` present from day one)
-**Research flag:** Standard patterns — no additional phase research needed
+### Phase A: `serve` Subcommand + Commands Enum Expansion
 
-### Phase 2: KeyService Core
-**Rationale:** Business logic for key CRUD is pure Rust + SQLite with no HTTP surface, making it independently unit-testable before middleware exists. All new dependencies enter the project here.
-**Delivers:** `KeyService::create()`, `list()`, `revoke()`, `validate()`, `has_active_keys()`; `ApiKey` and `AuthContext` structs; `generate_raw_token()` and `blake3_hex()` utilities; BLAKE3 hashing; constant-time hash comparison
-**Uses:** `rand_core 0.9` (os_rng), `blake3 1.8`, `hex 0.4`, `constant_time_eq 0.4` — all new additions enter here
-**Avoids:** Plaintext key storage (only `blake3_hex(key)` ever reaches the DB); timing attack (constant_time_eq_32 used in `validate()`); key prefix leakage in `list` output (display ID is hash-derived, not a substring of the raw key)
-**Research flag:** Standard patterns — all crate choices verified at HIGH confidence
+**Rationale:** Zero-risk rename of existing behavior. Validates that the `Commands` enum expansion compiles and all existing integration tests pass without change. Establishes the `run_server()` helper that both the `None` and `Commands::Serve` arms call.
+**Delivers:** `mnemonic serve` works explicitly; `mnemonic` (no args) still starts the server; backward compat confirmed.
+**Addresses:** Table stakes — explicit `serve` subcommand, backward-compat default.
+**Avoids:** Breaking existing deployments (Pitfall 6 — `None` arm preserved).
+**Research flag:** Standard patterns — no additional phase research needed; pattern is documented in ARCHITECTURE.md with code examples.
 
-### Phase 3: Auth Middleware
-**Rationale:** Middleware depends on `KeyService` (Phase 2) and `ApiError::Unauthorized` (Phase 1) but has no HTTP wiring yet — testable in isolation with a minimal test router and test keys in a test DB.
-**Delivers:** `auth_middleware` fn using `from_fn_with_state`; open-mode detection logic (COUNT query per request — no cache needed at this scale); `AuthContext` insertion into request extensions; correct handling of open-mode + invalid token (401, not passthrough); correct handling of malformed Authorization header (400, not passthrough)
-**Uses:** Existing `axum 0.8` `middleware::from_fn_with_state`; `constant_time_eq` for hash comparison
-**Avoids:** `layer()` vs `route_layer()` confusion (design router split in this phase); stale cache after revocation (skip caching entirely — SQLite indexed lookup is <1ms); open-mode passthrough of invalid tokens (Auth Pitfall 10)
-**Research flag:** Standard patterns — axum middleware docs verified at HIGH confidence
+### Phase B: `recall` Subcommand (Minimal Init)
 
-### Phase 4: HTTP Wiring and REST Key Endpoints
-**Rationale:** Attaches middleware to the router and adds `POST /keys`, `GET /keys`, `DELETE /keys/:id` endpoints. Depends on middleware being proven in Phase 3.
-**Delivers:** Auth-protected routes via split router pattern; `/health` excluded; `AppState.key_service: Arc<KeyService>`; REST key management API; `Extension<AuthContext>` extraction in existing memory and compaction handlers for scope enforcement
-**Uses:** Existing axum router and `AppState` pattern
-**Avoids:** Scope enforcement gap (handlers must use `Extension<AuthContext>.allowed_agent_id`, not request body `agent_id`); self-protecting key endpoints (key management routes must require auth once any key exists — circular dependency resolved by per-request COUNT check, not startup flag); health endpoint behind auth
-**Research flag:** Standard patterns — scope enforcement pattern is explicit in architecture research; integration tests for all scope-related scenarios must be written in this phase
+**Rationale:** First data subcommand uses the cheapest init path (DB only, no embedding). Validates the new dispatch branches and table output formatting without touching the model-load complexity. This is the fastest subcommand to implement and tests the infrastructure that `remember`, `search`, and `compact` build on.
+**Delivers:** `mnemonic recall --id <uuid>` and `mnemonic recall --agent-id <id>` work and return fast (<100ms).
+**Addresses:** `recall` table stakes; `--agent-id`, `--limit` flags; exit codes; stderr/stdout discipline.
+**Avoids:** Anti-pattern of loading embedding model for a DB-only operation (Pitfall 1).
+**Research flag:** Standard patterns — mirrors existing `keys` CLI exactly.
 
-### Phase 5: CLI Key Management
-**Rationale:** Last phase because it depends on all server-side infrastructure. CLI commands call `KeyService` directly (no HTTP) via minimal startup (DB only — no model load).
-**Delivers:** `mnemonic keys create [--name <n>] [--agent-id <id>]`; `mnemonic keys list`; `mnemonic keys revoke <id>`; dual-mode `main()` with clap dispatch; `println!` output with "copy now — not shown again" warning
-**Uses:** `clap 4.6` (derive feature); existing `KeyService`; existing `Config`
-**Avoids:** Key logged to tracing (only `println!` to stdout — verified by grep of all `tracing::*!` calls in creation path); shell history exposure (no `--value <key>` flag; key is always server-generated); embedding model load on CLI path (`Commands::Keys` branch opens only DB, never initializes `EmbeddingEngine`)
-**Research flag:** Standard patterns — clap derive API is well-documented; dual-mode binary pattern is covered in architecture research with explicit code example
+### Phase C: `remember` Subcommand (Medium Init + Helper Extraction)
+
+**Rationale:** Introduces the medium-init tier for the first time. Requires extracting `init_db_and_embedding()` as a private helper in `main.rs` — this helper is then reused by Phases D and E without duplication. `remember` is the write path and confirms the full embed + insert round-trip from CLI. Stdin pipe support adds zero dependencies using `std::io::IsTerminal`.
+**Delivers:** `mnemonic remember "text" --agent-id <id>` stores a memory; prints ID on line 1 of stdout (pipeable); `echo "text" | mnemonic remember` works.
+**Addresses:** `remember` table stakes; stdin pipe differentiator; `--agent-id`, `--session-id`, `--tags` flags.
+**Avoids:** Duplicating init logic (Pitfall 4 — extract helper here); blocking tokio runtime on model load (Pitfall 3 — spawn_blocking).
+**Research flag:** Standard patterns — medium-init pattern is described with code examples in ARCHITECTURE.md.
+
+### Phase D: `search` Subcommand (Medium Init, Reuses Helper)
+
+**Rationale:** Same medium-init pattern as Phase C; reuses the `init_db_and_embedding()` helper established in Phase C. Validates the semantic search path from CLI including all flag mapping to `SearchParams`.
+**Delivers:** `mnemonic search "query" --agent-id <id> --limit 5 --threshold 0.8` returns ranked results in tabular format.
+**Addresses:** `search` table stakes; `--limit`, `--threshold`, `--agent-id`, `--session-id` flags; tabular output with similarity scores.
+**Avoids:** Reimplementing search logic (Pitfall 5 — calls `service.search_memories()` directly).
+**Research flag:** Standard patterns — identical medium-init pattern to Phase C.
+
+### Phase E: `compact` Subcommand (Medium Init, CompactionService)
+
+**Rationale:** Most complex CLI handler — `CompactionService` construction is more involved than `MemoryService` (requires optional LLM engine). Implemented last because it depends on the medium-init helper from Phase C and the output formatting conventions established by Phases B-D. The `--dry-run` flag is highest-value test case and should be validated first before any data-mutating path.
+**Delivers:** `mnemonic compact --agent-id <id> --dry-run` previews compaction; without `--dry-run` executes it; summary output with cluster counts.
+**Addresses:** `compact` table stakes; `--dry-run` differentiator; compaction feedback output.
+**Avoids:** Reimplementing compaction logic (Pitfall 5 — calls `compaction.compact()` directly); blocking tokio on similarity clustering (spawn_blocking for CPU-bound work).
+**Research flag:** May benefit from a quick inspection of `compaction.rs` initialization sequence before implementation — the `CompactionService` constructor with optional LLM engine has more moving parts than `MemoryService`.
+
+### Phase F: `--json` Flag + Output Polish
+
+**Rationale:** The `--json` flag works across all subcommands using the same `Serialize` derives already on the response types. Implementing it after all subcommands exist avoids retrofitting output code across multiple in-progress handlers. Cold-start stderr message (for medium-init commands) is also handled here.
+**Delivers:** `mnemonic search "query" --json | jq '.'` produces newline-delimited JSON; all subcommands support `--json`; stderr "loading embedding model..." message for medium-init commands (suppressed in `--json` mode).
+**Addresses:** `--json` table stakes; newline-delimited JSON for `search` (ripgrep pattern); cold-start UX.
+**Research flag:** Confirm newline-delimited JSON (ripgrep pattern) vs. JSON array for `search` output matches what agent consumers expect before shipping.
 
 ### Phase Ordering Rationale
 
-- Schema-first mirrors the existing codebase convention: `db.rs::open()` initializes all tables before any service starts, so the `api_keys` DDL belongs in Phase 1.
-- `KeyService` before middleware because the middleware calls `key_service.has_active_keys()` and `key_service.validate()` — these must exist and be tested before the middleware can be written.
-- Middleware before HTTP wiring because wiring is straightforward once middleware is proven correct; the security-critical logic is in the middleware, not the router configuration.
-- CLI last because it is a consumer of all server-side infrastructure. Placing it last ensures integration tests for server paths are green before CLI complexity is introduced, and the dual-mode dispatch change to `main.rs` is the riskiest change to the entry point.
-- All five phases ship together as v1.2 — none can be deferred. The feature set is designed as a coherent auth system; partial auth (keys without scope enforcement, or middleware without CLI) is not usable.
+- `serve` first because it touches zero new code paths — validates enum expansion does not break the build.
+- `recall` second because it uses minimal init and produces the dispatch infrastructure that medium-init phases depend on.
+- `remember` third because it introduces `init_db_and_embedding()` — the reusable helper that `search` and `compact` share.
+- `search` fourth because it follows an identical pattern to `remember` with a different service call.
+- `compact` last because `CompactionService` is the most complex to construct; the `--dry-run` path is critical to test before any data mutation.
+- `--json` last because it is pure output formatting and does not gate any other capability.
 
 ### Research Flags
 
-Phases needing deeper research during planning:
-- None identified. All five phases use established Rust/axum/SQLite/clap patterns verified at HIGH confidence against official documentation. The auth security requirements (constant-time comparison, hashed storage, scope enforcement) are documented in security literature and PITFALLS.md contains per-pitfall prevention checklists with explicit implementation guidance.
+Phases likely needing a research-phase check during planning:
+- **Phase E (compact):** `CompactionService` construction from a CLI context (with optional LLM engine) has more moving parts than the other subcommands. Worth inspecting the current `compaction.rs` initialization sequence before implementation begins to confirm the correct assembly order.
+- **Phase F (--json output format):** The newline-delimited JSON pattern for `search` is a deliberate UX choice sourced from ripgrep. Worth confirming this matches what agent consumers actually expect before shipping.
 
 Phases with standard patterns (skip research-phase):
-- **All five phases** — stack choices, axum middleware patterns, SQLite migration patterns, and clap CLI patterns are all well-documented. PITFALLS.md's "Looks Done But Isn't" checklist (26 items) provides sufficient implementation guidance without additional research.
+- **Phase A (serve):** Trivial clap enum extension; the pattern is established and documented in ARCHITECTURE.md.
+- **Phase B (recall):** DB-only path mirrors existing `keys` CLI exactly. No unknowns.
+- **Phase C (remember):** Medium-init pattern is described with code examples in ARCHITECTURE.md.
+- **Phase D (search):** Identical medium-init pattern; no new architecture concerns.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All crate versions verified against official docs (docs.rs, Cargo.toml in repo). reqwest 0.13 pin and rusqlite 0.37 pin confirmed against actual binary. async-openai exclusion confirmed via Cargo.toml inspection. All 5 new v1.2 dependencies at specific verified versions. |
-| Features | HIGH | Patterns sourced from Stripe, GitHub, Paddle, Ollama, OWASP. Authentication UX conventions are well-established across the industry. Scope enforcement anti-pattern (IDOR) is well-documented in OWASP. |
-| Architecture | HIGH | Based primarily on direct inspection of existing v1.1 source (3,678 lines, 10 files). Axum middleware patterns verified against official axum 0.8 docs. SQLite schema patterns mirror existing codebase conventions exactly. All component boundaries derived from existing code structure. |
-| Pitfalls | HIGH | v1.2 auth pitfalls grounded in real CVEs (GHSA-wr9h-g72x-mwhm, 2025), OWASP guidance, and axum project discussions. v1.0/v1.1 pitfalls verified via benchmarks and official SQLite/candle documentation. The 26-item "Looks Done But Isn't" checklist covers the full implementation surface. |
+| Stack | HIGH | Zero new dependencies; all technologies are locked from v1.2; verified via direct Cargo.toml inspection |
+| Features | HIGH | Sourced from redis-cli, HTTPie, ripgrep, heroku-cli patterns + direct inspection of existing `cli.rs` and `service.rs` |
+| Architecture | HIGH | Direct inspection of shipped v1.2 source code (5,925 lines across 12 files); patterns are proven in production; ARCHITECTURE.md includes explicit code examples |
+| Pitfalls | HIGH | Critical pitfalls verified via official docs and known issues; v1.3-specific pitfalls derived from direct code analysis |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **BLAKE3 vs SHA-256 inconsistency across research files:** STACK.md recommends `blake3` + `constant_time_eq`; ARCHITECTURE.md uses SHA-256 + `subtle` in code examples; FEATURES.md says "BLAKE3 or SHA-256, either is fine." Must pick one before Phase 2 begins. Recommendation: BLAKE3 (already researched at HIGH confidence, faster, pure Rust, simpler API) with `constant_time_eq` for comparison. All code examples in ARCHITECTURE.md should be treated as pseudocode for this specific detail.
-
-- **Key display identifier scheme conflict:** PITFALLS.md (Auth Pitfall 7) warns against displaying key prefixes in `keys list` (reduces brute-force search space). ARCHITECTURE.md stores a `prefix` column (first 8 chars of raw token). These conflict. Correct approach per pitfall research: the display ID should be derived from the hash of the key, not a substring of the raw key. Resolve this in Phase 1 (schema design) before Phase 2 sets the generation pattern.
-
-- **Open-mode + invalid-token behavior (subtle edge case):** PITFALLS.md Auth Pitfall 10 defines the correct behavior: a request with an invalid Bearer token in open mode should return 401, not be passed through. This is not explicit in the FEATURES.md MVP definition. Phase 3 must include an explicit test for `open mode + wrong key = 401` before the middleware is considered done.
+- **Cold-start UX validation:** The ~2-3s embedding model load is accepted for v1.3, but the actual user experience has not been validated against real workflows. The stderr "loading embedding model..." message mitigates this — confirm the message is suppressed correctly in `--json` mode.
+- **`CompactionService` CLI construction:** ARCHITECTURE.md notes that `compact` requires the most complex init path (optional LLM engine). The exact initialization sequence for a CLI context should be confirmed against `compaction.rs` before Phase E begins.
+- **`MemoryService::get_memory(id)` method:** ARCHITECTURE.md notes that `recall --id <uuid>` may need a new `get_memory()` method on `MemoryService` if one does not currently exist. Confirm before Phase B begins — this is a small addition but affects the plan.
+- **Stdin detection MSRV:** `std::io::IsTerminal` requires Rust 1.70+. Confirm the project's MSRV in `Cargo.toml` supports this before using it for stdin pipe detection in `remember`.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- [rand_core 0.9.0 docs.rs](https://docs.rs/rand_core/0.9.0/rand_core/) — OsRng, os_rng feature, TryRngCore::try_fill_bytes API
-- [blake3 1.8.3 docs.rs](https://docs.rs/blake3/latest/blake3/) — hash() API, 32-byte output, version 1.8.3 confirmed
-- [constant_time_eq 0.4.2 docs.rs](https://docs.rs/constant_time_eq/latest/constant_time_eq/) — constant_time_eq_32() for 32-byte comparison
-- [clap 4.6.0 docs.rs](https://docs.rs/clap/latest/clap/) — Parser + Subcommand derive macros, version 4.6.0 confirmed
-- [axum 0.8.4 middleware docs](https://docs.rs/axum/0.8.0/axum/middleware/index.html) — from_fn_with_state pattern, route_layer vs layer
-- [axum route_layer vs layer discussion](https://github.com/tokio-rs/axum/discussions/2878) — 401 vs 404 on unmatched routes confirmed
-- [CVE GHSA-wr9h-g72x-mwhm — vLLM timing attack on API key comparison](https://github.com/vllm-project/vllm/security/advisories/GHSA-wr9h-g72x-mwhm) — real-world disclosure of == comparison on Bearer tokens, High severity, 2025
-- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) — fast hashes appropriate for high-entropy tokens; Argon2/bcrypt only for low-entropy passwords
-- Existing v1.1 source code (`src/*.rs`) — direct inspection of AppState, Config, db::open(), error.rs patterns
-- Existing Cargo.toml — confirmed reqwest 0.13, rusqlite 0.37, axum 0.8 (definitive source of truth)
+- Mnemonic `src/cli.rs` — existing keys CLI conventions (dispatch pattern, stdout/stderr split, table format, fast path)
+- Mnemonic `src/main.rs` — existing Commands enum, dispatch, model init sequence, fast path for keys
+- Mnemonic `src/service.rs` — `MemoryService`, `SearchParams`, `ListParams`, `Memory`, `SearchResultItem` structs
+- Mnemonic `src/compaction.rs` — `CompactionService`, `CompactRequest`, compaction logic
+- clap 4.6 documentation — subcommand derive patterns (https://docs.rs/clap/latest/clap/_derive/_tutorial/)
+- SQLite WAL mode documentation — concurrent access guarantees (https://www.sqlite.org/wal.html)
 
 ### Secondary (MEDIUM confidence)
-- [async-openai Cargo.toml on GitHub](https://github.com/64bit/async-openai/blob/main/async-openai/Cargo.toml) — reqwest 0.12 dependency confirmed; justifies exclusion
-- [How prefix.dev implemented API keys](https://prefix.dev/blog/how_we_implented_api_keys) — pfx_ prefix pattern, show-once UX; Argon2 recommendation overridden by OWASP reasoning
-- [Stripe API Keys Documentation](https://docs.stripe.com/keys) — sk_live_/sk_test_ prefix conventions, restricted keys, show-once pattern
-- [Common Risks of Giving Your API Keys to AI Agents — Auth0](https://auth0.com/blog/api-key-security-for-ai-agents/) — scope enforcement failures, overly broad permissions, single-key-for-all-agents anti-pattern
-- [Zero Downtime Migration of API Authentication — Zuplo](https://dev.to/zuplo/zero-downtime-migration-of-api-authentication-h9c) — dual-mode auth, migration cliff, backward compatibility
-- [PSA: SQLite connection pool write performance — Evan Schwartz](https://emschwartz.me/psa-your-sqlite-connection-pool-might-be-ruining-your-write-performance/) — single-writer performance data (20x difference)
-- [Unit 42 / Palo Alto: Indirect Prompt Injection Poisons AI Long-Term Memory](https://unit42.paloaltonetworks.com/indirect-prompt-injection-poisons-ai-longterm-memory/) — persistent memory attack via summarization (v1.1 compaction risk)
+- [Heroku CLI Style Guide](https://devcenter.heroku.com/articles/cli-style-guide) — stdout/stderr split, `--json` flag, table format
+- [HTTPie Redirected Output docs](https://httpie.io/docs/cli/redirected-output) — TTY detection for auto pretty/plain mode
+- [ripgrep `--json` output docs](https://learnbyexample.github.io/learn_gnugrep_ripgrep/ripgrep.html) — newline-delimited JSON for streaming
+- [Rust CLI patterns 2026](https://dasroot.net/posts/2026/02/rust-cli-patterns-clap-cargo-configuration/) — clap derive subcommand patterns
+- [Cloudflare workers-sdk discussion](https://github.com/cloudflare/workers-sdk/discussions/2940) — rationale for reserving stdout for machine-readable output
 
-### Tertiary (LOW confidence — needs validation during implementation)
-- None identified for v1.2 scope. All material claims are HIGH or MEDIUM confidence.
+### Tertiary (LOW confidence)
+- [14 tips for amazing CLIs](https://dev.to/wesen/14-great-tips-to-make-amazing-cli-applications-3gp3) — input/output design patterns (general, not Rust-specific)
 
 ---
-*Research completed: 2026-03-20*
+*Research completed: 2026-03-21*
 *Ready for roadmap: yes*

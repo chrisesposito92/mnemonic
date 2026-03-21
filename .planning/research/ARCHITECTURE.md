@@ -1,650 +1,559 @@
 # Architecture Research
 
-**Domain:** Rust single-binary agent memory server — v1.2 API key authentication integration
-**Researched:** 2026-03-20
-**Confidence:** HIGH (existing system direct inspection) / HIGH (axum middleware patterns) / MEDIUM (clap CLI patterns for dual-mode binary)
+**Domain:** Rust single-binary agent memory server — v1.3 CLI subcommands integration
+**Researched:** 2026-03-21
+**Confidence:** HIGH (direct code inspection of shipped v1.2 codebase, well-established Rust CLI patterns)
 
 ---
 
-## Context: What Already Exists (v1.1)
+## Context: What Already Exists (v1.2)
 
-The v1.1 binary is 3,678 lines of Rust across 10 source files with a strict 4-layer architecture:
-
-```
-axum HTTP handlers (server.rs)
-        |
-        v
-MemoryService + CompactionService (service.rs, compaction.rs)
-   |                     |
-   v                     v
-EmbeddingEngine      SummarizationEngine (optional)
-(embedding.rs)       (summarization.rs)
-        |
-        v
-   Arc<tokio_rusqlite::Connection>  (db.rs)
-```
-
-**Key facts that constrain v1.2 design:**
-
-- `AppState` in `server.rs` holds `Arc<MemoryService>` and `Arc<CompactionService>` — both are already `Arc`-wrapped. A third `Arc<KeyService>` follows the same pattern exactly.
-- `Config` uses `figment` with TOML + env-var override. The `auth_enabled` pattern (optional bool) follows the existing `llm_provider: Option<String>` pattern.
-- All errors flow through `ApiError → MnemonicError` in `error.rs`. A new `Unauthorized` variant on `ApiError` requires no structural change.
-- `db.rs::open()` uses idempotent `CREATE TABLE IF NOT EXISTS` blocks and additive `ALTER TABLE ADD COLUMN` migrations. The `api_keys` table follows the same pattern.
-- `main.rs` constructs all services before calling `server::serve()`. A `KeyService` is constructed and passed to `AppState` at the same point.
-- The binary currently has no CLI subcommand infrastructure — `main()` runs the server unconditionally. The v1.2 `keys create/list/revoke` commands require adding `clap` and a dual-mode main.
-
----
-
-## v1.2 System Overview
+The v1.2 binary is 5,925 lines of Rust across 12 source files. The dispatch pattern is already established and working:
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                              Entry Point (main.rs)                        │
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │  clap CLI parse (NEW)                                               │  │
-│  │                                                                     │  │
-│  │   mnemonic serve           → server mode (existing behavior)        │  │
-│  │   mnemonic keys create     → print new key, exit                    │  │
-│  │   mnemonic keys list       → print key table, exit                  │  │
-│  │   mnemonic keys revoke     → mark key revoked, exit                 │  │
-│  │   (no subcommand)          → server mode (default, backward compat) │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────┘
-        |                            |
-        v                            v
- [CLI path]                   [Server path]
- KeyService::create/list/     ┌────────────────────────────────────────────┐
- revoke (direct DB call,      │  HTTP Layer (axum)                         │
- print, exit)                 │                                            │
-                              │  ┌─────────────────────────────────────┐   │
-                              │  │  Auth Middleware  (NEW)              │   │
-                              │  │  from_fn_with_state(auth_middleware) │   │
-                              │  │                                     │   │
-                              │  │  1. If no keys in DB → pass through │   │
-                              │  │  2. Extract Authorization: Bearer    │   │
-                              │  │  3. Hash token → DB lookup          │   │
-                              │  │  4. Insert AuthContext into request  │   │
-                              │  │     extensions                      │   │
-                              │  └─────────────┬───────────────────────┘   │
-                              │                │                           │
-                              │  ┌─────────────▼───────────────────────┐   │
-                              │  │  Route handlers (existing)          │   │
-                              │  │  POST /memories                     │   │
-                              │  │  GET  /memories                     │   │
-                              │  │  GET  /memories/search              │   │
-                              │  │  DELETE /memories/{id}              │   │
-                              │  │  POST /memories/compact             │   │
-                              │  │  GET  /health  (auth bypassed)      │   │
-                              │  └─────────────┬───────────────────────┘   │
-                              └───────────────────────────────────────────┘
-                                               |
-                              ┌────────────────▼────────────────────────────┐
-                              │  Service Layer                               │
-                              │                                              │
-                              │  MemoryService    CompactionService          │
-                              │  (scope filter    (scope filter via          │
-                              │   via AuthContext  AuthContext if scoped)    │
-                              │   if scoped key)                             │
-                              │                   KeyService  (NEW)         │
-                              │                   create / list / revoke    │
-                              └────────────────────────────────────────────┘
-                                               |
-                              ┌────────────────▼────────────────────────────┐
-                              │  Storage Layer (SQLite)                      │
-                              │                                              │
-                              │  memories + vec_memories (existing)          │
-                              │  compact_runs (existing)                     │
-                              │  api_keys  (NEW)                             │
-                              └────────────────────────────────────────────┘
+main.rs
+  └── clap parse
+        ├── Some(Commands::Keys(args)) → minimal init: db only, no model load
+        │     └── cli::run_keys(args, key_service)  → print, exit
+        └── None (no subcommand)       → full server init: load model, bind port
+              └── server::serve(config, AppState)
+```
+
+The critical architectural precedent from v1.2: **CLI commands go direct-to-DB, not through HTTP**. The `keys` subcommand opens only the DB, skips embedding model load (~2s), constructs only `KeyService`, and exits. This is the pattern that `remember`, `recall`, `search`, and `compact` must follow.
+
+**v1.2 AppState (server path only):**
+```
+AppState {
+    service:    Arc<MemoryService>,     // needs: Arc<Connection>, Arc<EmbeddingEngine>
+    compaction: Arc<CompactionService>, // needs: Arc<Connection>, Arc<EmbeddingEngine>, Option<Arc<SummarizationEngine>>
+    key_service: Arc<KeyService>,       // needs: Arc<Connection>
+}
 ```
 
 ---
 
-## Component Responsibilities
+## v1.3 System Overview
 
-### Existing Components (v1.1 — minimal or no change)
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           Entry Point (main.rs)                             │
+│                                                                             │
+│   clap parse → Commands enum                                                │
+│                                                                             │
+│   Serve     → full init → server::serve()  [existing behavior, unchanged]  │
+│   Remember  → medium init (db + embedding) → cli::run_remember() → exit    │
+│   Recall    → minimal init (db only)       → cli::run_recall()   → exit    │
+│   Search    → medium init (db + embedding) → cli::run_search()   → exit    │
+│   Compact   → medium init (db + embedding) → cli::run_compact()  → exit    │
+│   Keys      → minimal init (db only)       → cli::run_keys()     → exit    │
+│   (none)    → full init → server::serve()  [default, backward compat]      │
+└────────────────────────────────────────────────────────────────────────────┘
 
-| Component | v1.2 Change | Notes |
+Init tiers (determines startup cost):
+  Minimal  (db only)       : ~50ms  — recall, keys
+  Medium   (db + embedding): ~2-3s  — remember, search, compact
+  Full     (db + embed + LLM + server bind): ongoing — serve
+```
+
+### Component Responsibilities
+
+| Component | v1.3 Change | Notes |
 |-----------|-------------|-------|
-| `MemoryService` (service.rs) | None | Auth scope enforcement is handled at the handler layer via `AuthContext` |
-| `CompactionService` (compaction.rs) | None | Same — `AuthContext` enforcement at handler layer |
-| `EmbeddingEngine` (embedding.rs) | None | Unaffected |
-| `SummarizationEngine` (summarization.rs) | None | Unaffected |
-| `db.rs` — schema init | Add `api_keys` table creation | One new `CREATE TABLE IF NOT EXISTS` block in `execute_batch` |
-| `config.rs` — Config struct | No change required | Auth is auto-enabled when keys exist; no config flag needed |
-| `error.rs` | Add `Unauthorized` variant to `ApiError` | Additive |
-| `server.rs` — `AppState` | Add `key_service: Arc<KeyService>` | One new field; existing handlers unmodified |
-| `server.rs` — `build_router()` | Add `route_layer` for auth middleware | One `.route_layer(...)` call; `/health` excluded |
-| `lib.rs` | Add `pub mod auth;` | Trivial |
-| `main.rs` | Add clap parse + dispatch, construct KeyService | Larger change; see dual-mode pattern below |
-
-### New Components (v1.2)
-
-| Component | Responsibility | Location |
-|-----------|----------------|----------|
-| `KeyService` | Business logic for key CRUD: generate, hash, store, lookup, revoke | `src/auth.rs` |
-| `ApiKey` struct | Row type: id, name, prefix, hashed_key, agent_id scope, created_at, revoked_at | `src/auth.rs` |
-| `AuthContext` struct | Per-request auth result passed via request extensions: key_id, allowed_agent_id | `src/auth.rs` |
-| `auth_middleware` fn | axum `from_fn_with_state` middleware: extract bearer token, validate against DB, insert `AuthContext` | `src/auth.rs` or `src/server.rs` |
-| `Cli` struct | Top-level clap `Parser` struct with `Option<Commands>` subcommand | `src/main.rs` |
-| `Commands` enum | `Serve` (default) and `Keys(KeysCommand)` variants | `src/main.rs` |
-| `KeysCommand` enum | `Create { name, agent_id }`, `List`, `Revoke { id }` variants | `src/main.rs` |
+| `cli.rs` | MAJOR CHANGE: add 5 new subcommands + handlers | Pattern already established by `run_keys`; same module |
+| `main.rs` | MODIFIED: add 5 new `Commands` variants + dispatch branches | Each branch selects its init tier |
+| `MemoryService` (service.rs) | NO CHANGE | CLI callers use it directly, same methods as HTTP handlers |
+| `CompactionService` (compaction.rs) | NO CHANGE | CLI `compact` calls `compaction.compact(req)` directly |
+| `KeyService` (auth.rs) | NO CHANGE | Already CLI-ready |
+| `EmbeddingEngine` (embedding.rs) | NO CHANGE | CLI `remember` and `search` need it; existing `LocalEngine` |
+| `AppState` (server.rs) | NO CHANGE | Server path unchanged |
+| All other modules | NO CHANGE | db.rs, config.rs, error.rs, server.rs unaffected |
 
 ---
 
-## SQLite Schema: `api_keys` Table
+## v1.3 Architecture Diagram
 
-Place alongside `memories` and `compact_runs` in `db.rs::open()` inside the same `execute_batch` call:
-
-```sql
-CREATE TABLE IF NOT EXISTS api_keys (
-    id          TEXT PRIMARY KEY,          -- UUID v7
-    name        TEXT NOT NULL,             -- human label, e.g. "agent-prod"
-    prefix      TEXT NOT NULL,             -- first 8 chars of raw token for display
-    hashed_key  TEXT NOT NULL,             -- SHA-256(raw_token), hex-encoded
-    agent_id    TEXT,                      -- NULL = wildcard (any agent); non-NULL = scoped
-    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    revoked_at  DATETIME                   -- NULL = active; non-NULL = revoked
-);
-
-CREATE INDEX IF NOT EXISTS idx_api_keys_hashed_key ON api_keys(hashed_key);
-CREATE INDEX IF NOT EXISTS idx_api_keys_agent_id   ON api_keys(agent_id);
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                          CLI Layer (cli.rs)                          │
+│                                                                      │
+│  run_remember() | run_recall() | run_search() | run_compact()        │
+│  run_keys()  (existing)                                              │
+│                                                                      │
+│  Output: human-readable tables/text to stdout                        │
+│  Errors: descriptive message to stderr + exit(1)                     │
+└──────────────────────┬─────────────────────┬────────────────────────┘
+                       │                     │
+           ┌───────────▼──────────┐  ┌───────▼──────────────┐
+           │  Service Layer        │  │  Service Layer        │
+           │                       │  │                       │
+           │  MemoryService        │  │  CompactionService    │
+           │  create_memory()      │  │  compact()            │
+           │  list_memories()      │  │                       │
+           │  search_memories()    │  │  (Arc<EmbeddingEngine>│
+           │  delete_memory()      │  │   inside — CLI must   │
+           │                       │  │   load embedding too) │
+           └───────────┬───────────┘  └───────────────────────┘
+                       │
+           ┌───────────▼──────────────────────────────────────┐
+           │  Storage Layer                                     │
+           │  Arc<tokio_rusqlite::Connection>                   │
+           │  memories + vec_memories + compact_runs + api_keys│
+           └────────────────────────────────────────────────────┘
 ```
 
-**Design decisions:**
+---
 
-- `hashed_key` is the lookup column. Index on it — the auth middleware executes this query on every authenticated request.
-- `agent_id IS NULL` means the key is a wildcard key (permitted to access any agent's memories). `agent_id = 'some-agent'` means the key can only access memories where `agent_id = 'some-agent'`.
-- `revoked_at IS NULL` = active key. Soft delete via timestamp — preserves audit history and is idempotent if revoked twice.
-- `prefix` stores the first 8 chars of the raw token (e.g., `mnk_abc1`) for `keys list` output so the human can identify which key is which without storing the full token.
-- No `bcrypt` — SHA-256 is correct for high-entropy API keys (not passwords). SHA-256 is fast, which matters when validating on every HTTP request. Argon2/bcrypt are designed for low-entropy secrets (passwords) and are intentionally slow — wrong fit here.
+## Recommended Project Structure (v1.3 delta)
 
-**Raw token format:** `mnk_` prefix + 32 random bytes base64url-encoded = `mnk_` + 43 chars. Total ~47 chars. The prefix makes mnemonic keys visually identifiable in logs and code (same pattern as OpenAI `sk-`, Stripe `sk_live_`, etc.).
+No new files are needed. All changes are additive within existing modules.
+
+```
+src/
+├── main.rs      # MODIFIED: add 5 new Commands variants + dispatch branches
+├── cli.rs       # MAJOR CHANGE: add run_remember, run_recall, run_search,
+│                #   run_compact, with argument structs and output formatting
+├── service.rs   # No change
+├── compaction.rs # No change
+├── embedding.rs # No change
+├── auth.rs      # No change
+├── server.rs    # No change
+├── db.rs        # No change
+├── config.rs    # No change
+├── error.rs     # No change
+├── summarization.rs # No change
+└── lib.rs       # No change
+```
+
+**Rationale:** The v1.2 `cli.rs` module was built explicitly to hold all CLI handlers. Adding the five new handlers there keeps the pattern consistent. No new module, no new file, no structural change to the rest of the codebase.
 
 ---
 
 ## Architectural Patterns
 
-### Pattern 1: Auth Middleware with `from_fn_with_state`
+### Pattern 1: Tiered Init — Match Init Cost to Subcommand Needs
 
-**What:** A single `from_fn_with_state` middleware wraps all protected routes. It accesses `AppState` (to reach `KeyService`) and inserts an `AuthContext` into request extensions for handlers to extract.
+**What:** main.rs dispatch selects the minimum initialization required for each subcommand. There are three tiers:
 
-**When to use:** When authentication validation needs application state (the DB connection) and must forward a validated identity object downstream to handlers.
+- **Minimal** (db only, ~50ms): subcommands that only touch the key or memory table without needing embeddings. `recall` (list/get by ID/filter), `keys` (all key ops).
+- **Medium** (db + embedding engine, ~2-3s): subcommands that embed text. `remember` (embeds content before INSERT), `search` (embeds query for KNN), `compact` (re-embeds during clustering).
+- **Full** (db + embedding + LLM + server bind): `serve`.
 
-**Trade-offs:** All protected routes pay one DB query per request. Acceptable because: (a) the `api_keys` lookup is a SHA-256 hash equality on an indexed column — sub-millisecond; (b) WAL mode allows this read to proceed concurrently with writes.
+**When to use:** Always for CLI commands in a binary that also contains expensive-to-load components (models, network clients).
+
+**Trade-offs:** Medium init loads the embedding model even for `compact --dry-run` where no new memories are written. Accept this — dry-run still needs embeddings to compute similarities. The ~2s model load is acceptable for a CLI operation that takes 5-10s total on any real dataset.
+
+**Example dispatch in main.rs:**
 
 ```rust
-// src/auth.rs
-
-#[derive(Clone, Debug)]
-pub struct AuthContext {
-    pub key_id: String,
-    pub allowed_agent_id: Option<String>,  // None = wildcard
-}
-
-pub async fn auth_middleware(
-    State(state): State<AppState>,
-    mut req: Request,
-    next: Next,
-) -> Response {
-    // 1. Check if auth is enforced (any active keys exist)
-    let auth_required = state.key_service.has_active_keys().await
-        .unwrap_or(false);
-
-    if !auth_required {
-        // Open mode: no keys configured, pass through
-        return next.run(req).await;
+match cli_args.command {
+    // Minimal init: DB only
+    Some(Commands::Keys(keys_args)) => {
+        db::register_sqlite_vec();
+        let mut config = config::load_config().map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(db_override) = cli_args.db { config.db_path = db_override; }
+        let conn = Arc::new(db::open(&config).await.map_err(|e| anyhow::anyhow!(e))?);
+        let key_service = auth::KeyService::new(conn);
+        cli::run_keys(keys_args.subcommand, key_service).await;
     }
+    Some(Commands::Recall(recall_args)) => {
+        db::register_sqlite_vec();
+        let mut config = config::load_config().map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(db_override) = cli_args.db { config.db_path = db_override; }
+        let conn = Arc::new(db::open(&config).await.map_err(|e| anyhow::anyhow!(e))?);
+        let service = service::MemoryService::new(conn, /* ... */);
+        cli::run_recall(recall_args, service).await;
+    }
+    // Medium init: DB + embedding
+    Some(Commands::Remember(remember_args)) => {
+        db::register_sqlite_vec();
+        let mut config = config::load_config().map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(db_override) = cli_args.db { config.db_path = db_override; }
+        let (conn, embedding) = init_db_and_embedding(&config).await?;
+        let service = service::MemoryService::new(conn, embedding, embedding_model(&config));
+        cli::run_remember(remember_args, service).await;
+    }
+    // ... Search, Compact similarly (medium init)
+    // Full init: existing server path
+    Some(Commands::Serve) | None => {
+        // existing main.rs server init — unchanged
+    }
+}
+```
 
-    // 2. Extract bearer token from Authorization header
-    let token = match extract_bearer_token(req.headers()) {
-        Some(t) => t,
-        None => return unauthorized_response("missing Authorization header"),
+Extract `init_db_and_embedding(&config)` as a private helper in main.rs to avoid duplicating the model-load block across three branches.
+
+### Pattern 2: CLI Handlers Call Service Layer Directly (Not HTTP)
+
+**What:** CLI handlers receive service objects and call their methods directly. No HTTP client, no `reqwest`, no JSON serialization round-trip.
+
+**When to use:** Always, for this binary. The alternative (HTTP client calling `localhost:8080`) requires the server to be running, creates a process dependency, adds network stack overhead, and complicates error handling (what if the server is not running?).
+
+**Trade-offs:**
+- Direct DB access means CLI commands work whether the server is running or not.
+- A concurrent `mnemonic remember` while `mnemonic serve` is running will share the same SQLite file. SQLite WAL mode handles this safely — concurrent readers/one writer. The CLI write will serialize with any in-flight server writes transparently.
+- No duplication of business logic: `run_remember` calls `service.create_memory()` which contains the same embed-then-insert logic the HTTP handler uses.
+
+**Example `run_remember`:**
+
+```rust
+pub async fn run_remember(args: RememberArgs, service: MemoryService) {
+    let req = CreateMemoryRequest {
+        content: args.content,
+        agent_id: args.agent_id,
+        session_id: args.session_id,
+        tags: args.tags,
     };
-
-    // 3. Validate: hash token, lookup in DB
-    match state.key_service.validate(&token).await {
-        Ok(ctx) => {
-            req.extensions_mut().insert(ctx);
-            next.run(req).await
+    match service.create_memory(req).await {
+        Ok(memory) => {
+            println!("{}", memory.id);  // ID on its own line — pipeable
+            println!("Content: {}", memory.content);
+            println!("Agent:   {}", memory.agent_id);
+            println!("Created: {}", memory.created_at);
         }
-        Err(_) => unauthorized_response("invalid or revoked API key"),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
     }
 }
 ```
 
-**Router wiring** — use `route_layer` (not `layer`) so that non-matching routes return 404 instead of 401:
+### Pattern 3: `serve` as Named Subcommand with Default Fallback
+
+**What:** The v1.3 `Commands` enum gains a `Serve` variant. `mnemonic serve` is explicit. `mnemonic` (no subcommand) also runs the server via `None` match arm. Both arms execute identical code.
+
+**When to use:** When backward compatibility with `mnemonic` (no args) must be preserved while also supporting `mnemonic serve` for clarity in scripts and docs.
+
+**Trade-offs:** The `serve` subcommand is redundant with `mnemonic` (no args), but makes intent explicit in shell scripts and process supervisors (e.g., `CMD ["mnemonic", "serve"]` in a Dockerfile). Preserving the no-subcommand default means no existing deployments break.
+
+**clap definition:**
 
 ```rust
-pub fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health_handler))       // not auth-protected
-        .route("/memories", post(create_memory_handler).get(list_memories_handler))
-        .route("/memories/search", get(search_memories_handler))
-        .route("/memories/{id}", delete(delete_memory_handler))
-        .route("/memories/compact", post(compact_memories_handler))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
-        .with_state(state)
-}
-```
-
-Note: routes defined **before** `.route_layer()` have the layer applied. `/health` is defined outside the protected group by being added after `.with_state()` or by using a nested router. The simplest approach: add `/health` to a separate `Router` merged after the protected group.
-
-### Pattern 2: `AuthContext` via Request Extensions (not Handler Parameters)
-
-**What:** The middleware inserts `AuthContext` into `req.extensions_mut()`. Handlers that need scope enforcement call `Extension::<AuthContext>` in their parameter list. Handlers that do not need scope enforcement (e.g., `/health`) simply do not extract it.
-
-**When to use:** When not all handlers need the auth context, and the middleware should not impose a parameter on every handler.
-
-**Trade-offs:** Slightly less type-safe than injecting via `State` because the extension is dynamic. Mitigated by the fact that the middleware always inserts `AuthContext` (or returns 401 early), so any handler on a protected route can rely on it being present.
-
-```rust
-// Handler that enforces agent_id scope from auth context
-async fn create_memory_handler(
-    State(state): State<AppState>,
-    Extension(auth): Extension<AuthContext>,
-    Json(mut body): Json<CreateMemoryRequest>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    // If key is scoped, override agent_id from key scope
-    if let Some(allowed_id) = &auth.allowed_agent_id {
-        body.agent_id = Some(allowed_id.clone());
-    }
-    let memory = state.service.create_memory(body).await?;
-    Ok((StatusCode::CREATED, Json(serde_json::to_value(memory).unwrap())))
-}
-```
-
-**Scoped key enforcement:** If `AuthContext.allowed_agent_id` is `Some(id)`, the handler forcibly sets `agent_id` to that value, ignoring the client-supplied `agent_id`. This enforces namespace isolation at the handler boundary — the client cannot cross into another agent's namespace regardless of what they supply in the request body or query string.
-
-### Pattern 3: Optional Auth ("Open Mode")
-
-**What:** Auth is off by default and activates automatically when at least one active API key exists in the DB. The middleware checks this at every request via `key_service.has_active_keys()`.
-
-**When to use:** For local development (no keys = no friction) and production deployment (create first key = auth enabled). No config flag to forget to set.
-
-**Trade-offs:** The `has_active_keys()` call is an additional DB read per request even in open mode. Mitigate by caching the result in `AppState` using a `tokio::sync::RwLock<bool>` that is invalidated whenever a key is created or revoked via the CLI. In practice, for the typical deployment (local dev = no keys, production = keys), this is a one-time check result that rarely changes.
-
-**Simpler alternative (no caching):** Accept the extra `SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL` on every request. This is a non-blocking indexed read — sub-100µs for a table that will have < 100 rows. Ship without the cache first; add caching only if profiling shows it matters.
-
-**Security boundary:** The "no keys = open" mode is safe because the condition is checked server-side on every request, not a config flag that an attacker could omit. An attacker cannot bypass auth by omitting the Authorization header once any active key exists.
-
-### Pattern 4: Dual-Mode Binary with clap
-
-**What:** `main.rs` parses CLI arguments with clap before any service startup. If a `keys` subcommand is given, the binary opens only the DB (skipping embedding model load) and runs the key management operation, then exits. If no subcommand (or `serve` subcommand), the binary behaves exactly as v1.1.
-
-**When to use:** When the same binary must support both a long-running server mode and interactive CLI commands. Avoids shipping a separate `mnemonic-cli` binary.
-
-**Trade-offs:** main.rs becomes more complex. The embedding model load (which takes ~2 seconds) must be guarded behind the server path — CLI commands must not wait for model load. Key insight: CLI commands only need the DB open, not the full AppState.
-
-```rust
-// src/main.rs — new structure
-
-#[derive(clap::Parser)]
-#[command(name = "mnemonic", about = "Agent memory server")]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(clap::Subcommand)]
-enum Commands {
-    /// Start the HTTP server (default when no subcommand given)
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Start the HTTP server (also the default with no subcommand)
     Serve,
+    /// Store a memory from the command line
+    Remember(RememberArgs),
+    /// Retrieve memories by ID or filters
+    Recall(RecallArgs),
+    /// Semantic search across memories
+    Search(SearchArgs),
+    /// Trigger memory compaction
+    Compact(CompactArgs),
     /// Manage API keys
-    Keys {
-        #[command(subcommand)]
-        action: KeysAction,
-    },
-}
-
-#[derive(clap::Subcommand)]
-enum KeysAction {
-    /// Create a new API key
-    Create {
-        /// Human-readable name for this key
-        #[arg(long)]
-        name: String,
-        /// Scope key to a specific agent_id (optional; omit for wildcard)
-        #[arg(long)]
-        agent_id: Option<String>,
-    },
-    /// List all API keys
-    List,
-    /// Revoke an API key by ID
-    Revoke {
-        /// Key ID to revoke
-        id: String,
-    },
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    match cli.command.unwrap_or(Commands::Serve) {
-        Commands::Keys { action } => {
-            // Minimal startup: config + DB only, no embedding model
-            db::register_sqlite_vec();
-            let config = config::load_config()?;
-            let conn = Arc::new(db::open(&config).await?);
-            let key_service = KeyService::new(conn);
-            run_key_command(key_service, action).await?;
-        }
-        Commands::Serve => {
-            // Full startup: existing v1.1 behavior
-            run_server().await?;
-        }
-    }
-    Ok(())
+    Keys(KeysArgs),  // existing
 }
 ```
 
-**Cargo.toml addition:**
+The `None` arm in main.rs dispatch simply runs the same server init as `Some(Commands::Serve)`. No duplication risk — extract `run_server(config)` as a named async fn.
 
-```toml
-clap = { version = "4", features = ["derive"] }
-```
+### Pattern 4: Output Design for Pipeable CLI
 
-No other new dependencies. Key generation uses `rand` (which is already a transitive dependency via uuid) or the `uuid::Uuid::now_v7()` bytes as an entropy source. Use `rand::thread_rng()` directly for the 32-byte token body.
+**What:** CLI handlers print machine-friendly output to stdout and human-readable errors/warnings to stderr. The first significant value (ID, count, or result line) is on its own line to enable piping.
 
-**Raw token generation:**
+**When to use:** All CLI handlers. This mirrors the existing `run_keys create` behavior where the raw token is line 1 of stdout.
 
-```rust
-use rand::Rng;
+**Trade-offs:** Tabular output (like `keys list`) is less pipeable but more readable for humans. The correct split:
+- `remember` → print ID on line 1 (pipeable: `ID=$(mnemonic remember "text")`)
+- `recall` → print table rows
+- `search` → print table rows with distance
+- `compact` → print summary counts
 
-pub fn generate_raw_token() -> String {
-    let bytes: [u8; 32] = rand::thread_rng().gen();
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-    format!("mnk_{}", encoded)
-}
-```
+**`--json` flag (optional, deferred):** A `--json` flag on each subcommand that emits JSON instead of tabular output would make scripting trivial. Do not build this in v1.3 — the tabular format is sufficient and `--json` can be added without any service-layer changes.
 
-`rand` is available as a transitive dependency of `uuid`. Add it explicitly to Cargo.toml to pin the version.
+### Pattern 5: `recall` Uses list_memories, Not search_memories
+
+**What:** `mnemonic recall` is a filter-based retrieval (by agent_id, session_id, tag, ID) using `MemoryService::list_memories()` or `get_memory_by_id()`. It does NOT do semantic search. `mnemonic search` is the semantic search command.
+
+**When to use:** Distinguish commands by intent — `recall` = structured filter, `search` = semantic similarity.
+
+**Trade-offs:** Users may conflate the two. Solve with clear help text: `recall` is "list memories matching filters" and `search` is "find memories semantically similar to a query string."
+
+**`recall --id <UUID>` fast path:** If `--id` is given, bypass `list_memories` and fetch the single memory by primary key. `MemoryService` already has the DB query pattern — add a `get_memory()` method or inline the query in `run_recall`. One new method on `MemoryService` is acceptable.
 
 ---
 
-## Data Flow: Request Authentication
+## Data Flow: New CLI Subcommands
+
+### remember flow
 
 ```
-Incoming HTTP Request
-  Authorization: Bearer mnk_abc1...xyz
-        |
-        v
-auth_middleware (from_fn_with_state)
-  1. has_active_keys()
-     └── SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL
-         → 0 → pass through (open mode)
-         → > 0 → continue validation
+mnemonic remember "The capital of France is Paris" --agent-id agent1 --tag geography
+  |
+  v
+main.rs: medium init → Arc<Connection>, Arc<EmbeddingEngine>
+  |
+  v
+MemoryService::new(conn, embedding, embedding_model)
+  |
+  v
+cli::run_remember(args, service)
+  |
+  v
+service.create_memory(CreateMemoryRequest { content, agent_id, session_id, tags })
+  ├── embedding.embed(content)        → Vec<f32>  (local model or OpenAI)
+  └── db INSERT memories + vec_memories (atomic transaction)
+  |
+  v
+stdout: memory ID on line 1
+        content, agent_id, created_at summary
+```
 
-  2. Extract "mnk_abc1...xyz" from Authorization header
-     └── parse "Bearer <token>", strip prefix
+### recall flow
 
-  3. sha256(token) → hex digest
-     └── pure Rust, no DB, sub-microsecond
+```
+mnemonic recall --agent-id agent1 --limit 5
+  |
+  v
+main.rs: minimal init → Arc<Connection> only (no embedding needed)
+  |
+  v
+cli::run_recall(args, service)
+  |
+  v
+service.list_memories(ListParams { agent_id, session_id, tag, after, before, limit, offset })
+  └── db SELECT memories WHERE filters ORDER BY created_at DESC LIMIT N
+  |
+  v
+stdout: formatted table rows (ID, content truncated, agent, created)
+```
 
-  4. DB lookup
-     └── SELECT id, agent_id
-         FROM api_keys
-         WHERE hashed_key = ? AND revoked_at IS NULL
-         → not found → return 401 {"error": "invalid or revoked API key"}
-         → found → AuthContext { key_id, allowed_agent_id }
+```
+mnemonic recall --id 019541a0-...
+  |
+  v
+minimal init
+  |
+  v
+service.get_memory(id)   [new method or direct query in run_recall]
+  └── db SELECT memories WHERE id = ?
+  |
+  v
+stdout: full memory details
+```
 
-  5. req.extensions_mut().insert(AuthContext { ... })
-  6. next.run(req).await → handler
-        |
-        v
-Handler (e.g., create_memory_handler)
-  Extension(auth): Extension<AuthContext>
-  └── auth.allowed_agent_id = Some("agent-x")
-      → body.agent_id forced to "agent-x"
-  └── auth.allowed_agent_id = None
-      → body.agent_id from request as-is (wildcard key)
-        |
-        v
-MemoryService::create_memory(body) — unchanged
+### search flow
+
+```
+mnemonic search "Paris landmarks" --agent-id agent1 --limit 5
+  |
+  v
+main.rs: medium init (embedding needed to embed query)
+  |
+  v
+cli::run_search(args, service)
+  |
+  v
+service.search_memories(SearchParams { q: "Paris landmarks", agent_id, limit, threshold, ... })
+  ├── embedding.embed("Paris landmarks") → Vec<f32>
+  └── db KNN via sqlite-vec MATCH + filter JOIN
+  |
+  v
+stdout: table with columns: SCORE, ID, CONTENT (truncated), AGENT
+```
+
+### compact flow
+
+```
+mnemonic compact --agent-id agent1 --dry-run
+  |
+  v
+main.rs: medium init (embedding needed for similarity clustering)
+  |
+  v
+cli::run_compact(args, compaction_service)
+  |
+  v
+compaction.compact(CompactRequest { agent_id, threshold, max_candidates, dry_run: true })
+  ├── loads all memories for agent → embed each (or use stored vectors)
+  ├── pairwise similarity clustering
+  └── (dry-run: returns plan, no writes)
+  |
+  v
+stdout: "Found N clusters, would merge M memories into K"
+        id_mapping table if --verbose
 ```
 
 ---
 
-## Data Flow: CLI Key Management
+## Integration Points
 
-```
-mnemonic keys create --name "prod-agent" --agent-id "agent-x"
-        |
-        v
-main() → clap parse → Commands::Keys { action: Create { name, agent_id } }
-        |
-        v
-Minimal startup (DB open only, no embedding load)
-        |
-        v
-KeyService::create(name, agent_id):
-  1. generate_raw_token() → "mnk_abc1def2..."
-  2. prefix = &raw_token[..12]     -- "mnk_abc1def2"
-  3. hashed_key = sha256(raw_token) → hex string
-  4. id = Uuid::now_v7()
-  5. INSERT INTO api_keys (id, name, prefix, hashed_key, agent_id, created_at)
-  6. Return (id, raw_token) -- raw_token shown ONCE then discarded
-        |
-        v
-Print to stdout:
-  Key created:
-    ID:     <uuid>
-    Name:   prod-agent
-    Token:  mnk_abc1def2...  (shown once — store this securely)
-    Scope:  agent-x
-        |
-        v
-exit(0)
-```
+### New vs. Modified
 
-**Token shown only once:** The raw token is printed at creation and then is gone — only the SHA-256 hash is stored. This matches the GitHub/Stripe/Anthropic pattern for API key management. Document this prominently in the CLI output.
-
----
-
-## Integration Points: New vs. Modified
-
-### New Components
-
-| Component | Type | Integration |
-|-----------|------|-------------|
-| `KeyService` | New struct in `src/auth.rs` | Holds `Arc<Connection>`; used by `AppState` (server) and CLI dispatch (main.rs) |
-| `ApiKey` | New struct | Row type for `api_keys` table; returned by `key_service.list()` |
-| `AuthContext` | New struct | Inserted into request extensions by middleware; extracted by handlers |
-| `auth_middleware` fn | New axum middleware | Added to router via `route_layer`; accesses `AppState` via `from_fn_with_state` |
-| `api_keys` table | New DB table | Created in `db.rs::open()` alongside existing tables |
-| `Cli` / `Commands` / `KeysAction` | New clap structs | Parsed in `main.rs` before any service startup |
-
-### Modified Components
-
-| Component | Modification | Impact Risk |
-|-----------|-------------|-------------|
-| `main.rs` | Add clap parse; split startup path (server vs. CLI); extract `run_server()` fn | MEDIUM — largest change; no existing logic deleted |
-| `server.rs` — `AppState` | Add `key_service: Arc<KeyService>` | Low — additive field; existing handlers compile unchanged |
-| `server.rs` — `build_router()` | Add `.route_layer(...)` for auth middleware; restructure `/health` exclusion | Low — one new call; existing routes unchanged |
-| `db.rs` — `open()` | Add `api_keys` DDL block | Low — additive; existing tables unaffected |
-| `error.rs` | Add `Unauthorized` variant to `ApiError` with 401 response | Low — additive |
-| `lib.rs` | Add `pub mod auth;` | Trivial |
-| Cargo.toml | Add `clap = { version = "4", features = ["derive"] }`, `rand`, `sha2`, `base64` | Low — new deps, no conflicts expected |
+| Component | Status | What Changes |
+|-----------|--------|--------------|
+| `cli.rs` | MODIFIED (major) | Add `RememberArgs`, `RecallArgs`, `SearchArgs`, `CompactArgs` structs; add `run_remember()`, `run_recall()`, `run_search()`, `run_compact()` functions |
+| `main.rs` | MODIFIED | Add `Commands::Serve`, `Commands::Remember`, `Commands::Recall`, `Commands::Search`, `Commands::Compact` variants; add dispatch branches; extract `init_db_and_embedding()` helper; extract `run_server()` helper |
+| `service.rs` | POSSIBLY MODIFIED | May need `get_memory(id: &str)` for `recall --id`. All other existing methods are already usable from CLI without change |
+| Everything else | NO CHANGE | server.rs, AppState, auth.rs, db.rs, compaction.rs, embedding.rs, error.rs, config.rs, summarization.rs all untouched |
 
 ### Internal Boundaries
 
 | Boundary | Communication | Notes |
 |----------|---------------|-------|
-| `auth_middleware` ↔ `KeyService` | Direct async call via `Arc<KeyService>` (from `AppState`) | Middleware holds no state; reads from DB on every request |
-| `auth_middleware` → handlers | `req.extensions_mut().insert(AuthContext)` | Extension pattern; handlers opt-in to extraction |
-| `main.rs` ↔ `KeyService` (CLI path) | Direct async call, no AppState, no embedding | CLI path constructs only `Arc<Connection>` + `KeyService` |
-| `KeyService` ↔ SQLite | `conn.call()` closures, same pattern as all existing services | Same `Arc<Connection>` shared with MemoryService in server mode |
+| `cli::run_remember` ↔ `MemoryService` | Direct async fn call (same binary, same process) | No HTTP, no serialization overhead |
+| `cli::run_search` ↔ `MemoryService` | Direct async fn call | Same `search_memories()` method the HTTP handler uses |
+| `cli::run_compact` ↔ `CompactionService` | Direct async fn call | Same `compact()` method the HTTP handler uses |
+| `cli::run_recall` ↔ `MemoryService` | Direct async fn call | Same `list_memories()` method the HTTP handler uses |
+| CLI path ↔ SQLite | Concurrent access via WAL mode | Safe: CLI writes serialize with server writes at the SQLite layer; no application-level locking needed |
+| `main.rs` medium init ↔ `LocalEngine` | `tokio::task::spawn_blocking(|| LocalEngine::new())` | Same pattern as server path; model downloaded to `~/.cache/huggingface/` and cached |
+
+### External Dependencies (unchanged from v1.2)
+
+| Dependency | Version | Used by v1.3 CLI |
+|------------|---------|-----------------|
+| clap (derive) | 4.x | arg structs for new subcommands |
+| tokio-rusqlite | existing | same `conn.call()` pattern |
+| candle / hf-hub | existing | medium-init model load |
+| serde_json | existing | compact response pretty-print optional |
+
+No new Cargo.toml entries required for v1.3.
 
 ---
 
-## Scoped Keys and Existing `agent_id` Filtering
+## Anti-Patterns
 
-The existing `agent_id` filtering in `MemoryService` is a client-provided filter — clients can request any agent's memories by supplying any `agent_id`. Scoped API keys enforce namespace isolation by overriding the client-supplied `agent_id` at the handler layer.
+### Anti-Pattern 1: CLI Commands Going Through HTTP
 
-**Enforcement point: handler, not service.** `MemoryService` and `CompactionService` remain unmodified. The override happens in each handler before calling the service:
+**What people do:** Implement `mnemonic remember` as an HTTP client that calls `POST /memories` on `localhost:8080`.
 
-```
-auth.allowed_agent_id = Some("agent-x")
-body.agent_id = "agent-y"  (from client request)
+**Why it's wrong:** Requires the server to be running. Fails silently if the server is down. Adds network stack overhead. Makes CLI commands useless as standalone tools (e.g., scripts that run before starting the server). Duplicates auth logic (CLI would need to supply an API key to talk to the server).
 
-→ handler overrides: body.agent_id = "agent-x"
-→ MemoryService sees agent_id = "agent-x" — namespace enforced
-```
+**Do this instead:** CLI commands call service methods directly. The binary contains both the server and the service implementations — use them directly. SQLite WAL mode handles concurrent access between a running server and a CLI invocation transparently.
 
-**Wildcard keys** (`agent_id IS NULL` in DB → `allowed_agent_id = None` in `AuthContext`) do not override the client-supplied `agent_id`. All namespaces are accessible. Use for multi-agent orchestrators or admin tooling.
+### Anti-Pattern 2: Loading the Embedding Model for recall
 
-**Compaction scoping:** `POST /memories/compact` body contains `agent_id`. The same override logic applies — if the key is scoped to `agent-x`, the compact request is forced to `agent_id = "agent-x"`. A scoped key cannot trigger compaction across namespaces.
+**What people do:** Use the same "medium init" path for all non-serve subcommands.
 
-**This means no service-layer changes are needed.** The scoping is entirely enforced at the handler layer via `AuthContext` injection.
+**Why it's wrong:** `mnemonic recall` does not embed anything — it does structured filter queries. Loading the embedding model adds ~2s to a command that should complete in <100ms.
 
----
+**Do this instead:** `recall` uses minimal init (DB only). Only `remember`, `search`, and `compact` need the embedding model.
 
-## Recommended Project Structure (v1.2 delta)
+### Anti-Pattern 3: Adding a New Module for CLI Handlers
 
-Flat module structure preserved. Only one new file and one modified file of substance.
+**What people do:** Create `src/commands/remember.rs`, `src/commands/recall.rs`, etc.
 
-```
-src/
-├── main.rs          # MODIFIED: add clap parse + dual-mode dispatch
-├── config.rs        # No change (auth is keycount-driven, not config-driven)
-├── server.rs        # MODIFIED: AppState + key_service, route_layer for auth
-├── service.rs       # No change
-├── embedding.rs     # No change
-├── db.rs            # MODIFIED: add api_keys DDL block
-├── error.rs         # MODIFIED: add Unauthorized variant to ApiError
-├── lib.rs           # MODIFIED: add pub mod auth
-├── compaction.rs    # No change
-├── summarization.rs # No change
-│
-└── auth.rs          # NEW: KeyService, ApiKey, AuthContext, auth_middleware
-                     #      generate_raw_token(), sha256_hex()
-                     #      has_active_keys(), validate(), create(), list(), revoke()
-```
+**Why it's wrong:** Over-engineering. The `cli.rs` module was designed to hold all CLI handlers. The total new code is ~200-300 lines. Adding a module hierarchy now would make the codebase harder to navigate without benefit.
 
-**Rationale:** All auth functionality is cohesive and belongs in one module (`auth.rs`). The middleware function can live in `auth.rs` or `server.rs` — prefer `auth.rs` so that `server.rs` has no knowledge of the cryptographic details.
+**Do this instead:** Add all five new handler functions and their arg structs to `cli.rs`. If `cli.rs` grows beyond ~800 lines, re-evaluate. At v1.3 it will not.
 
----
+### Anti-Pattern 4: Duplicating Init Logic Across Each Dispatch Branch
 
-## Anti-Patterns to Avoid
+**What people do:** Copy-paste the DB open + embedding load block into each of the `Remember`, `Search`, and `Compact` dispatch branches.
 
-### Anti-Pattern 1: Storing Raw Tokens in the Database
+**Why it's wrong:** Three identical blocks that must stay in sync. When config fields change (e.g., adding `--model` flag), all three blocks must be updated.
 
-**What:** Storing `mnk_abc1...` directly in the `hashed_key` column.
+**Do this instead:** Extract `init_db_and_embedding(config: &Config) -> Result<(Arc<Connection>, Arc<dyn EmbeddingEngine>)>` as a private async fn in main.rs. All medium-init branches call it.
 
-**Why it's wrong:** A DB leak exposes all tokens immediately, giving an attacker access to every client. The entire point of hashing is that a DB leak does not give usable credentials.
+### Anti-Pattern 5: Reimplementing Business Logic in CLI Handlers
 
-**Do this instead:** Store `sha256(raw_token)` as a hex string. The raw token is shown to the user once (at creation) and never persisted anywhere. On validation, compute `sha256(incoming_token)` and compare against the stored hash.
+**What people do:** Write a `run_search` that manually constructs and executes a SQL query instead of calling `service.search_memories()`.
 
-### Anti-Pattern 2: Using `bcrypt` or `argon2` for API Key Hashing
+**Why it's wrong:** Duplicates logic that already exists, is already tested, and already handles edge cases (KNN over-fetch ratio, threshold filtering, etc.). Any future changes to search must be made in two places.
 
-**What:** Applying password-hashing algorithms to API key validation.
+**Do this instead:** CLI handlers are thin wrappers around service calls. They handle argument parsing, call the service, and format the output. Nothing more.
 
-**Why it's wrong:** bcrypt/argon2 are designed for low-entropy secrets (passwords) and deliberately take 100ms+ per operation. API keys are 32 bytes of random entropy — brute-forcing the hash is computationally infeasible regardless of algorithm. Using bcrypt for API keys adds 100ms+ to every authenticated request for no security benefit.
+### Anti-Pattern 6: Blocking the Tokio Runtime During Model Load in CLI Path
 
-**Do this instead:** SHA-256. Fast, deterministic, sufficient for high-entropy tokens. Add the `sha2` crate.
+**What people do:** Call `LocalEngine::new()` directly in an async fn.
 
-### Anti-Pattern 3: Using `layer()` Instead of `route_layer()` for Auth Middleware
+**Why it's wrong:** `LocalEngine::new()` is blocking (HF Hub I/O, model weight parsing). Calling it directly in an async context blocks the tokio executor.
 
-**What:** Applying auth middleware with `.layer(middleware::from_fn_with_state(...))` instead of `.route_layer(...)`.
-
-**Why it's wrong:** `layer()` runs the middleware on ALL requests including those that match no route. A request to `/nonexistent` would return 401 instead of 404, leaking information about auth configuration.
-
-**Do this instead:** `route_layer()` runs middleware only when a route is matched. Non-matching routes correctly return 404 without ever reaching auth validation.
-
-### Anti-Pattern 4: Placing Auth Logic in `MemoryService` or `CompactionService`
-
-**What:** Adding auth validation inside `MemoryService::create_memory()` or similar service methods.
-
-**Why it's wrong:** Services would need to know about `AuthContext`, creating a coupling between business logic and auth concerns. The service layer is currently database-layer pure — it takes typed request structs and returns typed results. Mixing auth into services makes them harder to test and violates the separation already established.
-
-**Do this instead:** Auth enforcement lives entirely in the middleware and handler layer. Services remain unaware of authentication.
-
-### Anti-Pattern 5: Loading the Embedding Model for CLI Key Commands
-
-**What:** Running the full v1.1 startup path (including `tokio::task::spawn_blocking` for model load) when `mnemonic keys create` is called.
-
-**Why it's wrong:** The all-MiniLM-L6-v2 model takes ~2 seconds to load. A CLI command that should take 100ms becomes a 2-second operation. Worse, it loads a ~22MB model from disk for no purpose.
-
-**Do this instead:** The `Commands::Keys` branch in `main()` opens only the DB, constructs only `KeyService`, runs the command, and exits. The embedding engine and LLM engine are never initialized.
-
-### Anti-Pattern 6: Storing `AuthContext` in `AppState` Instead of Request Extensions
-
-**What:** Attempting to share the per-request auth context via `AppState`.
-
-**Why it's wrong:** `AppState` is shared across all concurrent requests — it is a single instance, not per-request. Storing per-request data in shared state requires a mutex and would serialize concurrent requests.
-
-**Do this instead:** Use `req.extensions_mut().insert(AuthContext { ... })` in the middleware and `Extension::<AuthContext>` in handlers. Extensions are per-request.
+**Do this instead:** Same pattern as the server path: `tokio::task::spawn_blocking(|| LocalEngine::new()).await??`. This is already in main.rs for the server path — copy the pattern to the medium-init helper.
 
 ---
 
-## Build Order (v1.2 phases, considering dependencies)
+## Build Order (v1.3 phases, considering dependencies)
 
 ```
-1. db.rs             — Add api_keys DDL block + indexes
-                       (no new dependencies; all other auth work depends
-                        on the table existing)
+Phase A — Extend Commands enum + serve subcommand
+  1. cli.rs: add ServeArgs (empty, or maybe --port override)
+  2. main.rs: add Commands::Serve variant; extract run_server() helper
+     Result: `mnemonic serve` works; `mnemonic` (no args) still works
+     Test: existing integration tests pass unchanged
 
-2. error.rs          — Add Unauthorized variant to ApiError
-                       (depends only on existing axum IntoResponse pattern;
-                        auth.rs middleware depends on this)
+Phase B — recall (minimal init, no embedding)
+  1. service.rs: add get_memory(id: &str) method if needed for --id fast path
+  2. cli.rs: add RecallArgs struct (--id, --agent-id, --session-id, --tag,
+     --limit, --after, --before) + run_recall() handler with table output
+  3. main.rs: add Commands::Recall dispatch branch (minimal init)
+     Result: `mnemonic recall` works, fast (<100ms)
+     Test: unit test run_recall with test DB
 
-3. auth.rs (KeyService + types)
-                     — ApiKey struct, AuthContext struct, KeyService::new()
-                       create() / list() / revoke() / validate() / has_active_keys()
-                       generate_raw_token(), sha256_hex()
-                       (depends on db.rs schema; no HTTP yet)
+Phase C — remember (medium init, embedding required)
+  1. main.rs: extract init_db_and_embedding() helper (needed by C, D, E)
+  2. cli.rs: add RememberArgs struct (content, --agent-id, --session-id,
+     --tag) + run_remember() handler
+  3. main.rs: add Commands::Remember dispatch branch (medium init)
+     Result: `mnemonic remember "text"` stores a memory, prints ID
+     Test: unit test run_remember with test DB + mock embedding
 
-4. auth.rs (middleware)
-                     — auth_middleware fn using from_fn_with_state
-                       (depends on AuthContext, KeyService, ApiError::Unauthorized)
+Phase D — search (medium init, embedding required)
+  1. cli.rs: add SearchArgs struct (query, --agent-id, --limit, --threshold,
+     --tag) + run_search() handler with table output including score
+  2. main.rs: add Commands::Search dispatch branch (medium init)
+     Result: `mnemonic search "query"` returns ranked results
+     Test: unit test run_search with test DB + mock embedding
 
-5. server.rs         — Add key_service to AppState; add route_layer to build_router();
-                       restructure /health exclusion; add Extension(auth) to handlers
-                       (depends on auth.rs being complete)
-
-6. main.rs           — Add clap; split startup into server and CLI paths;
-                       wire KeyService into both paths
-                       (depends on all above; last change)
+Phase E — compact (medium init, embedding required)
+  1. cli.rs: add CompactArgs struct (--agent-id, --threshold,
+     --max-candidates, --dry-run) + run_compact() handler with summary output
+  2. main.rs: add Commands::Compact dispatch branch (medium init,
+     constructs CompactionService instead of MemoryService)
+     Result: `mnemonic compact --agent-id X` triggers compaction
+     Test: unit test run_compact with test DB + mock embedding
 ```
 
-**Phase recommendation:**
+**Rationale for this ordering:**
+- `serve` first because it's a zero-risk rename of existing behavior; confirms the Commands expansion doesn't break anything.
+- `recall` second because it uses minimal init — fastest to implement, no embedding complexity, validates the new dispatch infrastructure.
+- `remember` third because it introduces the medium-init helper that `search` and `compact` will reuse.
+- `search` fourth because it follows the same medium-init pattern with a different service call.
+- `compact` last because `CompactionService` construction is more complex (needs optional LLM engine) and `compact --dry-run` is the highest-value test case.
 
-- **Phase A (foundation):** steps 1-2 together — schema + error variants. Testable immediately: verify `api_keys` table appears in DB.
-- **Phase B (KeyService):** step 3 in isolation. Unit-testable with a test DB: create key, list, revoke, validate. No HTTP involved yet.
-- **Phase C (middleware):** step 4. Integration-testable with a test router and test keys in DB.
-- **Phase D (HTTP wiring):** step 5. Add middleware to router; verify existing tests still pass; add auth-specific integration tests.
-- **Phase E (CLI):** step 6. Add clap; verify `mnemonic keys create` works end-to-end; verify `mnemonic serve` (or no subcommand) still works exactly as before.
+---
+
+## Concurrent Access: CLI + Running Server
+
+SQLite WAL (Write-Ahead Logging) mode is already enabled by `db::open()`. This makes the concurrent-access scenario safe by design:
+
+```
+mnemonic serve  (running)
+  + concurrent:
+mnemonic remember "..."  (CLI)
+
+→ Both open the same .db file
+→ WAL allows concurrent readers + one writer
+→ CLI write acquires write lock, inserts memory, releases
+→ Server reads proceed concurrently (not blocked by CLI write)
+→ No data corruption, no application-level locking needed
+```
+
+The only edge case: if both the server and a CLI command attempt to write at the exact same microsecond, one will wait for the other's WAL lock. This is handled transparently by SQLite. For a tool at this scale (personal agent memory server), this is not a problem.
 
 ---
 
 ## Scaling Considerations
 
-| Scale | Auth Behavior |
-|-------|---------------|
-| Local dev (no keys) | Open mode — zero auth overhead |
-| Small deployment (1-10 keys) | SHA-256 lookup: < 1ms; indexed `api_keys` table with < 100 rows |
-| Large deployment (1000s of requests/sec) | Add in-memory cache of `hashed_key → AuthContext` with 1-minute TTL; invalidate on revoke |
+| Scale | CLI Architecture Behavior |
+|-------|--------------------------|
+| Single user, local | Default. No issues. CLI and server share the DB file safely. |
+| Multiple agents, same host | CLI `--agent-id` filtering keeps namespaces isolated. No change needed. |
+| Remote deployment | CLI subcommands work by pointing to the remote DB file via `--db /path/to/remote.db` or `MNEMONIC_DB_PATH`. SSH + direct DB access or just use the REST API from remote. |
 
-The cache optimization is not needed for v1.2. The `SELECT ... WHERE hashed_key = ?` query on an indexed 100-row table is sub-millisecond and SQLite WAL mode means reads never block writes.
+The CLI is intentionally a local-only interface. Remote programmatic access uses the REST API. This is the correct split.
 
 ---
 
 ## Sources
 
-- [axum middleware docs — `from_fn_with_state`](https://docs.rs/axum/latest/axum/middleware/fn.from_fn_with_state.html) — HIGH confidence (official docs)
-- [axum middleware docs — patterns overview](https://docs.rs/axum/latest/axum/middleware/index.html) — HIGH confidence (official docs)
-- [axum `route_layer` vs `layer`](https://github.com/tokio-rs/axum/discussions/2878) — HIGH confidence (official project discussion)
-- [clap derive tutorial — subcommands](https://docs.rs/clap/latest/clap/_derive/_tutorial/index.html) — HIGH confidence (official docs)
-- [API key authentication best practices — Zuplo](https://zuplo.com/blog/2022/12/01/api-key-authentication) — MEDIUM confidence (industry reference; SHA-256 recommendation confirmed by multiple sources)
-- [axum Extension extractor](https://docs.rs/axum/latest/axum/struct.Extension.html) — HIGH confidence (official docs)
-- Existing v1.1 source code (`src/*.rs`) — HIGH confidence (direct inspection)
+- Existing v1.2 source code (`src/main.rs`, `src/cli.rs`, `src/service.rs`, `src/compaction.rs`) — HIGH confidence (direct inspection of shipped code)
+- clap documentation — subcommand patterns: https://docs.rs/clap/latest/clap/_derive/_tutorial/chapter_0/index.html — HIGH confidence (official docs)
+- SQLite WAL mode documentation — concurrent access guarantees: https://www.sqlite.org/wal.html — HIGH confidence (official docs)
+- v1.2 ARCHITECTURE.md (existing research) — Pattern 4 (Dual-Mode Binary with clap) directly informs v1.3 extension — HIGH confidence
 
 ---
 
-*Architecture research for: Mnemonic v1.2 — API key authentication integration*
-*Researched: 2026-03-20*
+*Architecture research for: Mnemonic v1.3 — CLI subcommands integration*
+*Researched: 2026-03-21*

@@ -987,3 +987,329 @@ Document this behavior in the API spec and in the startup log.
 *v1.0 researched: 2026-03-19*
 *v1.1 compaction addendum researched: 2026-03-20*
 *v1.2 authentication addendum researched: 2026-03-20*
+
+---
+
+## CLI Subcommand Pitfalls (v1.3)
+
+The following pitfalls apply specifically to adding `serve`, `remember`, `recall`, `search`, `compact`, and additional `keys` subcommands to the existing Rust server binary. The binary already has `keys` working (fast path, no model loading). These pitfalls address the six risk areas for v1.3: backward compatibility, SQLite write contention between CLI and server, model loading overhead for lightweight operations, clap derive changes, stdout/stderr contract, and single-binary distribution constraints.
+
+---
+
+### CLI Pitfall 1: Bare `mnemonic` No Longer Starts the Server
+
+**What goes wrong:**
+After adding subcommands, clap's default behavior changes. A `Commands` enum that requires an explicit subcommand means `mnemonic` with no arguments prints help and exits with code 1 instead of starting the server. Any shell script, Docker `CMD`, systemd unit, or cron job that runs `mnemonic` (without `serve`) breaks silently — the process exits immediately without error output on stderr, making it look like an OOM kill or signal rather than a usage error.
+
+The existing `keys` fast-path in `main.rs` uses `if let Some(Commands::Keys(...))` with `command: Option<Commands>`, so the current implementation already handles the default-to-server case. The trap is: adding new variants to `Commands` without verifying the `None` arm still falls through to the server path.
+
+**Why it happens:**
+Developers add the new variants, test `mnemonic serve` and `mnemonic remember`, and consider the feature done. They do not run `mnemonic` with no arguments to verify the backward-compatible server start. The failure only surfaces in deployment environments where no one is watching the terminal.
+
+**How to avoid:**
+- Keep `command: Option<Commands>` (already in place). The `None` arm must always start the server — add a comment and a unit test asserting that parsing `[]` (no args) produces `None` for the command field.
+- Add an integration test: spawn `mnemonic` with no arguments, wait 100ms, assert the process is still running (not exited), then send SIGTERM.
+- In CI, run `mnemonic --help` and `mnemonic` (no args) and assert the latter exits non-zero only after SIGTERM, not immediately.
+
+**Warning signs:**
+- `Commands` enum is not wrapped in `Option<Commands>` (i.e., subcommand is required).
+- No test for zero-argument invocation.
+- `#[command(subcommand_required = true)]` attribute anywhere in the CLI struct.
+
+**Phase to address:** First phase of v1.3 CLI implementation — clap struct extension. Must be validated before any other subcommand ships.
+
+---
+
+### CLI Pitfall 2: Model Loading for Every `remember` / `search` Invocation
+
+**What goes wrong:**
+`mnemonic remember "text"` and `mnemonic search "query"` both require generating an embedding vector, which means loading the candle all-MiniLM-L6-v2 model. On cold cache (first run or after model eviction), `LocalEngine::new()` downloads model files (~22MB) and initializes the BERT weights — approximately 2 seconds even when cached. This is acceptable for a long-running server, but for a CLI invocation that the user expects to complete in under 100ms, a 2-second startup is jarring.
+
+A second trap: loading the model, running inference, and exiting discards all model state. Every `mnemonic remember` call pays the full 2-second cost, even if invoked in a tight loop by a shell script.
+
+**Why it happens:**
+The server path loads the model once at startup and keeps it in memory. The CLI path has no persistent process, so there is no amortization. Developers port the server's initialization sequence directly into the CLI fast-path without considering that the user expectation is different.
+
+**How to avoid:**
+- For `remember` and `search`, use the OpenAI embedding provider by default when `OPENAI_API_KEY` is set — zero local model startup cost (API roundtrip is ~50ms vs. 2s cold model load).
+- For local embedding, print a startup message: `"Loading embedding model (first call may take ~2s)..."` so the user knows why the command is slow.
+- Cache awareness: on second invocation, HuggingFace Hub cache is populated — document that subsequent calls are faster (~200ms).
+- Consider a `--fast` flag that disables local embedding and returns an error if no API key is configured, explicitly trading capability for speed.
+- Do not attempt to pre-warm a model daemon or persistent process for CLI use — the single-binary constraint makes inter-process model sharing impractical.
+
+**Warning signs:**
+- CLI invocation always loads `LocalEngine::new()` even when `OPENAI_API_KEY` is present.
+- No startup message informing the user about model load delay.
+- No test measuring CLI startup time for the `search` subcommand.
+
+**Phase to address:** `remember` and `search` subcommand implementation phase. Startup cost must be addressed in the design, not discovered during user testing.
+
+---
+
+### CLI Pitfall 3: SQLite Write Contention — CLI and Running Server on Same DB
+
+**What goes wrong:**
+A user runs `mnemonic serve &` in the background and then uses `mnemonic remember "text"` from the CLI. Both processes open connections to the same SQLite file. In WAL mode, the server holds a continuous write connection via `tokio-rusqlite`. When the CLI attempts a write (`INSERT INTO memories`), it tries to acquire SQLite's write lock, which the server holds between transactions.
+
+Without a `busy_timeout` configured on the CLI's connection, the write attempt returns `SQLITE_BUSY` immediately. The CLI prints an error and exits with code 1 — the memory is never stored, and the user may not realize it.
+
+A more subtle variant: the CLI opens a read transaction to fetch results, then upgrades it to write (to store the new memory). SQLite's WAL mode does not allow upgrading read transactions to write transactions if another writer has modified the database since the read began — this causes `SQLITE_BUSY` even with `busy_timeout` configured, because the timeout does not apply to the transaction-upgrade case.
+
+**Why it happens:**
+The `keys` fast-path only reads and writes the `api_keys` table, which is low-contention. When `remember` and `compact` are added, the CLI touches the same tables the server writes to continuously. Developers test CLI + server in isolation but not concurrently.
+
+**How to avoid:**
+- Set `PRAGMA busy_timeout = 5000` on every CLI database connection immediately after open. This gives the CLI 5 seconds of retry before returning `SQLITE_BUSY`.
+- Never open a read transaction and then upgrade it to write. Begin all CLI write operations with `BEGIN IMMEDIATE` (via `rusqlite::Transaction::new` with `TransactionBehavior::Immediate`) — this acquires the write lock at transaction start, not mid-transaction.
+- When the server is running and the CLI encounters `SQLITE_BUSY` after the timeout, print a clear message: `"Could not write memory: database is locked by the running mnemonic server. Retry or use the REST API."` — do not print the raw SQLite error code.
+- Document in the README: when both server and CLI use the same DB file, CLI writes may queue behind server write transactions. For high-throughput writes, use the REST API directly.
+
+**Warning signs:**
+- CLI connections do not set `PRAGMA busy_timeout`.
+- CLI write operations use `BEGIN` (deferred) instead of `BEGIN IMMEDIATE`.
+- No test running CLI `remember` while a server is simultaneously handling write requests against the same DB file.
+- Raw `rusqlite::Error::SqliteFailure` propagated to the user without a human-readable message.
+
+**Phase to address:** `remember` and `compact` subcommand implementation. The `busy_timeout` and `BEGIN IMMEDIATE` pattern must be applied as the very first thing in the CLI DB initialization, before any write logic is coded.
+
+---
+
+### CLI Pitfall 4: Tracing / Logging Noise on stdout in CLI Mode
+
+**What goes wrong:**
+The server path initializes `tracing_subscriber` (structured logging to stdout/stderr) before doing anything else. If CLI subcommands (`remember`, `search`, `recall`) reuse the same initialization sequence, tracing output contaminates stdout. A user piping output to a downstream tool (`mnemonic search "query" | jq .`) gets JSON log lines mixed into the output stream. Scripts that parse stdout break silently.
+
+The existing `keys` path already avoids this correctly (D-21 in the codebase comments: no tracing init in CLI path). The trap is that new subcommands copying server initialization code inadvertently include `server::init_tracing()`.
+
+**Why it happens:**
+Developers want visibility into what the CLI is doing (e.g., "connecting to DB", "loaded model") and reach for `tracing`. The distinction between "tracing for a long-running server" and "diagnostic output for a CLI command" is not instinctive.
+
+**How to avoid:**
+- For all CLI subcommands: never call `server::init_tracing()`. Use `eprintln!` for progress messages directed at humans, and `println!` only for the command's structured output.
+- Structured output (memory IDs, search results) goes to stdout only. All diagnostic and error messages go to stderr.
+- If verbose mode is desired for debugging (`--verbose` flag), redirect it to stderr only, never stdout.
+- Add a test that captures stdout from a CLI subcommand and asserts it contains only the expected output (no log timestamps, no tracing metadata).
+
+**Warning signs:**
+- Any CLI code path calls `server::init_tracing()` or `tracing_subscriber::fmt::init()`.
+- `tracing::info!` or `tracing::debug!` calls appear in CLI subcommand handler functions.
+- stdout from a CLI subcommand contains lines starting with timestamps or log levels (`2026-03-21T...INFO`).
+
+**Phase to address:** Each CLI subcommand implementation phase. Establish the stdout-clean contract in the first subcommand and enforce it as a test for every subsequent one.
+
+---
+
+### CLI Pitfall 5: Exit Code Contract — Errors Not Signaled to Calling Processes
+
+**What goes wrong:**
+Shell scripts and CI pipelines check exit codes to determine success or failure. If a CLI subcommand encounters an error (DB locked, embedding failure, memory not found) but exits with code 0, calling scripts treat the failure as success and continue. Data is silently lost.
+
+The inverse also occurs: a subcommand that exits with code 1 on partial results (e.g., `mnemonic recall` when no memories match the filter) causes pipelines to abort even though "no results" is a valid, non-error state.
+
+The existing `keys` implementation uses `std::process::exit(1)` on errors correctly but does not cover the "empty result is not an error" case.
+
+**Why it happens:**
+Rust's `main() -> Result<()>` propagates errors as non-zero exits. The trap is: returning `Err(...)` from a CLI handler when the operation succeeded with an empty result set (e.g., no memories found). Developers treat all `Err` variants uniformly, but some represent user errors (exit 1) and others represent empty results (exit 0).
+
+**How to avoid:**
+- Define a CLI exit code contract and document it:
+  - `0`: success (including "no results found" for queries)
+  - `1`: user error (bad arguments, memory ID not found, invalid filter)
+  - `2`: infrastructure error (DB locked, embedding failure, network error)
+- Use `std::process::exit(code)` explicitly in CLI handlers rather than propagating errors through `main() -> Result<()>` — the default anyhow error formatting is too verbose for CLI users.
+- Write tests that assert exit codes, not just output content.
+
+**Warning signs:**
+- `mnemonic recall` with no matching results exits with code 1.
+- DB connection failures exit with code 1 (same as user errors).
+- No test asserting specific exit codes for error conditions.
+- CLI handlers propagate errors as `anyhow::Error` to `main`, letting anyhow format them.
+
+**Phase to address:** All CLI subcommand implementation phases. Exit code contract must be defined before the first subcommand is coded, then verified for each subsequent one.
+
+---
+
+### CLI Pitfall 6: Output Format Not Stable or Not Pipeable
+
+**What goes wrong:**
+The `keys list` subcommand outputs a human-readable table (column-aligned, headers, dashes). This is good for humans but breaks pipelines. A script that parses `mnemonic keys list` output using `awk '{print $1}'` breaks if column widths change, if a key name contains spaces, or if the table format is updated. The same risk applies to `mnemonic recall` and `mnemonic search` if they output prose or formatted tables.
+
+A second trap: colored output rendered when stdout is a terminal is included in captured output when stdout is redirected to a file or pipe. ANSI escape codes appear as garbage in log files and break downstream parsers.
+
+**Why it happens:**
+Human-readable table output is designed for interactive use. Developers test by running the command in a terminal. They do not test piped output or script consumption. ANSI color codes are injected automatically by libraries like `colored` without terminal detection.
+
+**How to avoid:**
+- Support `--output json` (or `--json`) for all data-returning subcommands (`recall`, `search`, `keys list`). JSON output goes to stdout and is stable across versions within a major release.
+- Detect whether stdout is a TTY (`std::io::IsTerminal::is_terminal(&std::io::stdout())`). Disable ANSI color codes when stdout is not a TTY.
+- Default to human-readable table for terminal users; when stdout is piped, switch to line-delimited plain text (one result per line) or require explicit `--json` for structured data.
+- Never add new columns to existing table output without a version gate — it shifts column positions and breaks awk-based consumers.
+
+**Warning signs:**
+- `mnemonic keys list` or `mnemonic search` output is not parseable without knowing column widths.
+- No `--json` or `--output` flag on any data-returning subcommand.
+- ANSI escape codes in output when stdout is redirected to a file.
+- No test capturing stdout as a string and parsing it programmatically.
+
+**Phase to address:** Every data-returning CLI subcommand implementation. Output format decisions must be locked before the subcommand ships — retrofitting `--json` after users have scripted against the human-readable format breaks those scripts.
+
+---
+
+### CLI Pitfall 7: `mnemonic compact` Without `--agent-id` Silently Operates on All Agents
+
+**What goes wrong:**
+The `compact` subcommand triggers memory deduplication. If `--agent-id` is not required and defaults to "all agents" (or empty string), a user running `mnemonic compact` compacts every agent's memories in the database. In a shared deployment (multiple agents using one server), this crosses namespace boundaries in violation of the invariant established in Compaction Pitfall 2.
+
+More practically: a developer testing compaction on their single-agent DB runs `mnemonic compact`, it works correctly (only one agent exists), they ship the subcommand without the guard — then a user with 5 agents runs it and loses cross-agent isolation.
+
+**Why it happens:**
+The REST `POST /memories/compact` endpoint requires `agent_id` in the request body. The CLI subcommand is coded independently and the requirement is not automatically carried over. `agent_id` defaults to an empty string in the schema, and empty-string compaction may work on a DB with only one agent.
+
+**How to avoid:**
+- Make `--agent-id` a required argument on `mnemonic compact`. There is no safe default.
+- If the user omits `--agent-id`, exit with code 1 and a clear message: `"error: --agent-id is required for compact. Use 'mnemonic recall --list-agents' to see available agents."`.
+- Add an integration test: run `mnemonic compact` with no args, assert exit code 1 and a message containing "agent-id".
+
+**Warning signs:**
+- `mnemonic compact` accepts `--agent-id` as optional with a default.
+- The compact CLI handler passes an empty string as `agent_id` to `CompactionService`.
+- No test asserting that `mnemonic compact` without `--agent-id` is rejected.
+
+**Phase to address:** `compact` subcommand implementation. The required-argument guard must be in place before the subcommand is usable.
+
+---
+
+### CLI Pitfall 8: `validate_config()` Called in CLI Path Rejects Valid Configurations
+
+**What goes wrong:**
+`validate_config()` checks that if `embedding_provider = "openai"` is set, `OPENAI_API_KEY` must be present. For the server, this is correct — starting a server without the key it needs is a configuration error. For `mnemonic keys list`, `mnemonic recall --id <id>`, or `mnemonic compact` (which does not need embeddings), calling `validate_config()` causes the command to fail with `"missing OPENAI_API_KEY"` even though the CLI operation does not use embeddings at all.
+
+This is already handled correctly for `keys` (the codebase comment explicitly skips `validate_config` in the keys path). The trap is that new subcommands requiring DB access but not embeddings (like `recall --id`) copy the server initialization sequence, which includes `validate_config()`.
+
+**Why it happens:**
+The initialization sequence in `main.rs` is linear: config → validate → DB → embedding → server. CLI subcommands that need only DB access are tempted to reuse this sequence but must stop before `validate_config()`.
+
+**How to avoid:**
+- Categorize subcommands by their initialization requirements:
+  - **DB-only** (`keys`, `recall --id`, basic `remember` with OpenAI, `compact` with explicit embedding provider): load config, open DB, skip `validate_config()`.
+  - **Embedding-required** (`remember` with local, `search` with local): load config, `validate_config()`, open DB, load model.
+- Extract a `cli_init_db_only(config)` helper that skips embedding initialization and `validate_config()`.
+- Write a test: set `embedding_provider = "openai"` in config with no `OPENAI_API_KEY` set; run `mnemonic keys list`; assert success (not config error).
+
+**Warning signs:**
+- All CLI subcommand paths call `config::validate_config()` before operating.
+- `mnemonic recall --id <id>` fails with embedding-related config errors.
+- No test covering CLI with an incomplete embedding config.
+
+**Phase to address:** Foundation of the v1.3 CLI — initialization path design. Must be defined before individual subcommands are coded, since each subcommand's init sequence is determined by this design.
+
+---
+
+### CLI Pitfall 9: `serve` Subcommand Breaks Tooling That Inspects `--help` for the Default Command
+
+**What goes wrong:**
+With `mnemonic serve` added as an explicit subcommand, tooling that inspects `mnemonic --help` changes its understanding of the binary's interface. More concretely: shell completion scripts generated from the old `--help` output (before subcommands) may no longer work. Wrapper scripts that call `mnemonic --port 8080` (previously valid as a top-level flag, if port was a top-level arg) now fail because `--port` moved to the `serve` subcommand scope.
+
+If `--port` and `--host` are top-level flags today (before v1.3), moving them under `mnemonic serve` is a breaking change for any user who scripted `mnemonic --port 8080`. These flags must either remain as global flags (inherited by `serve`) or the migration must be documented as a breaking change.
+
+**Why it happens:**
+Adding subcommands naturally scopes flags to their relevant subcommand. `--port` feels like a `serve` flag. Developers move it without checking whether it was previously available at the top level.
+
+**How to avoid:**
+- Audit all current top-level flags (`--db` is already global). If `--port` is currently a top-level arg, make it `global = true` in the `serve` subcommand — or keep it at the top level.
+- The `--db` flag is already correctly global (passed before the subcommand: `mnemonic --db /path/to/db keys list`). Follow the same pattern for any flag that applies across multiple subcommands.
+- Write a test: `mnemonic --db /tmp/test.db keys list` must parse correctly with `--db` before the subcommand name.
+
+**Warning signs:**
+- `--port` or `--host` moved from a global/top-level arg to exclusively under `serve` subcommand.
+- `mnemonic --port 8080` (no subcommand) returns a parse error after v1.3.
+- No integration test exercising `mnemonic <global-flag> <subcommand>` ordering.
+
+**Phase to address:** `serve` subcommand implementation phase. Before adding `serve`, audit every existing flag and determine its scope.
+
+---
+
+## Technical Debt Patterns (v1.3 additions)
+
+| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
+|----------|-------------------|----------------|-----------------|
+| Always loading LocalEngine for `remember` and `search` | Simpler code path | 2s startup cost on every CLI invocation regardless of embedding provider config | Never — check provider first; skip model load for OpenAI path |
+| Calling `validate_config()` in all CLI paths | Reuse existing validation | CLI commands fail when embedding config is incomplete even though they don't need it | Never — only call `validate_config()` in paths that use embeddings |
+| Not setting `busy_timeout` on CLI connections | No extra PRAGMA needed | SQLITE_BUSY errors when server is running; user sees cryptic error | Never — always set `busy_timeout = 5000` on CLI DB connections |
+| Human-readable table as the only output format | Looks polished in terminal demos | Pipelines and scripts break; no stable machine-readable interface | Acceptable for v1.3 MVP if `--json` is on the roadmap; unacceptable if CLI is a public interface |
+| Making `--agent-id` optional on `mnemonic compact` | Simpler invocation | Cross-agent compaction silently corrupts multi-tenant deployments | Never — require `--agent-id` with no default |
+| Calling `server::init_tracing()` in CLI subcommands | Visibility into what's happening | Tracing noise on stdout breaks pipes and scripts | Never — use `eprintln!` for CLI diagnostics; stdout must be output-only |
+| Moving `--port`/`--host` under `serve` without `global = true` | Cleaner `serve` subcommand scope | Breaks existing scripts that pass `--port` as a top-level arg | Never if flags were previously top-level — keep them global or document as a breaking change |
+
+---
+
+## Integration Gotchas (v1.3 additions)
+
+| Integration | Common Mistake | Correct Approach |
+|-------------|----------------|------------------|
+| CLI + running server on same SQLite file | CLI write fails with `SQLITE_BUSY` immediately | Set `PRAGMA busy_timeout = 5000`; use `BEGIN IMMEDIATE` for all CLI write transactions |
+| `mnemonic remember` with local embedding provider | 2-second model load surprises user | Print progress message to stderr; document that subsequent calls are faster |
+| Shell pipeline using `mnemonic search` stdout | ANSI color codes appear in captured output | Detect TTY with `std::io::IsTerminal`; disable color when stdout is not a terminal |
+| clap `--db` global flag ordering | `mnemonic keys --db /path list` fails (flag after subcommand) | Global flags must appear before the subcommand name; `mnemonic --db /path keys list` |
+| `tokio-rusqlite` in CLI path | Opens async runtime for simple DB-only operations | Acceptable — `tokio-rusqlite` requires `#[tokio::main]`; consider `flavor = "current_thread"` for lighter CLI runtime |
+| `mnemonic compact` over the REST API vs. direct DB | CLI `compact` bypasses auth middleware | CLI subcommand writes directly to DB; ensure agent_id scoping is enforced at service layer, not just HTTP layer |
+
+---
+
+## Performance Traps (v1.3 additions)
+
+| Trap | Symptoms | Prevention | When It Breaks |
+|------|----------|------------|----------------|
+| LocalEngine model load on every CLI call | `mnemonic remember` takes 2s minimum even for short strings | Document; prefer OpenAI provider for CLI use; no mitigation without a persistent daemon | Every cold CLI invocation with local embedding |
+| No `busy_timeout` on CLI DB connection | `mnemonic remember` fails immediately if server is running | Set `PRAGMA busy_timeout = 5000` on CLI connection open | Any concurrent CLI + server operation |
+| BEGIN (deferred) transaction upgrades to write | `SQLITE_BUSY` even with `busy_timeout` set, when another writer has modified DB since read began | Use `BEGIN IMMEDIATE` for all CLI write operations | Any CLI write during active server write traffic |
+| `#[tokio::main]` with default multi-thread runtime for CLI | ~10ms overhead from spawning thread pool | Use `#[tokio::main(flavor = "current_thread")]` for CLI subcommands; or check whether blocking API is sufficient | Negligible at human scale; noticeable in tight shell script loops |
+
+---
+
+## "Looks Done But Isn't" Checklist (v1.3 additions)
+
+- [ ] **Bare `mnemonic` still starts server:** Run `mnemonic` with no arguments; assert process is still alive after 200ms. A quick exit means the server did not start.
+- [ ] **`mnemonic serve` is equivalent to bare `mnemonic`:** Verify both code paths reach `server::serve()` with the same state.
+- [ ] **`busy_timeout` set on CLI connections:** Grep for CLI DB init code — `PRAGMA busy_timeout` must appear before any SQL is executed.
+- [ ] **No `server::init_tracing()` in CLI paths:** Grep all CLI handler functions — none call `init_tracing` or `tracing_subscriber`.
+- [ ] **stdout is clean for piping:** Capture stdout of `mnemonic search "test"` as a string; assert no ANSI codes, no log lines, no timestamps.
+- [ ] **`mnemonic compact` requires `--agent-id`:** Run without `--agent-id`; assert exit code 1 and actionable error message.
+- [ ] **`validate_config()` skipped in non-embedding CLI paths:** Run `mnemonic recall --id <id>` with `embedding_provider=openai` and no API key; assert success.
+- [ ] **Exit codes are correct:** `mnemonic recall` with no matching memories exits 0; a DB error exits 2; a bad argument exits 1.
+- [ ] **`--db` global flag works before any subcommand:** `mnemonic --db /tmp/test.db keys list` parses correctly.
+- [ ] **Model load message on stderr for slow operations:** `mnemonic remember "text"` with local provider prints a loading message to stderr (not stdout).
+
+---
+
+## Pitfall-to-Phase Mapping (v1.3 additions)
+
+| Pitfall | Prevention Phase | Verification |
+|---------|------------------|--------------|
+| Bare `mnemonic` no longer starts server | First CLI extension phase (clap struct) | Integration test: zero-argument invocation; process alive after 200ms |
+| Model load overhead for `remember`/`search` | `remember` and `search` subcommand implementation | Measure CLI startup time; emit loading message to stderr; test OpenAI path has no model load |
+| SQLite `BUSY` between CLI and server | `remember` and `compact` subcommand implementation | `PRAGMA busy_timeout` present in CLI DB init; integration test with concurrent server writes |
+| Tracing noise on stdout | Every CLI subcommand implementation | Capture stdout as string; assert no log lines; no `init_tracing` calls in CLI handlers |
+| Exit code contract | Every CLI subcommand implementation | Assert specific exit codes for: success, empty result, user error, infrastructure error |
+| Output not pipeable / no `--json` | Every data-returning CLI subcommand | Redirect stdout to file; parse it programmatically; verify ANSI codes absent |
+| `compact` without `--agent-id` | `compact` subcommand implementation | Run without `--agent-id`; assert exit 1 with clear message |
+| `validate_config()` in non-embedding CLI paths | CLI initialization path design | Run DB-only commands with incomplete embedding config; assert success |
+| Flag scope changes breaking scripts | `serve` subcommand implementation | Test `--db` global flag order; test any flags that were previously top-level |
+
+---
+
+## Sources (v1.3 additions)
+
+- [SQLite WAL mode official docs](https://sqlite.org/wal.html) — single writer constraint, SQLITE_BUSY in WAL, checkpoint starvation
+- [Understanding SQLITE_BUSY — ActiveSphere](http://activesphere.com/blog/2018/12/24/understanding-sqlite-busy) — transaction upgrade pitfall: deferred → write fails when another writer modified DB
+- [What to do about SQLITE_BUSY despite setting timeout — Bert Hubert](https://berthub.eu/articles/posts/a-brief-post-on-sqlite3-database-locked-despite-timeout/) — `BEGIN IMMEDIATE` as the correct pattern for write transactions
+- [SQLite PRAGMA busy_timeout docs](https://sqlite.org/pragma.html#pragma_busy_timeout) — per-connection setting; must be applied after every connection open
+- [Rain's Rust CLI Recommendations: Machine-Readable Output](https://rust-cli-recommendations.sunshowers.io/machine-readable-output.html) — stdout for machine output, stderr for diagnostics, JSON stability requirements
+- [Command Line Applications in Rust: Output for Humans and Machines](https://rust-cli.github.io/book/tutorial/output.html) — stdout/stderr discipline, `println!` vs. `eprintln!`
+- [Rust 1.80 LazyLock stabilization](https://blog.logrocket.com/how-use-lazy-initialization-pattern-rust-1-80/) — lazy initialization patterns applicable to optional model loading
+- [clap 4 default subcommand discussion #4134](https://github.com/clap-rs/clap/discussions/4134) — `Option<Commands>` + `None` arm as the correct default-command pattern
+- [Tokio current_thread runtime docs](https://docs.rs/tokio/latest/tokio/attr.main.html) — `flavor = "current_thread"` for lightweight CLI async runtime
+- [std::io::IsTerminal (Rust stable since 1.70)](https://doc.rust-lang.org/std/io/trait.IsTerminal.html) — TTY detection for disabling ANSI codes in piped output
+
+---
+*v1.3 CLI subcommand addendum researched: 2026-03-21*

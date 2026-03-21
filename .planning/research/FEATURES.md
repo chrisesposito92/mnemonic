@@ -1,16 +1,16 @@
 # Feature Research
 
-**Domain:** API key authentication for developer tools / infrastructure APIs (v1.2 milestone)
-**Researched:** 2026-03-20
-**Confidence:** HIGH (patterns sourced from Stripe, GitHub, Paddle, prefix.dev, OWASP; axum middleware patterns verified against current docs)
+**Domain:** CLI subcommands for a Rust memory-server binary (v1.3 milestone)
+**Researched:** 2026-03-21
+**Confidence:** HIGH (patterns sourced from redis-cli, HTTPie, ripgrep, jq, heroku-cli, clap crate docs, existing mnemonic cli.rs)
 
 ---
 
 ## Scope Note
 
-This document covers **only the new features for v1.2**. The v1.0/v1.1 baseline (6 REST endpoints, local embeddings, agent_id/session_id namespacing, SQLite+sqlite-vec, memory compaction) is already shipped and treated as a dependency, not a feature.
+This document covers **only the new features for v1.3**: turning `mnemonic` from a server-with-keys-CLI into a full CLI tool where every REST operation has a matching subcommand. The v1.0/v1.1/v1.2 baseline (REST API, embeddings, compaction, auth, `mnemonic keys`) is already shipped and is a dependency, not a feature.
 
-The central question: what does "good" API key authentication look like for a developer infrastructure tool that starts as a local single-binary and can be optionally deployed on a network?
+The central question: what does a well-designed `serve / remember / recall / search / compact` CLI look like, given patterns from proven tools in the space?
 
 ---
 
@@ -18,118 +18,121 @@ The central question: what does "good" API key authentication look like for a de
 
 ### Table Stakes (Users Expect These)
 
-Features any developer expects from an authenticated API. Missing these makes the auth system feel half-baked or insecure.
+Features any CLI for a data tool provides. Missing these makes the CLI feel like a half-finished wrapper.
 
 | Feature | Why Expected | Complexity | Dependencies on Existing Architecture |
 |---------|--------------|------------|---------------------------------------|
-| Bearer token via `Authorization` header | RFC 7235 standard. Every developer tool from Stripe to OpenAI uses `Authorization: Bearer <token>`. Any other transport (header name, query param) is a surprise and an antipattern. | LOW | New axum `from_request` extractor or `tower::Service` middleware layer in `server.rs`. |
-| `mnk_` prefix on generated keys | Stripe (sk_live_), GitHub (ghp_, ghu_), PyPI (pypi-), prefix.dev (pfx_) all use prefixes so keys are identifiable in logs, env dumps, and grep output. Without a prefix, a leaked key cannot be traced back to the service. Stripe invented this pattern in 2012; it is now universal. | LOW | Pure format convention. Enforced in the key generator function, checked in the auth middleware. |
-| Keys stored as hashes only, never plaintext | OWASP requirement. Stripe does not store plaintext keys. Leaked DB does not expose credentials. The raw key is shown exactly once at creation. | MEDIUM | New `api_keys` table in SQLite (schema migration in `db.rs`). Store `SHA-256(key)` or `BLAKE3(key)` — fast lookup, not password hashing. See "Hash Storage" note below. |
-| Key shown once at creation, never again | Universal pattern: Stripe, GitHub, Paddle all show the full key once and never again. Users expect this — it enforces discipline to store keys immediately. | LOW | `POST /keys` response includes full key. No `GET /keys/:id` returns the secret. List endpoint returns only metadata (id, description, agent_id, created_at, last_used). |
-| 401 on invalid/missing key when auth is active | Standard HTTP semantics. Missing auth = 401 Unauthorized. Wrong key = 401. Authenticated but wrong agent_id = 403 Forbidden. These are different errors and must not be conflated. | LOW | Axum middleware extracts Bearer token, looks up hash in DB, returns 401/403 via existing `ApiError` type in `error.rs`. |
-| Open mode (no auth when no keys exist) | Mnemonic's target for local dev is zero-config. If auth is mandatory from install, it breaks the quickstart. The established pattern (used by Ollama, Home Assistant, and other local-first tools) is: no keys configured = open access. First key created = auth enforced. | LOW | Auth middleware checks key count at startup (or via cached flag). If zero keys exist, pass all requests. If any key exists, enforce. |
-| CLI key management (create / list / revoke) | Developer tools that have API keys always have a matching CLI sub-command. Heroku: `heroku authorizations:create`. GitHub CLI: `gh auth token`. Stripe CLI: key management commands. Without CLI management, users must craft raw HTTP to manage credentials — unacceptable DX. | MEDIUM | New `KeysCommand` subcommand in `main.rs` / CLI arg parsing. Calls the keys API endpoints. Must be able to run against a configured server address. |
-| Key revocation (immediate effect) | Once revoked, a key must stop working immediately. Delayed revocation after compromise is unacceptable. Implies no long-lived in-process cache of valid keys without invalidation support. | LOW | `DELETE /keys/:id` marks key as revoked in DB. Middleware checks revocation status on every request (SQLite lookup is fast; no need for distributed invalidation given single-process architecture). |
+| `mnemonic serve` subcommand that starts the HTTP server | Current default behavior (no subcommand = server) must become explicit. Every multi-command binary uses `serve` or `start` — Docker, uvicorn, gunicorn. Without this, adding subcommands breaks backward compat for existing users who run `mnemonic` raw. | LOW | Refactor `main.rs`: `None` command branch becomes `Commands::Serve`. Existing server init path is unchanged — just gated behind a variant. |
+| `mnemonic remember <content>` stores a memory | Mirrors the REST `POST /memories`. Any key-value or document store CLI has a store/set/put subcommand. Redis has `SET`, sqlite3 can `INSERT`. A memory tool without a CLI store command is incomplete. | MEDIUM | Requires embedding model load (same as server). Must call `MemoryService::create_memory`. Fast path: if server is running, can POST via HTTP instead of direct DB. See "server vs. direct" decision below. |
+| `mnemonic recall <id>` retrieves a memory by ID | Mirrors `GET /memories/:id`. Every data tool has a get-by-key command. Redis has `GET`, sqlite3 has `SELECT`. Without ID lookup, users cannot inspect a specific memory. | LOW | DB-only path — no embedding load needed. Wraps `MemoryService` or direct DB query for the `SELECT ... WHERE id = ?` case. |
+| `mnemonic search <query>` performs semantic search | Mirrors `GET /memories/search?q=`. This is Mnemonic's core value. A semantic memory tool with no CLI search is broken — it is the primary operation agents and developers would want to test interactively. | MEDIUM | Requires embedding model load to embed the query. Calls `MemoryService::search_memories`. Slow cold start (~1-2s for local model) is expected and documented. |
+| `mnemonic compact` triggers memory compaction | Mirrors `POST /memories/compact`. Compaction is already a CLI-oriented workflow (operators trigger it deliberately). Without a CLI trigger, developers must use curl, which is higher friction than the tool warrants. | LOW | Calls `CompactionService::compact`. Requires embedding model (for deduplication similarity). Dry-run flag (`--dry-run`) already exists in the REST layer and must be surfaced. |
+| Human-readable output by default | Tools like redis-cli, sqlite3, and heroku-cli all default to human-readable tabular or plain text output. Developers interacting directly expect readable output. JSON-by-default is hostile for interactive use. | LOW | Print formatted text to stdout. Use `eprintln!` for warnings (same pattern as existing `keys` CLI). |
+| `--json` flag for machine-readable output | Heroku CLI: `heroku releases --json`. ripgrep: `--json`. HTTPie: auto-detects TTY and adjusts. Scripts and agent orchestration tools need structured output. Without `--json`, piping to `jq` is impossible and shell automation breaks. | LOW | Serialize the same structs already used in HTTP responses via `serde_json::to_string`. The types (`Memory`, `SearchResultItem`, `ListResponse`) already derive `Serialize`. |
+| Exit codes: 0 on success, 1 on error | POSIX standard. Every tool from grep to redis-cli uses exit code 0/1. Shell scripts (`&&`, `||`) depend on exit codes. Without this, automation breaks silently. | LOW | Already implemented in `keys` CLI via `std::process::exit(1)`. Extend same pattern to all subcommands. |
+| Errors go to stderr, data goes to stdout | Core Unix convention (used by redis-cli, ripgrep, jq, HTTPie). "Data to stdout, messages to stderr." Allows `mnemonic search foo > results.json 2>/dev/null` without mixing error text into data stream. | LOW | Already established in `keys` CLI (`println!` for data, `eprintln!` for errors). Codify as project convention. |
+| `--agent-id` flag on remember/recall/search/compact | Multi-agent namespacing is Mnemonic's core feature. All memory operations are already scoped by `agent_id`. A CLI that cannot specify which agent's memories to operate on is unusable for the primary use case. | LOW | Map `--agent-id` flag to the `agent_id` field in the existing request structs. Already done for `keys create --agent-id`. |
+| `--limit` flag on recall and search | Mirrors `limit` query param on REST endpoints. Data tools always let users constrain result count (redis-cli `SCAN COUNT`, sqlite3 `LIMIT`). Without it, returning 10 results vs 100 requires API knowledge. | LOW | Map `--limit N` to `SearchParams.limit` / `ListParams.limit`. Default 10 (same as REST). |
 
 ### Differentiators (Competitive Advantage)
 
-Features that are not universally expected but align with Mnemonic's positioning as a scoped, agent-aware memory tool.
+Features that are not universally expected but align with Mnemonic's positioning as a zero-friction, agent-aware tool.
 
 | Feature | Value Proposition | Complexity | Dependencies on Existing Architecture |
 |---------|-------------------|------------|---------------------------------------|
-| Keys scoped to specific `agent_id` | Most infrastructure APIs offer global keys. Mnemonic's core concept is multi-agent namespacing — scoping a key to exactly one agent_id means a compromised agent key cannot read another agent's memories. This is a genuine differentiator because the threat model (multiple AI agents sharing one server) is specific to Mnemonic. | MEDIUM | `api_keys` table needs `agent_id TEXT` column (nullable for admin keys). Middleware checks that the `agent_id` in the request query/body matches the key's `agent_id`. Uses existing `agent_id` column pattern from `memories` table. |
-| Global admin key (unscoped) | Operators need to manage the server itself — list all agents, run compaction across namespaces, generate per-agent keys. A single unscoped admin key serves this role. Pattern: `agent_id IS NULL` on the key row = admin access. | LOW | `agent_id` on key row: `NULL` = admin (all namespaces), non-null = scoped. No separate key type needed; the data model carries the distinction. |
-| `last_used_at` timestamp on each key | Shows operators which keys are still active. Standard feature: GitHub, Stripe both surface this. Helps answer "can I safely revoke this old key?" | LOW | `last_used_at DATETIME` column on `api_keys` table. Updated on successful auth in the middleware. SQLite write on every authenticated request — acceptable for single-process server. |
-| Machine-readable key metadata (description field) | Per-key `description` field lets operators label keys by deployment ("prod agent", "staging agent", "CI pipeline"). Stripe and GitHub both have this. Without it, the key list is an undifferentiated set of prefixed random strings. | LOW | `description TEXT` column on `api_keys` table. Optional, set at creation time via CLI flag `--description`. |
+| Fast path: CLI memory commands skip model load when server is already running | The local embedding model takes ~1-2 seconds to load. If `mnemonic serve` is already running, `mnemonic remember` can POST to it via HTTP instead of loading the model again. This would make the CLI feel instant for interactive use when the server is up. | HIGH | Requires: (1) configurable `--server` URL flag, (2) HTTP client for CLI subcommands, (3) logic to try HTTP first, fall back to direct if server not available. Adds reqwest as a CLI dependency. Complex enough to defer to v1.4 — document as future work. |
+| `mnemonic remember` accepts content from stdin | Unix pipe convention: `echo "learned X" \| mnemonic remember`. `cat notes.txt \| mnemonic remember`. HTTPie uses this pattern — stdin without positional arg = pipe input. Enables shell-scripting memory storage from any tool. | LOW | Check if content arg is absent AND stdin is not a TTY (`atty` crate or `std::io::stdin().is_terminal()`). Read stdin if so, error if neither present. |
+| `--dry-run` flag on compact | Already supported by the REST endpoint. Exposing it in the CLI allows developers to preview what compaction would do before mutating data. Ripgrep does this with `--stats` for non-mutating analysis. Unique to Mnemonic — no other memory CLI tool offers this. | LOW | Map to existing `CompactionRequest.dry_run: true`. Print "would merge N memories" message. |
+| `--threshold` flag on search | Mirrors `SearchParams.threshold` — minimum similarity score. Advanced users tuning search quality need this. jq users know they want to filter results; giving `--threshold 0.8` is more ergonomic than `\| jq '[.[] \| select(.distance < 0.2)]'`. | LOW | Map to `SearchParams.threshold`. Document valid range (0.0-1.0). Default: none (same as REST). |
+| `--session-id` flag on remember/recall/search | Session-scoped retrieval is already supported by the REST API. Exposing it in the CLI makes per-conversation memory management possible without crafting HTTP requests. | LOW | Map `--session-id` to `session_id` fields in existing request structs. Same pattern as `--agent-id`. |
+| Color-coded output for search results with similarity scores | Search results with similarity distances benefit from visual hierarchy — top results visually distinct from marginal matches. Heroku uses color for status indicators. Acceptable only when output is a TTY (disabled for pipes/JSON). | MEDIUM | Use `termcolor` or ANSI escape codes. Gate on `atty::is(atty::Stream::Stdout)`. Not essential for v1.3 — mark as P2. |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| Argon2/bcrypt for API key hashing | "Treat keys like passwords" is a reasonable instinct. prefix.dev uses Argon2 for their API keys. | API keys are 32+ bytes of cryptographically random data, not user-chosen passwords. Brute force is infeasible regardless of hash speed. Argon2 adds ~100ms of latency to every authenticated request in a single-process server. For a local infrastructure tool, this is noticeable. Password hash functions are for protecting weak secrets — random tokens are already strong. Use SHA-256 or BLAKE3 (fast, collision-resistant, purpose-appropriate). | Store `BLAKE3(key)` or `SHA-256(key)`. Fast lookup, no brute-force risk, no request latency penalty. |
-| Key rotation with overlap / grace period | "Enterprises need zero-downtime rotation" is a real concern for SaaS. Overlap periods (old key valid for 7 days after new key issued) prevent outages during rotation. | For a single-binary local/small-network tool, this adds significant complexity (two active keys per slot, expiry tracking, overlap logic). The user base (individual developers, small teams) can tolerate a brief rotation window — revoke old key, start using new key, done. | Simple revoke-and-recreate. Document the pattern: create new key, test it, revoke old key. CLI makes this a 2-command operation. |
-| Rate limiting per key | "Prevent one agent from hammering the server" sounds important for multi-tenant SaaS. | Mnemonic is a single-binary local/network tool for agent developers who own all the keys. Rate limiting adds complexity (sliding window counters, storage), latency, and a confusing 429 response that breaks agents unexpectedly. The actual threat model is a buggy agent loop — which is better addressed by the agent's own circuit breaker. | Document the concern. Add to v1.3+ consideration if user feedback confirms the need. |
-| JWT tokens instead of static keys | "JWTs are stateless and scale better" is true for distributed systems. | JWT adds library dependencies (JWT parsing/validation), introduces expiry semantics (agents must handle token refresh), and provides no benefit in a single-process server that can do a DB lookup in microseconds. Static API keys with a fast hash lookup are simpler, more transparent, and sufficient for this use case. | Static `mnk_` prefixed keys stored as hashed tokens in SQLite. Stateful, revocable immediately, zero library overhead. |
-| Per-endpoint permission scopes | "Keys should have fine-grained permissions (read vs. write vs. compact)" is a reasonable RBAC ask. | For Mnemonic's current feature set (one memory namespace per agent), the relevant permission boundary is already agent_id scoping. Adding endpoint-level scopes (e.g., "this key can search but not compact") adds UI/CLI complexity for a permission model that most users will never need. | Agent-scoped keys (agent_id on the key row) provide the meaningful isolation. Endpoint scopes are a v2+ feature if multi-tenant production deployments emerge. |
-| OAuth 2.0 / OIDC integration | "Use the org's identity provider" is expected for enterprise tooling. | OAuth adds an authorization server dependency, browser redirect flows, and token exchange logic — directly violating Mnemonic's zero-external-dependency principle. The target user is a developer running a local binary, not an enterprise SSO deployment. | Static API keys managed via CLI. Document that keys can be stored in `.env` files or secret managers. |
-| Web UI for key management | "A dashboard would be nice" comes up for any tool with credentials. | Adds a frontend build pipeline, static file serving, and session management. Violates the single-binary simplicity invariant. PROJECT.md explicitly excludes "Web UI / dashboard." | CLI commands: `mnemonic keys create`, `mnemonic keys list`, `mnemonic keys revoke <id>`. REST API for programmatic access. |
+| Interactive REPL mode (like sqlite3 or redis-cli) | "It would be nice to run commands interactively without relaunching." | Model cold start (1-2s) makes REPL startup cost the same as individual invocations. The REST server already IS the persistent process. Building a separate REPL duplicates the server's purpose and adds a readline/rustyline dependency for a use case that `mnemonic serve` + HTTP client already covers. | Use `mnemonic serve` as the persistent process; interact via HTTPie, curl, or any HTTP client. |
+| Background daemon mode (`mnemonic serve --daemon` / `--background`) | "I want `mnemonic serve` to run in the background without occupying a terminal." | Proper daemonization requires double-fork, pid files, signal handling — significant platform-specific complexity. Cross-platform (macOS/Linux) daemonization in Rust is non-trivial and error-prone. Systemd/launchd already provide this for users who need it. | Document systemd service file and launchd plist in README. The binary itself stays foreground. |
+| `--format table/json/csv` multi-format output | "Give me CSV for spreadsheets." | Three format renderers for every command multiplies implementation surface. CSV is lossy for nested data (tags arrays, metadata). jq already transforms JSON into any format. | `--json` + jq covers all machine formats. Human output covers the interactive case. Two modes, not three. |
+| `mnemonic delete <id>` subcommand | "I need to delete memories from the CLI." | Delete is a destructive operation. A CLI delete that bypasses confirmation adds risk (typos, scripting accidents). REST `DELETE /memories/:id` exists for programmatic deletion. If added, it needs `--confirm` or `--yes` flag — scope creep. | Document using `curl -X DELETE` for now. Add in v1.4 with explicit `--yes` flag if user demand materializes. |
+| `mnemonic import <file>` batch import | "I have a JSON file of memories to bulk load." | Batch import is a non-trivial problem: error handling per-record, deduplication behavior, partial failures. The REST API already accepts one memory at a time and can be called in a loop by a shell script. | `jq -c '.[]' memories.json \| while read m; do mnemonic remember "$m"; done` covers it. No special command needed. |
+| Automatic model download on first run | "The user shouldn't have to think about the model." | The model is already bundled in the binary for `mnemonic serve`. CLI subcommands share the same binary — no download step needed. If the model is somehow absent, a clear error is better than a silent download during what the user thinks is a fast command. | Error message: "embedding model not found; run mnemonic serve once to verify binary integrity." |
+| Server URL config in `~/.config/mnemonic/config.toml` | "I want to configure the server URL once for all CLI invocations." | For v1.3, CLI subcommands operate directly on the local DB (same path as `mnemonic serve`). There is no "server URL" concept yet — the CLI bypasses HTTP entirely. | `--db` global flag (already implemented) selects which DB file to use. Server URL concept is deferred to the fast-path HTTP optimization (v1.4+). |
 
 ---
 
 ## Feature Dependencies
 
 ```
-[Auth middleware (Bearer token check)]
-    └──requires──> [api_keys table in SQLite] (key hash storage)
-    └──requires──> [open-mode detection] (zero-keys = pass-through)
-    └──requires──> [agent_id scoping logic] (compare key.agent_id to request agent_id)
+[mnemonic serve]
+    └──requires──> [Commands enum refactor in cli.rs] (add Serve variant, make None = show help or default to Serve)
 
-[api_keys SQLite table]
-    └──requires──> [schema migration in db.rs] (new table, added to existing open() function)
-    └──requires──> [key hash function] (BLAKE3 or SHA-256 — new util)
+[mnemonic remember <content>]
+    └──requires──> [EmbeddingEngine initialization] (model load, ~1-2s cold start)
+    └──requires──> [MemoryService::create_memory] (existing — no changes)
+    └──requires──> [stdin detection] (for pipe support — new, LOW complexity)
+    └──enhances──> [mnemonic serve] (fast path: POST to running server skips model load — v1.4)
 
-[CLI key management (mnemonic keys create/list/revoke)]
-    └──requires──> [REST key management endpoints] (POST/GET/DELETE /keys)
-    └──requires──> [server address config] (keys CLI must know where the server is)
+[mnemonic recall <id>]
+    └──requires──> [DB-only path in main.rs] (no embedding load — same fast-path as keys CLI)
+    └──requires──> [MemoryService::get_memory by ID] (may need new method if not exposed)
 
-[REST key management endpoints (POST/GET/DELETE /keys)]
-    └──requires──> [api_keys table in SQLite]
-    └──requires──> [auth middleware] (key management endpoints must themselves be authenticated
-                    when auth is active — prevents unauthenticated key creation after first key)
+[mnemonic search <query>]
+    └──requires──> [EmbeddingEngine initialization] (model load — unavoidable for semantic search)
+    └──requires──> [MemoryService::search_memories] (existing — no changes)
+    └──requires──> [--threshold, --limit, --agent-id, --session-id flags] (map to SearchParams)
 
-[Key scoping to agent_id]
-    └──requires──> [api_keys.agent_id column] (nullable: NULL = admin, text = scoped)
-    └──requires──> [agent_id extraction from request] (existing pattern from memories endpoints)
-    └──enhances──> [existing multi-agent namespacing] (no changes to namespace logic, just enforces it)
+[mnemonic compact]
+    └──requires──> [EmbeddingEngine initialization] (for similarity clustering)
+    └──requires──> [CompactionService::compact] (existing — no changes)
+    └──requires──> [--dry-run flag] (maps to existing CompactionRequest.dry_run)
 
-[Open mode fallback]
-    └──requires──> [key count query at startup OR per-request check]
-    └──conflicts──> [nothing] (disabling auth is not the same as bypassing it)
+[--json flag (all subcommands)]
+    └──requires──> [Memory, SearchResultItem, ListResponse already derive Serialize] (existing — no changes)
+
+[stdin pipe support (remember)]
+    └──requires──> [TTY detection] (atty crate or std::io::IsTerminal — Rust 1.70+)
+    └──conflicts──> [positional <content> arg] (if stdin is a pipe, positional arg is absent)
 ```
 
 ### Dependency Notes
 
-- **Auth middleware depends on api_keys table:** The table must exist before the middleware can function. Schema migration in `db.rs::open()` is the natural location — Mnemonic already uses `execute_batch` for idempotent migrations.
-- **Key management endpoints must be self-protecting:** After the first key is created, `POST /keys` and `DELETE /keys/:id` must require an admin key. Before the first key exists (open mode), they are accessible. This circular dependency is resolved by checking key count per-request in the middleware, not at startup.
-- **CLI requires server address:** The `mnemonic keys` subcommand sends HTTP requests to the running server. It needs a `--server` flag or reads from config (port from `MNEMONIC_PORT` or `mnemonic.toml`). This reuses the existing `Config` struct.
-- **Agent-scoped keys do not change the memory API:** The `agent_id` in memory requests is already a parameter. Scoping enforcement is additive — the middleware compares the key's `agent_id` to the request's `agent_id` and returns 403 if they differ. No changes to `service.rs` or `compaction.rs`.
+- **`recall` is the only DB-only path:** `remember`, `search`, and `compact` all require the embedding model to be loaded. `recall <id>` is a simple `SELECT WHERE id=?` — it can follow the same fast-path as `mnemonic keys` (no model init, no validate_config). This makes `recall` feel instant while the others have the known cold-start cost.
+- **`serve` variant must be the default for backward compat:** Existing users may run `mnemonic` with no subcommand and expect it to start the server. The safest approach: `None` arm in `main.rs` continues to start the server (or shows help with a deprecation notice). `Commands::Serve` explicitly starts it. This avoids breaking existing deployments.
+- **`remember` and `search` share the model init path:** Both need the embedding engine. The model init code in `main.rs` can be extracted into a helper `init_embedding_engine(&config)` to avoid duplication across three command handlers.
+- **`compact` requires both embedding AND optional LLM engine:** Same as server init. The compact CLI path must mirror the full server init sequence for services (DB + embedding + optional LLM). This is the most expensive CLI cold start.
 
 ---
 
 ## MVP Definition
 
-### This Milestone Is v1.2 (adding auth to a shipped product)
+### Ship in v1.3
 
-The goal is not to build a full auth platform. It is to make Mnemonic safe for network deployment without breaking the local-first zero-config experience.
+- [ ] `mnemonic serve` — explicit subcommand to start HTTP server (backward-compat default)
+- [ ] `mnemonic remember <content>` — store a memory with `--agent-id`, `--session-id`, `--tags` flags
+- [ ] `mnemonic remember` reads from stdin when content arg absent (pipe support)
+- [ ] `mnemonic recall <id>` — retrieve a single memory by ID (DB-only fast path, no model load)
+- [ ] `mnemonic search <query>` — semantic search with `--agent-id`, `--session-id`, `--limit`, `--threshold` flags
+- [ ] `mnemonic compact` — trigger compaction with `--agent-id`, `--dry-run` flags
+- [ ] `--json` global flag on all subcommands for machine-readable output
+- [ ] Human-readable default output (memory ID + content truncated + metadata)
+- [ ] Exit code 0/1 on all paths
+- [ ] Errors to stderr, data to stdout (all subcommands)
 
-### Ship in v1.2
+### Add After Validation (v1.4+)
 
-- [ ] `api_keys` table with columns: `id`, `key_hash`, `description`, `agent_id` (nullable), `created_at`, `last_used_at`, `revoked_at`
-- [ ] Key generation: `mnk_` prefix + 32 bytes cryptographically secure random (base58 or base62 encoded)
-- [ ] Key storage: `BLAKE3(key)` or `SHA-256(key)` — never plaintext
-- [ ] Open mode: auth is bypassed when `api_keys` table has zero non-revoked rows
-- [ ] Axum middleware: extracts `Authorization: Bearer mnk_...` header, hashes it, looks up in DB, enforces agent_id scope
-- [ ] `POST /keys` — create a new key (returns full key once, never again)
-- [ ] `GET /keys` — list keys (metadata only: id, description, agent_id, created_at, last_used_at)
-- [ ] `DELETE /keys/:id` — revoke a key immediately
-- [ ] `mnemonic keys create [--agent-id <id>] [--description <text>]` CLI subcommand
-- [ ] `mnemonic keys list` CLI subcommand
-- [ ] `mnemonic keys revoke <id>` CLI subcommand
+- [ ] Fast path: CLI subcommands POST to running server via HTTP (skip model load) — add when users report cold-start friction
+- [ ] `mnemonic delete <id>` with explicit `--yes` confirmation flag
+- [ ] Color-coded search output with similarity score indicators (TTY-only)
+- [ ] `mnemonic keys rotate <id>` — zero-downtime key rotation helper
 
-### Add After Validation (v1.3+)
+### Confirmed Out of Scope (v1.3)
 
-- [ ] Key rotation helper: `mnemonic keys rotate <id>` — creates new key for same agent_id, then revokes old — when users report needing zero-downtime key transitions
-- [ ] Rate limiting per key — add when user feedback confirms runaway-agent protection is needed
-- [ ] Per-endpoint scope flags (read/write/compact) — add when multi-tenant production deployments emerge
-- [ ] Expiry date on keys (`expires_at` column) — add for enterprise deployment contexts
-
-### Confirmed Out of Scope (v1.2)
-
-- [ ] JWT / OAuth / OIDC — violates zero-external-dependency principle
-- [ ] Web UI for key management — violates single-binary principle (PROJECT.md)
-- [ ] Rate limiting — premature for target user base
-- [ ] Argon2/bcrypt for key hashing — wrong tool for random-token use case
-- [ ] Key rotation grace periods — unnecessary complexity for target scale
+- [ ] Interactive REPL mode — `mnemonic serve` IS the persistent process
+- [ ] Background daemon mode — use systemd/launchd
+- [ ] `--format csv/table/json` multi-format — `--json` + jq covers it
+- [ ] `mnemonic import <file>` — shell loop + `mnemonic remember` covers it
+- [ ] Server URL config (`~/.config/mnemonic/`) — CLI operates on local DB directly
 
 ---
 
@@ -137,114 +140,126 @@ The goal is not to build a full auth platform. It is to make Mnemonic safe for n
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| `api_keys` table + schema migration | HIGH | LOW | P1 |
-| `mnk_` key generation + BLAKE3 hash storage | HIGH | LOW | P1 |
-| Open mode (zero-keys = pass-through) | HIGH | LOW | P1 |
-| Axum auth middleware (Bearer + agent_id scope) | HIGH | MEDIUM | P1 |
-| `POST /keys`, `GET /keys`, `DELETE /keys/:id` REST endpoints | HIGH | LOW | P1 |
-| CLI `mnemonic keys create/list/revoke` subcommands | HIGH | MEDIUM | P1 |
-| Admin key (agent_id = NULL) | MEDIUM | LOW | P1 |
-| `last_used_at` timestamp update on auth | MEDIUM | LOW | P1 |
-| `description` field on key | MEDIUM | LOW | P1 |
-| Key rotation helper CLI command | LOW | LOW | P3 |
-| Rate limiting | LOW | HIGH | P3 |
-| Per-endpoint scopes | LOW | HIGH | P3 |
+| `mnemonic serve` subcommand + backward compat | HIGH | LOW | P1 |
+| `mnemonic remember <content>` | HIGH | MEDIUM | P1 |
+| Stdin pipe support for `remember` | HIGH | LOW | P1 |
+| `mnemonic recall <id>` (fast path) | HIGH | LOW | P1 |
+| `mnemonic search <query>` | HIGH | MEDIUM | P1 |
+| `mnemonic compact` with `--dry-run` | MEDIUM | MEDIUM | P1 |
+| `--json` flag (all subcommands) | HIGH | LOW | P1 |
+| `--agent-id` / `--session-id` on all commands | HIGH | LOW | P1 |
+| `--limit` / `--threshold` on search | MEDIUM | LOW | P1 |
+| Exit code 0/1 + stderr/stdout discipline | HIGH | LOW | P1 |
+| `mnemonic delete <id>` | MEDIUM | LOW | P2 |
+| Color-coded search output (TTY-only) | LOW | MEDIUM | P3 |
+| Fast path: HTTP to running server | HIGH | HIGH | P2 (v1.4) |
 
 **Priority key:**
-- P1: Must have for v1.2 to be a coherent, deployable auth system
-- P2: High value, low cost — include if schedule permits
-- P3: Future milestone
+- P1: Must have for v1.3 to feel like a complete CLI
+- P2: High value, add when possible (v1.3 or v1.4)
+- P3: Nice to have, future consideration
 
 ---
 
-## Implementation Notes
+## CLI UX Reference: Patterns from Established Tools
 
-### Hash Algorithm: BLAKE3 vs SHA-256
+### Output Format Conventions
 
-API keys are 32+ bytes of cryptographically random data. The threat model is a leaked database — not a brute-force attack on weak secrets. Therefore:
+**From Heroku CLI (highest relevance — similar developer tool audience):**
+- Default output is grep-parseable human text with column headers
+- `--json` returns a JSON array, enables `jq` composition
+- Stdout for data, stderr for progress/errors
+- Tables with fixed-width columns (already established in `mnemonic keys list`)
 
-- **Use BLAKE3 or SHA-256** — both are fast (microseconds), collision-resistant, and purpose-appropriate for authenticating random tokens
-- **Do not use Argon2/bcrypt/scrypt** — these are designed to slow down brute force on weak (human-chosen) passwords. A random 32-byte token has 256 bits of entropy — brute force is computationally infeasible regardless of hash speed. Adding Argon2 only adds ~100ms of latency to every request with no security benefit.
-- **BLAKE3** is available in Rust via the `blake3` crate (MIT licensed, no unsafe, pure Rust or with AVX2 acceleration). SHA-256 via the `sha2` crate. Either is fine — BLAKE3 is faster but both are adequate.
+**From ripgrep:**
+- `--json` emits newline-delimited JSON objects (one per match) rather than a JSON array
+- Enables streaming: `rg --json | jq 'select(.type=="match")'`
+- For memory search results (N matches), newline-delimited JSON per result is more composable than a wrapped array
+- Recommendation: `--json` on search emits one JSON object per line (the `SearchResultItem` struct)
 
-Confidence: HIGH (OWASP Password Storage Cheat Sheet distinguishes "password hashing" from "token hashing"; the recommendation to use fast hashes for random tokens is standard).
+**From HTTPie:**
+- Auto-detects TTY: pretty-printed colored output for terminals, raw JSON when piped
+- This is the ideal UX but requires `atty` crate and adds complexity
+- For v1.3: `--json` flag is explicit opt-in; auto-detect is a P2 enhancement
 
-### Key Format
+**From redis-cli:**
+- No output on success for mutating commands (`SET key val` returns `OK`, not the value)
+- Read commands return just the value, no decoration
+- Error output: `(error) ERR ...` with parenthetical prefix
+- Mnemonic analogy: `mnemonic remember` returns the memory ID on success (one line, pipeable)
 
+**From sqlite3 CLI:**
+- `.mode` command switches output format (not applicable to Mnemonic's subcommand model)
+- Default output is pipe-separated values — too raw for humans
+- Mnemonic should NOT follow sqlite3's default output; use Heroku-style tabular output
+
+### Input Conventions
+
+**Positional argument for primary data:**
 ```
-mnk_[base62-encoded 32 random bytes]
-```
-
-Example: `mnk_7xK9mP2nQvR4sT6uW8yZ0aB1cD3eF5g`
-
-- `mnk_` prefix: 4 characters, identifies the service in logs/grep/secret scanners
-- 32 random bytes = 256 bits entropy via `rand::thread_rng().fill_bytes()`
-- Base62 encoding (a-z, A-Z, 0-9): URL-safe, no special characters, easy to copy-paste
-- Total length: ~47 characters — comparable to GitHub's 40-char tokens
-
-### Open Mode Logic
-
-The simplest correct implementation:
-
-```rust
-// In auth middleware:
-let active_key_count: i64 = db.query_row(
-    "SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL", [], |r| r.get(0)
-)?;
-if active_key_count == 0 {
-    return next.call(req).await; // open mode
-}
-// ... proceed with Bearer token check
-```
-
-Caveat: this query runs on every request. For a single-process SQLite server handling 100s of req/s, this is negligible (SQLite COUNT(*) on a small indexed table is microseconds). An `Arc<AtomicBool>` flag updated on key create/revoke is a valid optimization if profiling shows it matters — but is premature for v1.2.
-
-### Middleware Placement in axum
-
-The auth middleware should wrap the entire router except `GET /health`. Pattern:
-
-```rust
-Router::new()
-    .route("/health", get(health_handler))  // unauthenticated
-    .nest("/", authenticated_routes())
-    .layer(AuthMiddlewareLayer::new(db_arc))
+mnemonic remember "The user prefers dark mode"
+mnemonic recall 01920abc-...
+mnemonic search "user interface preferences"
 ```
 
-Alternatively, use axum's `from_request` extractor on a `ValidatedKey` type — this is idiomatic in axum and avoids the need for a separate middleware layer. The extractor approach is preferred in the axum ecosystem for per-request auth because it composes cleanly with handler signatures.
+**Flags for metadata/filters:**
+```
+mnemonic remember "content" --agent-id claude --session-id sess_001 --tags "ui,preferences"
+mnemonic search "dark mode" --agent-id claude --limit 5 --threshold 0.7
+mnemonic compact --agent-id claude --dry-run
+```
+
+**Stdin for pipe workflows (remember only):**
+```
+echo "learned from conversation" | mnemonic remember --agent-id claude
+cat meeting_notes.txt | mnemonic remember --agent-id assistant --tags "meetings"
+```
+
+### Error Handling Conventions
+
+Based on clap + existing `mnemonic keys` implementation:
+- Invalid args: clap handles automatically with usage message
+- DB errors: `eprintln!("error: {}", e); std::process::exit(1)`
+- Not found (recall by ID): `eprintln!("error: memory '{}' not found", id); std::process::exit(1)`
+- Model load failure: `eprintln!("error: failed to load embedding model: {}", e); std::process::exit(1)`
+- Empty result (search/recall): print "No memories found." to stdout (not an error), exit 0
+
+### Cold Start Warning
+
+The local embedding model (all-MiniLM-L6-v2) takes 1-2 seconds to load. This affects `remember`, `search`, and `compact`. Conventions from tools with known startup costs (Java CLIs, Python ML tools):
+- Do NOT print a spinner or progress bar for v1.3 (adds complexity)
+- DO print a startup message to stderr if startup exceeds 1 second: `"loading embedding model..."` (stderr only, invisible in pipes)
+- For `--json` mode, suppress all startup messages (pure data to stdout, silencing stderr is user's responsibility with `2>/dev/null`)
 
 ---
 
 ## Competitor / Reference Analysis
 
-| Feature | Stripe | GitHub | Ollama | Mnemonic v1.2 |
-|---------|--------|--------|--------|----------------|
-| Key prefix | `sk_live_`, `sk_test_`, `rk_` | `ghp_`, `ghu_`, `gha_` | No auth | `mnk_` |
-| Hash storage | Yes (SHA-256 equivalent) | Yes | N/A | Yes (BLAKE3) |
-| Show once | Yes | Yes | N/A | Yes |
-| Scoping | Restricted key permissions | Repository/org scopes | N/A | agent_id namespace |
-| Open mode | No (always required) | No (always required) | Yes (default open) | Yes (default open, auth on first key) |
-| CLI management | Stripe CLI | GitHub CLI | N/A | `mnemonic keys` |
-| Key metadata | Name, created, last used | Note, created, last used | N/A | Description, agent_id, created, last used |
-| Rate limiting | Yes (plan-based) | Yes (GitHub limits) | No | No (v1.2) |
-| Key rotation | Create + revoke | Create + revoke | N/A | Create + revoke (v1.2), rotate helper (v1.3+) |
-
-Ollama's "open by default" pattern is the most relevant precedent for Mnemonic — Ollama is a local inference server that recently added optional auth via `OLLAMA_API_KEY` env var. When not set, it runs open. This is exactly the UX model Mnemonic should follow.
+| Feature | redis-cli | sqlite3 | ripgrep | HTTPie | Mnemonic v1.3 |
+|---------|-----------|---------|---------|--------|----------------|
+| Default output format | Human (REPL) | Pipe-separated | Colored matches | Pretty-printed | Human tabular |
+| Machine-readable flag | None (REPL mode) | `.mode json` | `--json` | Auto (TTY detect) | `--json` |
+| Stdin for data | Via pipe to REPL | Via pipe to REPL | Query via stdin | Request body via pipe | `remember` reads stdin |
+| Exit codes | 0/1 | 0/1 | 0/1 (found/not found) | 0/1 | 0/1 |
+| Error stream | stdout (REPL) | stdout (REPL) | stderr | stderr | stderr |
+| Subcommand model | No (REPL) | No (REPL) | No (single purpose) | No (single purpose) | Yes (`clap` derive) |
+| Slow startup warning | N/A | N/A | N/A | N/A | stderr "loading..." |
 
 ---
 
 ## Sources
 
-- [API Key Management Best Practices (OneUptime, 2026)](https://oneuptime.com/blog/post/2026-02-20-api-key-management-best-practices/view) — prefix conventions, hash storage, key generation. HIGH confidence.
-- [How prefix.dev implemented API keys](https://prefix.dev/blog/how_we_implented_api_keys) — Argon2 for keys (noted but not recommended here — see Hash Algorithm note), pfx_ prefix pattern, show-once UX. MEDIUM confidence on Argon2 recommendation (overridden by OWASP reasoning).
-- [Best practices for building secure API Keys (freeCodeCamp)](https://www.freecodecamp.org/news/best-practices-for-building-api-keys-97c26eabfea9/) — 32-byte minimum, prefix for identification, scope restrictions. HIGH confidence.
-- [Stripe API Keys Documentation](https://docs.stripe.com/keys) — sk_live_ / sk_test_ / rk_ prefix conventions, restricted keys, show-once pattern. HIGH confidence (authoritative source).
-- [On API Keys Best Practices (Mergify)](https://articles.mergify.com/api-keys-best-practice/) — prefix design rationale, scoping approach. MEDIUM confidence.
-- [Rotate API keys (Paddle Developer Docs)](https://developer.paddle.com/api-reference/about/rotate-api-keys) — grace period overlap pattern (noted as anti-feature for Mnemonic's scale). HIGH confidence on the pattern.
-- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) — distinction between password hashing and token hashing. HIGH confidence.
-- [Axum authentication with Bearer tokens (rust-classes.com)](https://rust-classes.com/chapter_7_4) — axum extractor pattern for Bearer auth. MEDIUM confidence.
-- [Simple API Key Auth in Axum (ruststepbystep.com)](https://www.ruststepbystep.com/simple-api-key-authentication-in-axum-step-by-step-guide/) — middleware layer pattern for axum. MEDIUM confidence.
-- [API Authentication Best Practices 2026 (DEV Community)](https://dev.to/apiverve/api-authentication-best-practices-in-2026-3k4a) — current landscape. MEDIUM confidence.
+- [Heroku CLI Style Guide](https://devcenter.heroku.com/articles/cli-style-guide) — stdout/stderr split, `--json` flag, table format, flag-vs-positional conventions. HIGH confidence.
+- [HTTPie Redirected Output docs](https://httpie.io/docs/cli/redirected-output) — TTY detection for auto pretty/plain mode. HIGH confidence (official docs).
+- [ripgrep `--json` output docs](https://learnbyexample.github.io/learn_gnugrep_ripgrep/ripgrep.html) — newline-delimited JSON for streaming composability. MEDIUM confidence.
+- [CLI best practices (HackMD)](https://hackmd.io/@arturtamborski/cli-best-practices) — stdout/stderr discipline, exit codes. MEDIUM confidence.
+- [Rust CLI patterns 2026 (dasroot.net)](https://dasroot.net/posts/2026/02/rust-cli-patterns-clap-cargo-configuration/) — clap derive subcommand patterns. MEDIUM confidence.
+- [Cloudflare workers-sdk discussion: stderr for logs](https://github.com/cloudflare/workers-sdk/discussions/2940) — rationale for reserving stdout for machine-readable output. HIGH confidence.
+- Mnemonic `src/cli.rs` — existing keys CLI conventions (stdout/stderr split, table format, fast path without model load). HIGH confidence (primary source).
+- Mnemonic `src/service.rs` — existing `SearchParams`, `ListParams`, `Memory`, `SearchResultItem` structs. HIGH confidence (primary source).
+- Mnemonic `src/main.rs` — existing dispatch pattern, model init sequence, fast path for keys. HIGH confidence (primary source).
+- [14 tips for amazing CLIs (DEV Community)](https://dev.to/wesen/14-great-tips-to-make-amazing-cli-applications-3gp3) — input/output design patterns. MEDIUM confidence.
 
 ---
-*Feature research for: Mnemonic v1.2 API key authentication milestone*
-*Researched: 2026-03-20*
+*Feature research for: Mnemonic v1.3 CLI subcommands (serve, remember, recall, search, compact)*
+*Researched: 2026-03-21*

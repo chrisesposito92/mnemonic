@@ -1,7 +1,7 @@
 # Stack Research
 
 **Domain:** Rust agent memory server (embedded vector search, local ML inference, REST API)
-**Researched:** 2026-03-20
+**Researched:** 2026-03-20 (updated 2026-03-21 for v1.3)
 **Confidence:** HIGH (all new-addition versions verified against official sources)
 
 ---
@@ -440,6 +440,294 @@ No existing dependencies need version changes. The auth middleware is implemente
 
 ---
 
+## New Additions for v1.3 — CLI Subcommands
+
+The v1.3 milestone turns the binary into a full CLI tool: `mnemonic serve`, `mnemonic remember`, `mnemonic recall`, `mnemonic search`, `mnemonic compact`. The clap skeleton and subcommand dispatch pattern already exist (from v1.2). The question is what new capabilities each command needs.
+
+### Current State (LOCKED — from v1.2)
+
+The binary already has:
+- `clap 4` with `derive` feature — subcommand enum, `--db` global flag, `Optional<Commands>` dispatch
+- `serde_json 1` — JSON serialization of all service types
+- `tokio-rusqlite`, `rusqlite` — direct DB access without HTTP
+- `MemoryService`, `CompactionService`, `EmbeddingEngine` — all callable without starting axum
+
+The v1.2 `keys` commands already establish the pattern: parse args, open DB, call service, print output, exit. All five new subcommands follow the same architecture.
+
+---
+
+### 1. Table Formatting for `recall` and `search` Output
+
+**Recommendation: `comfy-table 7.2` with default features.**
+
+**Rationale:**
+
+The `recall` and `search` commands output lists of memories to the terminal. The `keys list` command (v1.2) renders a manually-formatted table using `format!("{:<10}", ...)` with fixed column widths. That approach works for narrow, predictable data but breaks for memory content, which can be arbitrarily long and must wrap gracefully within available terminal width.
+
+comfy-table is the standard choice for this in the Rust CLI ecosystem:
+- Automatic content wrapping to terminal width via the built-in `tty` feature (enabled by default)
+- Dynamic column width calculation — no manual `{:<N}` arithmetic
+- ANSI styling support for headers and status cells
+- "Finished" project status — feature-complete, actively maintained, 58M+ downloads
+
+The `tty` feature (enabled by default) detects terminal width automatically using `terminal_size` under the hood, so the table resizes correctly in different terminal widths without any caller code.
+
+```toml
+comfy-table = "7.2"
+```
+
+Basic usage for `mnemonic recall`:
+```rust
+use comfy_table::{Table, presets::UTF8_FULL};
+
+let mut table = Table::new();
+table.load_preset(UTF8_FULL)
+     .set_header(vec!["ID", "AGENT", "CONTENT", "CREATED"])
+     .add_row(vec![&memory.id[..8], &memory.agent_id, &memory.content, &memory.created_at]);
+println!("{table}");
+```
+
+**Why not the existing manual format! approach (as used in `keys list`)?** The `keys` table has narrow, fixed-length fields (IDs, short names, timestamps). Memory content is unbounded — a 2000-character memory would overflow the terminal. comfy-table's wrapping handles this automatically.
+
+**Why not `tabled` (zhiburt/tabled)?** tabled is the other commonly used table crate. It is more macro-heavy and requires implementing a `Tabled` derive on output structs, which means touching `Memory`, `SearchResultItem`, and `CompactionResult` — types that are part of the library API and should not accumulate CLI-formatting concerns. comfy-table's builder pattern keeps formatting logic entirely in the CLI layer.
+
+**Verdict:** Add `comfy-table = "7.2"`.
+
+---
+
+### 2. Terminal Color Output
+
+**Recommendation: `owo-colors 4.3` with `supports-colors` feature.**
+
+**Rationale:**
+
+CLI output benefits from color: success in green, error in red, headers bold. But color must be disabled when output is piped to another program (e.g., `mnemonic search "query" | grep ...`) or when `NO_COLOR` is set.
+
+owo-colors is the zero-allocation, zero-unsafe Rust coloring library that handles this correctly:
+- `if_supports_color(Stream::Stdout, |t| t.green())` — only applies color when the stream is a real terminal
+- Respects `NO_COLOR` environment variable (disables color universally)
+- Respects `FORCE_COLOR` environment variable (enables color even in pipes — useful for CI)
+- Zero allocation: coloring is a zero-cost wrapper type, not a String allocation
+- The `supports-colors` feature (required for `if_supports_color`) integrates the `supports-color` crate for environment detection
+
+```toml
+owo-colors = { version = "4.3", features = ["supports-colors"] }
+```
+
+Usage:
+```rust
+use owo_colors::{OwoColorize, Stream};
+
+// Green on terminal, plain on pipe:
+println!("{}", "Memory stored.".if_supports_color(Stream::Stdout, |t| t.green()));
+
+// Bold headers in tables:
+table.set_header(vec![
+    "ID".if_supports_color(Stream::Stdout, |t| t.bold()).to_string(),
+    "CONTENT".if_supports_color(Stream::Stdout, |t| t.bold()).to_string(),
+]);
+```
+
+**Why not `colored` (the original Rust color crate)?** `colored` does not respect `NO_COLOR` out of the box and requires calling `colored::control::set_override(false)` manually. It also allocates a new `String` per colored segment. owo-colors is its direct successor in the modern Rust CLI ecosystem.
+
+**Why not `ansi_term` or `termcolor`?** Both require more verbose API — `Style::new().bold().paint(...)` and writer-based APIs respectively. owo-colors' extension trait approach (`"text".green()`) is idiomatic and composable without boilerplate.
+
+**Verdict:** Add `owo-colors = { version = "4.3", features = ["supports-colors"] }`.
+
+---
+
+### 3. Stdin/Pipe Support for `remember`
+
+**Recommendation: `std::io::IsTerminal` (stable since Rust 1.70) — no new crate needed.**
+
+**Rationale:**
+
+`mnemonic remember` needs to accept memory content from stdin when piped:
+
+```bash
+echo "The user prefers dark mode" | mnemonic remember --agent-id agent-1
+cat notes.txt | mnemonic remember --agent-id agent-1
+```
+
+Rust's standard library provides `std::io::IsTerminal` (stabilized in 1.70, released May 2023) to detect whether stdin is connected to a terminal or a pipe. This is all that is needed:
+
+```rust
+use std::io::{self, IsTerminal, Read};
+
+let content = if !io::stdin().is_terminal() {
+    // Data is being piped — read from stdin
+    let mut buf = String::new();
+    io::stdin().read_to_string(&mut buf)?;
+    buf.trim().to_string()
+} else {
+    // No pipe — content must come from --content flag or positional arg
+    args.content.ok_or_else(|| anyhow::anyhow!("content required (pass --content or pipe)"))?
+};
+```
+
+This approach:
+- Requires zero new dependencies
+- Works correctly on all three platforms (Linux, macOS, Windows)
+- Follows the Unix convention: `-` as a magic argument for stdin is not needed here because the detection is automatic
+
+**Why not `clap_stdin`?** The `clap_stdin` crate provides `MaybeStdin<T>` and `FileOrStdin<T>` wrapper types that integrate stdin reading into clap's derive API. For this use case it is unnecessary — the detection logic is ~5 lines with `IsTerminal`. Adding a crate for 5 lines of stdlib code is over-engineering.
+
+**Why not `atty`?** The `atty` crate was the standard pre-1.70. It is now deprecated in favor of `std::io::IsTerminal`. Using deprecated crates for new code is not justified.
+
+**Verdict:** Zero new crates for stdin support. Use `std::io::IsTerminal` from stdlib.
+
+---
+
+### 4. JSON Output Flag
+
+**Recommendation: `--json` flag on all output commands — no new crate needed.**
+
+**Rationale:**
+
+`mnemonic recall`, `mnemonic search`, and `mnemonic compact` output structured data. Agent developers need machine-readable output when using mnemonic from scripts or other programs:
+
+```bash
+mnemonic search "user preferences" --agent-id agent-1 --json | jq '.memories[0].content'
+```
+
+`serde_json` is already a locked dependency. All output types (`Memory`, `SearchResultItem`, `CompactionResult`) already derive `serde::Serialize` — `serde_json::to_string_pretty(&result)` is all that is needed.
+
+The flag pattern is one line of clap:
+```rust
+#[arg(long, help = "Output as JSON instead of formatted table")]
+pub json: bool,
+```
+
+Dispatch in the command handler:
+```rust
+if args.json {
+    println!("{}", serde_json::to_string_pretty(&response)?);
+} else {
+    render_table(&response);
+}
+```
+
+**Why not a separate `--output` flag with values like `json|table|tsv`?** The two-value form `--output json|table` is more extensible but adds complexity with no current need for TSV or other formats. `--json` is a clear, unambiguous flag that aligns with tools like `gh`, `kubectl`, and `docker` which all offer `--json` or `--output json` as a direct flag.
+
+**Verdict:** Zero new crates. Use existing serde_json + a `--json: bool` clap flag.
+
+---
+
+### 5. `mnemonic serve` Subcommand
+
+**Recommendation: No new crate. Refactor existing `main()` server path into `Commands::Serve` arm.**
+
+**Rationale:**
+
+Currently, running `mnemonic` with no arguments starts the server. v1.3 adds `mnemonic serve` as the explicit subcommand. The existing server startup code in `main.rs` (tracing init, config load, DB open, embedding model load, axum bind) is unchanged — it just moves from the `None` arm of `cli.command` to the `Some(Commands::Serve)` arm.
+
+Backwards compatibility: `mnemonic` with no arguments should continue to start the server (the `None` arm), so existing users and scripts are not broken. `mnemonic serve` is an alias that makes the intent explicit. Both paths call the same `server::serve()` function.
+
+No new crates are needed. No new service capabilities are needed. This is pure refactoring of `main.rs` dispatch.
+
+**Flag additions for `serve`:**
+
+```rust
+#[derive(Args)]
+pub struct ServeArgs {
+    /// Override listen port (default: from config)
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
+}
+```
+
+The `--port` flag mirrors the existing `--db` global flag pattern and applies only to the serve path.
+
+**Verdict:** Zero new crates for `serve`.
+
+---
+
+### 6. `mnemonic compact` Subcommand
+
+**Recommendation: Direct `CompactionService` invocation — no HTTP, no new crates.**
+
+**Rationale:**
+
+The v1.2 `keys` subcommands established the pattern: open DB directly, instantiate the service, call it, print result, exit. `mnemonic compact` follows the same pattern, calling `CompactionService::compact()` directly rather than hitting `POST /memories/compact` via HTTP.
+
+Direct service invocation is strictly better than HTTP for the CLI path:
+- No server needs to be running (the whole point of the CLI milestone)
+- No network round-trip overhead
+- No auth token needed (the CLI operator has filesystem access to the DB already)
+- The compaction service is already isolated in `compaction.rs` and callable independently
+
+The embedding model must be loaded for compaction (needed for centroid calculation and for embedding LLM summary text). This means `mnemonic compact` has a slower startup than `mnemonic keys` — it mirrors the server path for initialization. This is documented as expected behavior, not a bug.
+
+**`--dry-run` flag:** The existing `CompactionService` already supports dry-run via a flag in the request struct. The CLI should expose this:
+
+```rust
+#[arg(long, help = "Preview what would be compacted without making changes")]
+pub dry_run: bool,
+```
+
+**Verdict:** Zero new crates for compact. Direct service invocation, same pattern as keys.
+
+---
+
+## Recommended Cargo.toml Changes (v1.3)
+
+```toml
+# New dependencies for v1.3 CLI milestone:
+comfy-table = "7.2"                                              # Table rendering for recall/search output
+owo-colors = { version = "4.3", features = ["supports-colors"] } # Terminal color with NO_COLOR/pipe support
+
+# No changes to existing dependencies.
+# clap 4 (already present) handles all new subcommands.
+# serde_json 1 (already present) handles --json output.
+# std::io::IsTerminal (stdlib, no crate) handles stdin pipe detection.
+# tokio-rusqlite + rusqlite (already present) handle direct DB access.
+```
+
+**Total new Cargo.toml lines for v1.3: 2.**
+
+---
+
+## Alternatives Considered (v1.3)
+
+| Recommended | Alternative | Why Not |
+|-------------|-------------|---------|
+| `comfy-table` | `tabled` | tabled requires `Tabled` derive on output structs, coupling library types to CLI formatting; comfy-table's builder pattern keeps formatting in CLI layer only |
+| `comfy-table` | Manual `format!("{:<N}")` | Works for fixed-width keys data, breaks for arbitrary-length memory content; no wrapping |
+| `owo-colors` | `colored` | colored does not respect `NO_COLOR` automatically; allocates String per color segment |
+| `owo-colors` | `ansi_term` | More verbose API (`Style::new().bold().paint(...)`); less idiomatic |
+| `owo-colors` | `termcolor` | Writer-based API designed for libraries, not application CLIs; more boilerplate |
+| `std::io::IsTerminal` | `clap_stdin` crate | 5 lines of stdlib replaces the entire crate; no benefit to adding a dependency |
+| `std::io::IsTerminal` | `atty` crate | Deprecated since Rust 1.70; should not be used in new code |
+| Direct service call for compact | HTTP to running server | Requires server to be running; defeats the purpose of CLI-as-standalone-tool |
+| `--json` flag | `--output json\|table` | Simpler, consistent with `gh`/`kubectl` patterns; no TSV need identified |
+
+---
+
+## What NOT to Add (v1.3)
+
+| Avoid | Why | Use Instead |
+|-------|-----|-------------|
+| `indicatif` (progress bars) | Embedding model load (~1-3s) is the only operation long enough to want a progress indicator; tracing output to stderr is sufficient for CLI use | Print "Loading model..." to stderr before blocking call |
+| `crossterm` / `ratatui` | Full TUI frameworks; massive overkill for simple table output | comfy-table for tables, owo-colors for color |
+| `dialoguer` | Interactive prompts for confirmation; `--dry-run` flag achieves the same safety goal without interactivity | `--dry-run` flag on compact |
+| `clap_complete` (shell completions) | Shell completion generation; nice-to-have but not a v1.3 requirement | Defer to v1.4+ |
+| HTTP client path for CLI | Using `reqwest` to hit a running server for recall/search/compact CLI | Direct service/DB instantiation — no server required |
+| `prettytable-rs` | Older table library, less actively maintained than comfy-table; no dynamic wrapping | comfy-table |
+
+---
+
+## Version Compatibility Notes (v1.3)
+
+| Package | Note |
+|---------|------|
+| comfy-table 7.2 | Requires Rust 1.85 (Rust 2024 edition). The project uses edition 2021 but no explicit MSRV — modern toolchains (1.85+) satisfy this. Verify CI runners are up to date. |
+| owo-colors 4.3 | MSRV 1.81. Compatible with edition 2021. The `supports-colors` feature adds `supports-color` as a transitive dep — pure Rust, no C dependencies. |
+| rusqlite 0.37 | Must stay at 0.37. Unchanged from v1.1/v1.2. |
+| clap 4.5.x | Already in Cargo.toml as `version = "4"`. v1.3 adds new subcommand variants to the existing enum — backward-compatible, no version change needed. |
+| serde_json 1 | Already present. `to_string_pretty()` is stable. No version change. |
+
+---
+
 ## Sources
 
 **v1.1 sources:**
@@ -462,6 +750,17 @@ No existing dependencies need version changes. The auth middleware is implemente
 - [axum 0.8.4 dependency tree](https://docs.rs/axum/0.8.4/axum/) — confirmed version 0.8.4, tower-http is optional dep (HIGH confidence)
 - [clap 4.6.0 docs.rs](https://docs.rs/clap/latest/clap/) — confirmed version 4.6.0, `derive` feature, `Parser` + `Subcommand` derive macros (HIGH confidence)
 
+**v1.3 sources:**
+- [comfy-table 7.2.2 docs.rs](https://docs.rs/comfy-table/latest/comfy_table/) — confirmed version 7.2.2 (latest 7.2.x), `tty` feature for auto terminal-width detection, `set_header`/`add_row` API, UTF8_FULL preset, 470µs render time, Rust 2024 edition with MSRV 1.85 (HIGH confidence)
+- comfy-table crates.io search result — confirmed 7.2.1 as latest stable, 58M+ downloads (MEDIUM confidence — crates.io JS-rendered, full content unavailable)
+- [owo-colors 4.3.0 docs.rs](https://docs.rs/owo-colors/latest/owo_colors/) — confirmed version 4.3.0, `supports-colors` feature, `if_supports_color(Stream, ...)` API, NO_COLOR/FORCE_COLOR support, MSRV 1.81 (HIGH confidence)
+- [std::io::IsTerminal docs.rs (beta)](https://doc.rust-lang.org/beta/std/io/trait.IsTerminal.html) — confirmed stable since Rust 1.70, `stdin().is_terminal()` API, platform support (HIGH confidence)
+- [Rain's Rust CLI recommendations — managing colors](https://rust-cli-recommendations.sunshowers.io/managing-colors-in-rust.html) — owo-colors recommended pattern, NO_COLOR convention (MEDIUM confidence — authoritative community guide)
+- [Command Line Applications in Rust — machine communication](https://rust-cli.github.io/book/in-depth/machine-communication.html) — `--json` output flag pattern, line-delimited JSON for streams (HIGH confidence — official Rust CLI book)
+- [Existing src/cli.rs](../../../src/cli.rs) — confirmed existing clap structure, `Commands` enum, `--db` global flag, `run_keys` dispatch pattern (HIGH confidence — source of truth)
+- [Existing src/main.rs](../../../src/main.rs) — confirmed server path initialization sequence, direct service instantiation pattern for CLI path (HIGH confidence — source of truth)
+- [Existing src/service.rs](../../../src/service.rs) — confirmed `Memory`, `SearchResultItem`, `ListResponse`, `SearchResponse` all derive `serde::Serialize` (HIGH confidence — source of truth)
+
 ---
-*Stack research for: Mnemonic v1.1 — memory summarization/compaction additions; v1.2 — API key authentication*
-*Researched: 2026-03-20*
+*Stack research for: Mnemonic v1.1 — memory summarization/compaction additions; v1.2 — API key authentication; v1.3 — CLI subcommands (serve, remember, recall, search, compact)*
+*Researched: 2026-03-20 (v1.1, v1.2), 2026-03-21 (v1.3)*
