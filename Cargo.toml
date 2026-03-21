@@ -26,13 +26,14 @@ uuid = { version = "1", features = ["v7"] }
 candle-core = "0.9"
 candle-nn = "0.9"
 candle-transformers = "0.9"
+clap = { version = "4", features = ["derive"] }
+constant_time_eq = "0.4"
 hf-hub = "0.5"
 tokenizers = "0.22"
 async-trait = "0.1"
 reqwest = { version = "0.13", features = ["json"] }
 zerocopy = { version = "0.8", features = ["derive"] }
 blake3 = "1.8"
-constant_time_eq = "0.4"
 rand = { version = "0.9", features = ["std", "std_rng", "os_rng"] }
 
 [dev-dependencies]

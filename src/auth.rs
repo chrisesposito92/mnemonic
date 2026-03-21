@@ -35,6 +35,7 @@ pub struct AuthContext {
 }
 
 /// Business logic for API key management.
+#[derive(Clone)]
 pub struct KeyService {
     conn: Arc<Connection>,
 }
@@ -160,6 +161,31 @@ impl KeyService {
                     rusqlite::params![id_owned],
                 )?;
                 Ok(())
+            })
+            .await
+            .map_err(crate::error::DbError::from)
+    }
+
+    /// Finds API keys by their 8-char display_id prefix.
+    /// Returns all matches — caller handles 0 (not found), 1 (exact), or >1 (ambiguous).
+    pub async fn find_by_display_id(&self, display_id: &str) -> Result<Vec<ApiKey>, crate::error::DbError> {
+        let did = display_id.to_string();
+        self.conn
+            .call(move |c| -> Result<Vec<ApiKey>, rusqlite::Error> {
+                let mut stmt = c.prepare(
+                    "SELECT id, name, display_id, agent_id, created_at, revoked_at FROM api_keys WHERE display_id = ?1"
+                )?;
+                let rows = stmt.query_map(rusqlite::params![did], |row| {
+                    Ok(ApiKey {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        display_id: row.get(2)?,
+                        agent_id: row.get(3)?,
+                        created_at: row.get(4)?,
+                        revoked_at: row.get(5)?,
+                    })
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
             })
             .await
             .map_err(crate::error::DbError::from)
@@ -450,5 +476,20 @@ mod tests {
 
         let result = ks.validate(&raw_token).await;
         assert!(result.is_err(), "validate must reject revoked key");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_display_id() {
+        let ks = test_key_service().await;
+        let (api_key, _) = ks.create("find-test".to_string(), None).await.unwrap();
+
+        // Should find by display_id
+        let found = ks.find_by_display_id(&api_key.display_id).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, api_key.id);
+
+        // Should return empty for non-existent display_id
+        let not_found = ks.find_by_display_id("00000000").await.unwrap();
+        assert!(not_found.is_empty());
     }
 }
