@@ -292,6 +292,22 @@ impl MemoryService {
         Ok(ListResponse { memories, total })
     }
 
+    /// Fetches only the agent_id for a memory by ID.
+    /// Returns Ok(None) if the memory does not exist.
+    /// Used by delete_memory_handler for scope ownership verification (D-12).
+    pub async fn get_memory_agent_id(&self, id: &str) -> Result<Option<String>, ApiError> {
+        let id = id.to_string();
+        let result = self.db.call(move |c| -> Result<Option<String>, rusqlite::Error> {
+            use rusqlite::OptionalExtension;
+            let mut stmt = c.prepare(
+                "SELECT agent_id FROM memories WHERE id = ?1"
+            )?;
+            stmt.query_row(rusqlite::params![id], |row| row.get(0))
+                .optional()
+        }).await?;
+        Ok(result)
+    }
+
     pub async fn delete_memory(&self, id: String) -> Result<Memory, ApiError> {
         let id_clone = id.clone();
         let result = self.db.call(move |c| -> Result<Option<Memory>, rusqlite::Error> {

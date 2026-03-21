@@ -84,6 +84,8 @@ pub enum ApiError {
     NotFound,
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("internal error: {0}")]
     Internal(#[from] MnemonicError),
 }
@@ -105,6 +107,13 @@ impl axum::response::IntoResponse for ApiError {
                     "error": "unauthorized",
                     "auth_mode": "active",
                     "hint": "Provide Authorization: Bearer mnk_..."
+                }),
+            ),
+            ApiError::Forbidden(detail) => (
+                axum::http::StatusCode::FORBIDDEN,
+                serde_json::json!({
+                    "error": "forbidden",
+                    "detail": detail
                 }),
             ),
             ApiError::Internal(e) => {
