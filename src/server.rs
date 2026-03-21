@@ -1,10 +1,10 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     middleware,
     routing::{delete, get, post},
     Json, Router,
 };
-use crate::auth::auth_middleware;
+use crate::auth::{auth_middleware, AuthContext};
 use serde_json::Value;
 use tracing_subscriber::prelude::*;
 use crate::compaction::CompactRequest;
@@ -59,6 +59,31 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Centralized scope enforcement for all memory/compaction handlers.
+///
+/// Returns the effective agent_id to use:
+/// - Ok(None): open mode — use whatever the client supplied (no enforcement)
+/// - Ok(Some(id)): use this agent_id (either client's or forced from key scope)
+/// - Err(Forbidden): scope mismatch
+fn enforce_scope(
+    auth: Option<&AuthContext>,
+    requested: Option<&str>,
+) -> Result<Option<String>, crate::error::ApiError> {
+    match auth {
+        None => Ok(None), // open mode, no enforcement
+        Some(ctx) => match &ctx.allowed_agent_id {
+            None => Ok(requested.map(str::to_string)), // wildcard key, pass through
+            Some(allowed) => match requested {
+                None => Ok(Some(allowed.clone())), // missing agent_id, force scope
+                Some(req_id) if req_id == allowed.as_str() => Ok(Some(allowed.clone())), // match
+                Some(req_id) => Err(crate::error::ApiError::Forbidden(format!(
+                    "key scoped to {} cannot access {}", allowed, req_id
+                ))), // mismatch -> 403
+            },
+        },
+    }
+}
+
 /// GET /health — returns {"status":"ok"} with HTTP 200.
 async fn health_handler() -> Json<Value> {
     Json(serde_json::json!({"status": "ok"}))
@@ -67,8 +92,14 @@ async fn health_handler() -> Json<Value> {
 /// POST /memories — creates a new memory and returns 201 Created.
 async fn create_memory_handler(
     State(state): State<AppState>,
-    Json(body): Json<CreateMemoryRequest>,
+    auth: Option<Extension<AuthContext>>,
+    Json(mut body): Json<CreateMemoryRequest>,
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
+    let auth_ctx = auth.as_ref().map(|Extension(ctx)| ctx);
+    let effective = enforce_scope(auth_ctx, body.agent_id.as_deref())?;
+    if effective.is_some() {
+        body.agent_id = effective;
+    }
     let memory = state.service.create_memory(body).await?;
     Ok((axum::http::StatusCode::CREATED, Json(serde_json::to_value(memory).unwrap())))
 }
@@ -76,8 +107,14 @@ async fn create_memory_handler(
 /// GET /memories/search — semantic search returning ranked results with distance.
 async fn search_memories_handler(
     State(state): State<AppState>,
-    Query(params): Query<SearchParams>,
+    auth: Option<Extension<AuthContext>>,
+    Query(mut params): Query<SearchParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth_ctx = auth.as_ref().map(|Extension(ctx)| ctx);
+    let effective = enforce_scope(auth_ctx, params.agent_id.as_deref())?;
+    if effective.is_some() {
+        params.agent_id = effective;
+    }
     let response = state.service.search_memories(params).await?;
     Ok(Json(serde_json::to_value(response).unwrap()))
 }
@@ -85,8 +122,14 @@ async fn search_memories_handler(
 /// GET /memories — paginated list of memories with optional filters.
 async fn list_memories_handler(
     State(state): State<AppState>,
-    Query(params): Query<ListParams>,
+    auth: Option<Extension<AuthContext>>,
+    Query(mut params): Query<ListParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth_ctx = auth.as_ref().map(|Extension(ctx)| ctx);
+    let effective = enforce_scope(auth_ctx, params.agent_id.as_deref())?;
+    if effective.is_some() {
+        params.agent_id = effective;
+    }
     let response = state.service.list_memories(params).await?;
     Ok(Json(serde_json::to_value(response).unwrap()))
 }
@@ -94,8 +137,26 @@ async fn list_memories_handler(
 /// DELETE /memories/:id — deletes a memory by ID and returns the deleted object.
 async fn delete_memory_handler(
     State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Scope enforcement for scoped keys requires DB lookup (D-12)
+    if let Some(Extension(ref ctx)) = auth {
+        if let Some(ref allowed_id) = ctx.allowed_agent_id {
+            // Fetch memory's agent_id to verify ownership
+            match state.service.get_memory_agent_id(&id).await? {
+                None => return Err(ApiError::NotFound),
+                Some(ref mem_agent_id) if mem_agent_id != allowed_id => {
+                    return Err(ApiError::Forbidden(format!(
+                        "key scoped to {} cannot access {}", allowed_id, mem_agent_id
+                    )));
+                }
+                Some(_) => {} // Ownership matches, proceed
+            }
+        }
+        // Wildcard key (allowed_agent_id = None): no scope check needed
+    }
+    // Open mode (auth = None): no scope check needed
     let memory = state.service.delete_memory(id).await?;
     Ok(Json(serde_json::to_value(memory).unwrap()))
 }
@@ -103,7 +164,8 @@ async fn delete_memory_handler(
 /// POST /memories/compact — triggers memory compaction for an agent.
 async fn compact_memories_handler(
     State(state): State<AppState>,
-    Json(body): Json<CompactRequest>,
+    auth: Option<Extension<AuthContext>>,
+    Json(mut body): Json<CompactRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if body.agent_id.trim().is_empty() {
         return Err(ApiError::BadRequest("agent_id must not be empty".to_string()));
@@ -117,6 +179,12 @@ async fn compact_memories_handler(
         if m == 0 {
             return Err(ApiError::BadRequest("max_candidates must be greater than 0".to_string()));
         }
+    }
+    // Scope enforcement (D-11): agent_id is required, so enforce_scope gets Some(agent_id)
+    let auth_ctx = auth.as_ref().map(|Extension(ctx)| ctx);
+    let effective = enforce_scope(auth_ctx, Some(body.agent_id.as_str()))?;
+    if let Some(forced) = effective {
+        body.agent_id = forced;
     }
     let response = state.compaction.compact(body).await?;
     Ok(Json(serde_json::to_value(response).unwrap()))
