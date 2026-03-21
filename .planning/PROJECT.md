@@ -47,11 +47,11 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-- [ ] API key authentication via Authorization: Bearer mnk_... headers
+- [x] API key authentication via Authorization: Bearer mnk_... headers — v1.2 Phase 12
 - [ ] API keys scoped to specific agent_ids for enforced namespace isolation
 - [ ] CLI key management commands (mnemonic keys create/list/revoke)
-- [ ] Optional auth — open mode by default, auth activates when keys exist
-- [ ] Axum middleware layer for auth enforcement across all endpoints
+- [x] Optional auth — open mode by default, auth activates when keys exist — v1.2 Phase 12
+- [x] Axum middleware layer for auth enforcement across all endpoints — v1.2 Phase 12
 
 ### Out of Scope
 
@@ -68,10 +68,11 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ## Context
 
-Shipped v1.1 with 3,678 lines of Rust code across 9 phases (17 plans total: 11 in v1.0 + 6 in v1.1).
-Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP).
-35 unit tests + 33 integration tests passing, zero compiler warnings. MIT licensed.
+v1.2 in progress with 12 phases complete (18 plans total: 11 v1.0 + 6 v1.1 + 1 v1.2).
+Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth).
+45 tests passing (unit + integration), zero compiler errors. MIT licensed.
 6 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, GET /health.
+Auth middleware enforces Bearer token authentication on all /memories endpoints with open mode bypass.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required.
 
@@ -107,6 +108,8 @@ Single-binary distribution — no Python, no Docker, no external services requir
 | Cosine similarity = dot product (pre-normalized) | EmbeddingEngine guarantees L2 norm; avoids redundant normalization | Good — v1.1 |
 | SQLite error-swallowing for idempotent migration | ALTER TABLE ADD COLUMN IF NOT EXISTS unsupported; catch extended_code==1 | Good — v1.1 |
 | POST /memories/compact returns 200 (not 201) | Compaction mutates data but does not create a new addressable resource | Good — v1.1 |
+| route_layer() not layer() for auth middleware | Prevents 401 on unmatched routes; only matched protected routes hit middleware | Good — v1.2 |
+| Per-request COUNT for open mode (not startup flag) | Auth activates/deactivates live when keys are created/revoked — no restart needed | Good — v1.2 |
 
 ## Evolution
 
@@ -126,4 +129,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after Phase 11 (keyservice-core) complete — KeyService CRUD + BLAKE3 hashing implemented*
+*Last updated: 2026-03-21 after Phase 12 (auth-middleware) complete — Auth middleware enforcing Bearer token auth on protected routes*
