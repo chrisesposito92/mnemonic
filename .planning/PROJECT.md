@@ -53,7 +53,14 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-(Defining requirements for v1.3 CLI)
+- `mnemonic compact` subcommand for triggering compaction from CLI — v1.3 (Phase 19, next)
+
+### Recently Validated
+
+- `mnemonic search` subcommand for semantic search from CLI with ranked results and filtering flags — Validated in Phase 18: search-subcommand
+- `mnemonic serve` subcommand with backward-compatible bare invocation — v1.3 (Phase 15)
+- `mnemonic recall` subcommand with list, get-by-id, and filter flags (DB-only, no model loading) — Validated in Phase 16: recall-subcommand
+- `mnemonic remember` subcommand with positional/stdin content, agent/session/tag metadata, medium-init helper — Validated in Phase 17: remember-subcommand
 
 ### Out of Scope
 
@@ -74,7 +81,7 @@ v1.2 shipped with 14 phases (22 plans total: 11 v1.0 + 6 v1.1 + 5 v1.2).
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI).
 5,925 lines of Rust. 57 unit + 53 integration tests passing (194 total), zero compiler warnings. MIT licensed.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
-CLI: `mnemonic keys create/list/revoke` — fast path (DB only, no model loading).
+CLI: `mnemonic serve` starts HTTP server (also default with no args), `mnemonic keys create/list/revoke` and `mnemonic recall` — fast path (DB only, no model loading). `mnemonic remember` and `mnemonic search` — medium-init path (DB + embedding, no server) for storing and searching memories from CLI.
 Auth middleware enforces Bearer token authentication on all /memories and /keys endpoints with open mode bypass. Scoped keys enforce namespace isolation at the handler layer.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required.
@@ -132,4 +139,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after v1.3 milestone started*
+*Last updated: 2026-03-21 after Phase 18 (search subcommand) complete*

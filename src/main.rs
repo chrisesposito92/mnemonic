@@ -17,35 +17,76 @@ async fn main() -> Result<()> {
     // Parse CLI args FIRST — before any I/O or initialization (per D-04)
     let cli_args = cli::Cli::parse();
 
-    // CLI path: keys subcommand → minimal init, fast exit (per D-04, D-05)
-    if let Some(cli::Commands::Keys(keys_args)) = cli_args.command {
-        // 1. Register sqlite-vec (must be before db::open — Pitfall 3)
-        db::register_sqlite_vec();
+    // Extract --db override before the match (cli_args.command moves into Keys arm)
+    let db_override = cli_args.db;
+    // Extract --json before the match to avoid partial-move of cli_args (Pitfall 1)
+    let json = cli_args.json;
 
-        // 2. Load config for db_path only — skip validate_config (Pitfall 1: would
-        //    reject OpenAI configs when OPENAI_API_KEY is missing, but CLI doesn't
-        //    use embeddings at all)
-        let mut config = config::load_config()
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-        // 3. Apply --db override if provided (per D-07)
-        if let Some(db_override) = cli_args.db {
-            config.db_path = db_override;
+    // CLI dispatch: keys subcommand → minimal init, fast exit (per D-04, D-05, D-06)
+    match cli_args.command {
+        Some(cli::Commands::Keys(keys_args)) => {
+            let (conn_arc, _config) = cli::init_db(db_override.clone()).await?;
+            // Construct KeyService (only service needed for CLI)
+            // NOTE: No tracing init, no embedding model, no LLM engine,
+            //       no MemoryService, no CompactionService, no server bind
+            let key_service = auth::KeyService::new(conn_arc);
+            cli::run_keys(keys_args.subcommand, key_service, json).await;
+            return Ok(());
         }
+        Some(cli::Commands::Recall(recall_args)) => {
+            let (conn_arc, _config) = cli::init_db(db_override).await?;
+            cli::run_recall(recall_args, conn_arc, json).await;
+            return Ok(());
+        }
+        Some(cli::Commands::Remember(mut args)) => {
+            // Resolve content from positional arg or stdin
+            use std::io::IsTerminal;
+            let content = if let Some(c) = args.content.take() {
+                c  // positional arg takes priority; stdin ignored if positional present
+            } else if !std::io::stdin().is_terminal() {
+                // stdin is piped -- read all of it
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: failed to read stdin: {}", e);
+                        std::process::exit(1);
+                    });
+                buf
+            } else {
+                // neither provided
+                eprintln!("error: provide content as an argument or pipe via stdin");
+                std::process::exit(1);
+            };
 
-        // 4. Open DB and apply schema
-        let conn = db::open(&config).await
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let conn_arc = std::sync::Arc::new(conn);
+            // Validate content is not empty BEFORE loading the embedding model
+            if content.trim().is_empty() {
+                eprintln!("error: content must not be empty");
+                std::process::exit(1);
+            }
 
-        // 5. Construct KeyService (only service needed for CLI)
-        let key_service = auth::KeyService::new(conn_arc);
+            let (service, _config) = cli::init_db_and_embedding(db_override).await?;
+            cli::run_remember(content, args, service, json).await;
+            return Ok(());
+        }
+        Some(cli::Commands::Search(args)) => {
+            // D-04: validate BEFORE model load (early exit, no 2-3s wait)
+            if args.query.trim().is_empty() {
+                eprintln!("error: query must not be empty");
+                std::process::exit(1);
+            }
 
-        // 6. Run the keys subcommand and exit
-        // NOTE: No tracing init (D-21), no embedding model, no LLM engine,
-        //       no MemoryService, no CompactionService, no server bind
-        cli::run_keys(keys_args.subcommand, key_service).await;
-        return Ok(());
+            let (service, _config) = cli::init_db_and_embedding(db_override).await?;
+            cli::run_search(args.query.clone(), args, service, json).await;
+            return Ok(());
+        }
+        Some(cli::Commands::Compact(args)) => {
+            let (compaction, _config) = cli::init_compaction(db_override).await?;
+            cli::run_compact(args, compaction, json).await;
+            return Ok(());
+        }
+        // Serve or no subcommand — both start the HTTP server (per D-04, D-05, D-06)
+        Some(cli::Commands::Serve) | None => {}
     }
 
     // Server path — existing initialization (unchanged from here down)
@@ -56,8 +97,14 @@ async fn main() -> Result<()> {
     server::init_tracing();
 
     // 3. Load config (defaults -> TOML -> env vars)
-    let config = config::load_config()
+    let mut config = config::load_config()
         .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Apply --db override if provided
+    if let Some(ref db_path) = db_override {
+        config.db_path = db_path.clone();
+    }
+
     config::validate_config(&config)?;
 
     tracing::info!(

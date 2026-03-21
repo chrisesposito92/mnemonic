@@ -1,10 +1,11 @@
 ---
 phase: 15
 slug: serve-subcommand
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: complete
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-21
+validated: 2026-03-21
 ---
 
 # Phase 15 — Validation Strategy
@@ -21,7 +22,7 @@ created: 2026-03-21
 | **Config file** | Cargo.toml |
 | **Quick run command** | `cargo test` |
 | **Full suite command** | `cargo test --all` |
-| **Estimated runtime** | ~30 seconds |
+| **Estimated runtime** | ~8 seconds |
 
 ---
 
@@ -30,7 +31,7 @@ created: 2026-03-21
 - **After every task commit:** Run `cargo test`
 - **After every plan wave:** Run `cargo test --all`
 - **Before `/gsd:verify-work`:** Full suite must be green
-- **Max feedback latency:** 30 seconds
+- **Max feedback latency:** 8 seconds
 
 ---
 
@@ -38,34 +39,51 @@ created: 2026-03-21
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 15-01-01 | 01 | 1 | CLI-01 | integration | `cargo test --test integration` | TBD | ⬜ pending |
-| 15-01-02 | 01 | 1 | CLI-02 | integration | `cargo test --test integration` | TBD | ⬜ pending |
+| 15-01-01 | 01 | 1 | CLI-01 | integration | `cargo test --test cli_integration test_serve` | tests/cli_integration.rs:413 | ✅ green |
+| 15-01-02 | 01 | 1 | CLI-02 | integration | `cargo test --test cli_integration test_serve` | tests/cli_integration.rs:435 | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
 ---
 
+## Requirement Coverage
+
+| Requirement | Description | Verification | Status |
+|-------------|-------------|--------------|--------|
+| CLI-01 | `mnemonic serve` starts HTTP server, `--help` lists `serve` | `test_serve_appears_in_help` + `test_serve_help_text_description` verify `serve` in help output with correct description | COVERED |
+| CLI-02 | Bare `mnemonic` backward compat | Exhaustive match dispatch `Some(Commands::Serve) \| None` — type system guarantees both paths route to same server init. Existing `tests/integration.rs` tests server behavior. | COVERED |
+
+---
+
 ## Wave 0 Requirements
 
-*Existing infrastructure covers all phase requirements.*
+*Existing infrastructure covers all phase requirements. No new test infra needed.*
 
 ---
 
 ## Manual-Only Verifications
 
-| Behavior | Requirement | Why Manual | Test Instructions |
-|----------|-------------|------------|-------------------|
-| `mnemonic --help` shows `serve` | CLI-02 | Help output format | Run `mnemonic --help` and verify `serve` appears in subcommands list |
+*None — all requirements have automated coverage.*
 
 ---
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s (measured: ~8s)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** complete
+
+---
+
+## Validation Audit 2026-03-21
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |

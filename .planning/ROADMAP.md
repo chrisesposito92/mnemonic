@@ -45,12 +45,12 @@
 
 **Milestone Goal:** Turn the single binary into a full CLI tool with subcommands for every operation — serve the API, store/recall/search memories, compact, and manage keys, all from the terminal.
 
-- [ ] **Phase 15: serve subcommand + CLI scaffolding** — Expand Commands enum; wire `mnemonic serve` as an explicit subcommand while preserving bare `mnemonic` backward compat
-- [ ] **Phase 16: recall subcommand** — Fast DB-only path for listing and retrieving memories with structured filters; no embedding model load
-- [ ] **Phase 17: remember subcommand** — Medium-init path (DB + embedding); store memories from CLI with stdin pipe support and full flag set
-- [ ] **Phase 18: search subcommand** — Medium-init path; semantic search from CLI reusing the embedding init helper established in Phase 17
-- [ ] **Phase 19: compact subcommand** — Most complex init (CompactionService with optional LLM engine); trigger compaction and dry-run preview from CLI
-- [ ] **Phase 20: output polish** — Enforce `--json`, exit codes, and stderr/stdout consistency across all subcommands; eliminate all output inconsistencies
+- [x] **Phase 15: serve subcommand + CLI scaffolding** — Expand Commands enum; wire `mnemonic serve` as an explicit subcommand while preserving bare `mnemonic` backward compat (completed 2026-03-21)
+- [x] **Phase 16: recall subcommand** — Fast DB-only path for listing and retrieving memories with structured filters; no embedding model load (completed 2026-03-21)
+- [x] **Phase 17: remember subcommand** — Medium-init path (DB + embedding); store memories from CLI with stdin pipe support and full flag set (completed 2026-03-21)
+- [x] **Phase 18: search subcommand** — Medium-init path; semantic search from CLI reusing the embedding init helper established in Phase 17 (completed 2026-03-21)
+- [x] **Phase 19: compact subcommand** — Most complex init (CompactionService with optional LLM engine); trigger compaction and dry-run preview from CLI (completed 2026-03-21)
+- [x] **Phase 20: output polish** — Enforce `--json`, exit codes, and stderr/stdout consistency across all subcommands; eliminate all output inconsistencies (completed 2026-03-21)
 
 ## Phase Details
 
@@ -65,7 +65,7 @@
   4. All existing integration tests pass without modification after the Commands enum expansion
 **Plans**: 1 plan
 Plans:
-- [ ] 15-01-PLAN.md — Add Serve variant, convert dispatch to match, add help-text integration tests
+- [x] 15-01-PLAN.md — Add Serve variant, convert dispatch to match, add help-text integration tests
 
 ### Phase 16: recall subcommand
 **Goal**: Users can retrieve and list memories from the terminal in under 100ms without loading the embedding model
@@ -76,7 +76,10 @@ Plans:
   2. `mnemonic recall --id <uuid>` retrieves a single specific memory by ID
   3. `mnemonic recall --agent-id <id> --session-id <id> --limit 10` returns filtered results
   4. Command completes in under 100ms (DB-only path, no embedding model loaded)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 16-01-PLAN.md — Extract init_db helper, add RecallArgs/Recall variant, implement run_recall with list and get-by-id handlers
+- [x] 16-02-PLAN.md — Add integration tests for recall list, get-by-id, filters, and help output
 
 ### Phase 17: remember subcommand
 **Goal**: Users can store memories directly from the terminal with a positional argument or piped stdin, with full agent/session/tag metadata
@@ -87,7 +90,10 @@ Plans:
   2. `echo "content" | mnemonic remember` works identically when stdin is piped (no positional arg required)
   3. `mnemonic remember "content" --agent-id <id> --session-id <id> --tags tag1,tag2` stores with full metadata
   4. The embedding model loads via spawn_blocking without blocking the tokio runtime
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 17-01-PLAN.md — Add RememberArgs, init_db_and_embedding helper, run_remember handler, and Remember dispatch arm
+- [x] 17-02-PLAN.md — Add integration tests for remember positional, stdin pipe, metadata flags, tags, and error paths
 
 ### Phase 18: search subcommand
 **Goal**: Users can perform semantic search from the terminal with result ranking and filtering flags
@@ -97,7 +103,10 @@ Plans:
   1. `mnemonic search "query"` returns ranked semantic search results in tabular format with similarity scores
   2. `mnemonic search "query" --limit 5 --threshold 0.8 --agent-id <id> --session-id <id>` applies all filters correctly
   3. Command calls `MemoryService::search_memories()` directly without reimplementing search logic
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 18-01-PLAN.md — Add SearchArgs, Search variant, run_search handler, and Search dispatch arm
+- [x] 18-02-PLAN.md — Add integration tests for search end-to-end, filter flags, and error paths
 
 ### Phase 19: compact subcommand
 **Goal**: Users can trigger and preview memory compaction from the terminal with agent scoping and threshold control
@@ -108,7 +117,10 @@ Plans:
   2. `mnemonic compact --dry-run` previews what would be compacted without mutating any data
   3. `mnemonic compact --agent-id <id> --threshold 0.85` scopes compaction to one agent with custom similarity threshold
   4. CompactionService constructs correctly in a CLI context with optional LLM engine
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 19-01-PLAN.md — Add CompactArgs, init_compaction full-init helper, run_compact handler, and Compact dispatch arm
+- [x] 19-02-PLAN.md — Add integration tests for compact basic, dry-run, agent-id scoping, threshold control, and help output
 
 ### Phase 20: output polish
 **Goal**: All subcommands produce consistent, machine-composable output — `--json` flag works everywhere, exit codes are correct, and data/errors are split across stdout/stderr
@@ -119,7 +131,10 @@ Plans:
   2. `mnemonic <any-subcommand> --json` produces valid JSON on stdout for every subcommand
   3. All subcommands exit with code 0 on success and code 1 on any error
   4. All error messages and warnings appear on stderr; all data output appears on stdout
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 20-01-PLAN.md — Add --json global flag, Serialize on ApiKey, wire json bool through main.rs, add JSON output branches to all handlers
+- [x] 20-02-PLAN.md — Add integration tests for --json on all subcommands (recall, remember, search, compact, keys)
 
 ## Progress
 
@@ -139,9 +154,9 @@ Plans:
 | 12. Auth Middleware | v1.2 | 1/1 | Complete | 2026-03-21 |
 | 13. HTTP Wiring and REST Key Endpoints | v1.2 | 2/2 | Complete | 2026-03-21 |
 | 14. CLI Key Management | v1.2 | 2/2 | Complete | 2026-03-21 |
-| 15. serve subcommand + CLI scaffolding | v1.3 | 0/1 | Planned | - |
-| 16. recall subcommand | v1.3 | 0/TBD | Not started | - |
-| 17. remember subcommand | v1.3 | 0/TBD | Not started | - |
-| 18. search subcommand | v1.3 | 0/TBD | Not started | - |
-| 19. compact subcommand | v1.3 | 0/TBD | Not started | - |
-| 20. output polish | v1.3 | 0/TBD | Not started | - |
+| 15. serve subcommand + CLI scaffolding | v1.3 | 1/1 | Complete    | 2026-03-21 |
+| 16. recall subcommand | v1.3 | 2/2 | Complete    | 2026-03-21 |
+| 17. remember subcommand | v1.3 | 2/2 | Complete    | 2026-03-21 |
+| 18. search subcommand | v1.3 | 2/2 | Complete    | 2026-03-21 |
+| 19. compact subcommand | v1.3 | 2/2 | Complete    | 2026-03-21 |
+| 20. output polish | v1.3 | 2/2 | Complete    | 2026-03-21 |

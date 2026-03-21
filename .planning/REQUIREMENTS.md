@@ -9,39 +9,39 @@ Requirements for CLI subcommands milestone. Each maps to roadmap phases.
 
 ### CLI Scaffolding
 
-- [ ] **CLI-01**: `mnemonic serve` starts the HTTP server (same behavior as current bare `mnemonic`)
-- [ ] **CLI-02**: Bare `mnemonic` with no subcommand continues to start the server (backward compat)
+- [x] **CLI-01**: `mnemonic serve` starts the HTTP server (same behavior as current bare `mnemonic`)
+- [x] **CLI-02**: Bare `mnemonic` with no subcommand continues to start the server (backward compat)
 
 ### Remember
 
-- [ ] **REM-01**: `mnemonic remember <content>` stores a memory with embedded content
-- [ ] **REM-02**: `mnemonic remember` reads content from stdin when piped (no positional arg)
-- [ ] **REM-03**: `mnemonic remember` accepts `--agent-id` and `--session-id` flags
-- [ ] **REM-04**: `mnemonic remember` accepts `--tags` flag for tagging memories
+- [x] **REM-01**: `mnemonic remember <content>` stores a memory with embedded content
+- [x] **REM-02**: `mnemonic remember` reads content from stdin when piped (no positional arg)
+- [x] **REM-03**: `mnemonic remember` accepts `--agent-id` and `--session-id` flags
+- [x] **REM-04**: `mnemonic remember` accepts `--tags` flag for tagging memories
 
 ### Recall
 
-- [ ] **RCL-01**: `mnemonic recall` lists recent memories (DB-only, no model load)
-- [ ] **RCL-02**: `mnemonic recall --id <uuid>` retrieves a specific memory
-- [ ] **RCL-03**: `mnemonic recall` accepts `--agent-id`, `--session-id`, `--limit` filters
+- [x] **RCL-01**: `mnemonic recall` lists recent memories (DB-only, no model load)
+- [x] **RCL-02**: `mnemonic recall --id <uuid>` retrieves a specific memory
+- [x] **RCL-03**: `mnemonic recall` accepts `--agent-id`, `--session-id`, `--limit` filters
 
 ### Search
 
-- [ ] **SRC-01**: `mnemonic search <query>` performs semantic search and displays results
-- [ ] **SRC-02**: `mnemonic search` accepts `--limit`, `--threshold`, `--agent-id`, `--session-id` flags
+- [x] **SRC-01**: `mnemonic search <query>` performs semantic search and displays results
+- [x] **SRC-02**: `mnemonic search` accepts `--limit`, `--threshold`, `--agent-id`, `--session-id` flags
 
 ### Compact
 
-- [ ] **CMP-01**: `mnemonic compact` triggers memory compaction from CLI
-- [ ] **CMP-02**: `mnemonic compact --dry-run` previews compaction without mutating data
-- [ ] **CMP-03**: `mnemonic compact` accepts `--agent-id` and `--threshold` flags
+- [x] **CMP-01**: `mnemonic compact` triggers memory compaction from CLI
+- [x] **CMP-02**: `mnemonic compact --dry-run` previews compaction without mutating data
+- [x] **CMP-03**: `mnemonic compact` accepts `--agent-id` and `--threshold` flags
 
 ### Output
 
-- [ ] **OUT-01**: All subcommands default to human-readable formatted text output
-- [ ] **OUT-02**: All subcommands support `--json` flag for machine-readable JSON output
-- [ ] **OUT-03**: All subcommands use exit code 0 on success, 1 on error
-- [ ] **OUT-04**: All subcommands send data to stdout and errors/warnings to stderr
+- [x] **OUT-01**: All subcommands default to human-readable formatted text output
+- [x] **OUT-02**: All subcommands support `--json` flag for machine-readable JSON output
+- [x] **OUT-03**: All subcommands use exit code 0 on success, 1 on error
+- [x] **OUT-04**: All subcommands send data to stdout and errors/warnings to stderr
 
 ## Future Requirements
 
@@ -68,24 +68,24 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLI-01 | Phase 15 | Pending |
-| CLI-02 | Phase 15 | Pending |
-| REM-01 | Phase 17 | Pending |
-| REM-02 | Phase 17 | Pending |
-| REM-03 | Phase 17 | Pending |
-| REM-04 | Phase 17 | Pending |
-| RCL-01 | Phase 16 | Pending |
-| RCL-02 | Phase 16 | Pending |
-| RCL-03 | Phase 16 | Pending |
-| SRC-01 | Phase 18 | Pending |
-| SRC-02 | Phase 18 | Pending |
-| CMP-01 | Phase 19 | Pending |
-| CMP-02 | Phase 19 | Pending |
-| CMP-03 | Phase 19 | Pending |
-| OUT-01 | Phase 20 | Pending |
-| OUT-02 | Phase 20 | Pending |
-| OUT-03 | Phase 20 | Pending |
-| OUT-04 | Phase 20 | Pending |
+| CLI-01 | Phase 15 | Complete |
+| CLI-02 | Phase 15 | Complete |
+| REM-01 | Phase 17 | Complete |
+| REM-02 | Phase 17 | Complete |
+| REM-03 | Phase 17 | Complete |
+| REM-04 | Phase 17 | Complete |
+| RCL-01 | Phase 16 | Complete |
+| RCL-02 | Phase 16 | Complete |
+| RCL-03 | Phase 16 | Complete |
+| SRC-01 | Phase 18 | Complete |
+| SRC-02 | Phase 18 | Complete |
+| CMP-01 | Phase 19 | Complete |
+| CMP-02 | Phase 19 | Complete |
+| CMP-03 | Phase 19 | Complete |
+| OUT-01 | Phase 20 | Complete |
+| OUT-02 | Phase 20 | Complete |
+| OUT-03 | Phase 20 | Complete |
+| OUT-04 | Phase 20 | Complete |
 
 **Coverage:**
 - v1.3 requirements: 18 total

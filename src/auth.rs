@@ -17,7 +17,7 @@ use axum::{
 use crate::server::AppState;
 
 /// A row from the `api_keys` table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ApiKey {
     pub id: String,
     pub name: String,
