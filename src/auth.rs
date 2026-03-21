@@ -6,7 +6,8 @@
 use std::sync::Arc;
 use tokio_rusqlite::Connection;
 use constant_time_eq::constant_time_eq_32;
-use rand::rand_core::{OsRng, TryRngCore};
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 
 /// A row from the `api_keys` table.
 #[allow(dead_code)] // Phase 12: used by CLI (Phase 14) and HTTP handlers (Phase 13)
