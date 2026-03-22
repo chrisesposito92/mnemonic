@@ -2,14 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: Web UI/Dashboard
-status: Active
-stopped_at: Roadmap created — Phase 30 ready to plan
-last_updated: "2026-03-22T20:00:00.000Z"
+status: planning
+stopped_at: Phase 30 context gathered
+last_updated: "2026-03-22T19:36:45.057Z"
+last_activity: 2026-03-22 — Roadmap created for v1.6 (3 phases, 12 requirements mapped)
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -55,6 +57,7 @@ Progress: [░░░░░░░░░░] 0% (v1.6)
 See PROJECT.md Key Decisions table for complete log.
 
 Recent decisions relevant to v1.6:
+
 - rust-embed 8.11 + axum-embed 0.1 chosen for compile-time asset embedding; both optional deps behind `dashboard` feature
 - vite-plugin-singlefile chosen to produce single index.html (verify compatibility in Phase 30 before committing)
 - Hash routing (#/path) chosen over history routing to avoid SPA hard-reload 404s at zero cost
@@ -72,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-22
-Stopped at: v1.6 roadmap created — Phase 30 ready to plan
-Resume file: None
+Last session: 2026-03-22T19:36:45.054Z
+Stopped at: Phase 30 context gathered
+Resume file: .planning/phases/30-dashboard-foundation/30-CONTEXT.md
