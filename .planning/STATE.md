@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: Web UI/Dashboard
 status: Ready to plan
-stopped_at: Phase 31 context gathered
-last_updated: "2026-03-22T21:57:56.791Z"
+stopped_at: Phase 31 UI-SPEC approved
+last_updated: "2026-03-22T22:05:51.307Z"
 progress:
   total_phases: 3
   completed_phases: 1
@@ -77,6 +77,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-22T21:57:56.789Z
-Stopped at: Phase 31 context gathered
-Resume file: .planning/phases/31-core-ui/31-CONTEXT.md
+Last session: 2026-03-22T22:05:51.305Z
+Stopped at: Phase 31 UI-SPEC approved
+Resume file: .planning/phases/31-core-ui/31-UI-SPEC.md
