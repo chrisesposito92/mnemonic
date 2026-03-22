@@ -64,6 +64,7 @@ Notes:
 - Distance score numeric value: 14px weight 400 (same as body)
 - Pagination indicator ("Showing 1–20 of 347"): 12px weight 400 (label role)
 - Token input field: 14px weight 400, monospace
+- 12px (Label/Tag) and 14px (Body) are 2px apart; distinction is provided by color: 12px always uses --color-text-muted (#6b7280) while 14px uses --color-text (#e5e5e5). Color separation is sufficient; no size change required.
 
 Source: `dashboard/src/components/HealthCard.tsx` Row helper font sizes; `dashboard/src/App.tsx` h1 heading style.
 
@@ -136,7 +137,7 @@ Components required by this phase (to be created under `dashboard/src/components
 
 ### Search Tab (D-09, D-10, D-11)
 - Query input: full-width text field, placeholder "Search memories..."
-- Search triggers on Enter keypress or explicit Search button click (not on-type)
+- Search triggers on Enter keypress or explicit "Search Memories" button click (not on-type)
 - Results table columns: distance bar, distance score (4 decimal places), content preview (80 chars), agent_id, session_id
 - Distance bar: filled proportional to similarity score (1.0 = full width); bar background --color-accent at 30% opacity, fill --color-accent
 - Optional filters: agent_id and tag dropdowns (same pattern as Memories tab)
@@ -170,12 +171,12 @@ Components required by this phase (to be created under `dashboard/src/components
 | Tab 1 label | "Memories" |
 | Tab 2 label | "Agents" |
 | Tab 3 label | "Search" |
-| Search CTA | "Search" |
+| Search CTA | "Search Memories" |
 | Empty state — Memories heading | "No memories stored" |
 | Empty state — Memories body | "Memories will appear here once agents start storing them." |
 | Empty state — Agents heading | "No agents found" |
 | Empty state — Agents body | "Agent breakdowns will appear here once memories are stored." |
-| Empty state — Search heading | "No results" |
+| Empty state — Search heading | "Nothing matched your search" |
 | Empty state — Search body | "No memories matched your query. Try different search terms or broaden your filters." |
 | Error state — API unreachable | "Could not reach API. Check that the server is running and reload the page." |
 | Error state — Login invalid | "Invalid API key. Check your key and try again." |
