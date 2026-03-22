@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use tokio_rusqlite::Connection;
-use zerocopy::IntoBytes;
 use crate::embedding::EmbeddingEngine;
 use crate::error::ApiError;
 use crate::summarization::SummarizationEngine;
+use crate::storage::{StorageBackend, CandidateRecord, MergedMemoryRequest};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Public request / response types
@@ -37,14 +37,6 @@ pub struct ClusterMapping {
 // Internal types
 // ──────────────────────────────────────────────────────────────────────────────
 
-struct CandidateMemory {
-    id: String,
-    content: String,
-    tags: Vec<String>,
-    created_at: String,
-    embedding: Vec<f32>,
-}
-
 struct SimilarityPair {
     i: usize,
     j: usize,
@@ -56,7 +48,8 @@ struct SimilarityPair {
 // ──────────────────────────────────────────────────────────────────────────────
 
 pub struct CompactionService {
-    db: Arc<Connection>,
+    backend: Arc<dyn StorageBackend>,
+    audit_db: Arc<Connection>,
     embedding: Arc<dyn EmbeddingEngine>,
     summarization: Option<Arc<dyn SummarizationEngine>>,
     embedding_model: String,
@@ -64,12 +57,13 @@ pub struct CompactionService {
 
 impl CompactionService {
     pub fn new(
-        db: Arc<Connection>,
+        backend: Arc<dyn StorageBackend>,
+        audit_db: Arc<Connection>,
         embedding: Arc<dyn EmbeddingEngine>,
         summarization: Option<Arc<dyn SummarizationEngine>>,
         embedding_model: String,
     ) -> Self {
-        Self { db, embedding, summarization, embedding_model }
+        Self { backend, audit_db, embedding, summarization, embedding_model }
     }
 }
 
@@ -88,7 +82,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// Compute all pairs (i < j) with cosine similarity >= threshold.
 ///
 /// Returns pairs sorted by descending similarity (most similar first).
-fn compute_pairs(candidates: &[CandidateMemory], threshold: f32) -> Vec<SimilarityPair> {
+fn compute_pairs(candidates: &[CandidateRecord], threshold: f32) -> Vec<SimilarityPair> {
     let mut pairs = Vec::new();
     for i in 0..candidates.len() {
         for j in (i + 1)..candidates.len() {
@@ -137,14 +131,14 @@ fn cluster_candidates(pairs: &[SimilarityPair], num_candidates: usize) -> Vec<Ve
 }
 
 /// Concatenate memory content in chronological order (ascending created_at).
-fn tier1_concat(memories: &[&CandidateMemory]) -> String {
-    let mut sorted: Vec<&CandidateMemory> = memories.iter().copied().collect();
+fn tier1_concat(memories: &[&CandidateRecord]) -> String {
+    let mut sorted: Vec<&CandidateRecord> = memories.iter().copied().collect();
     sorted.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     sorted.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n")
 }
 
 /// Union of all tags from the given memories, deduplicated, preserving insertion order.
-fn union_tags(memories: &[&CandidateMemory]) -> Vec<String> {
+fn union_tags(memories: &[&CandidateRecord]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
     for m in memories {
@@ -158,7 +152,7 @@ fn union_tags(memories: &[&CandidateMemory]) -> Vec<String> {
 }
 
 /// Return the earliest created_at from the given memories (ISO 8601 sorts lexicographically).
-fn earliest_created_at(memories: &[&CandidateMemory]) -> String {
+fn earliest_created_at(memories: &[&CandidateRecord]) -> String {
     memories
         .iter()
         .map(|m| m.created_at.as_str())
@@ -172,62 +166,11 @@ fn earliest_created_at(memories: &[&CandidateMemory]) -> String {
 // ──────────────────────────────────────────────────────────────────────────────
 
 impl CompactionService {
-    /// Fetch candidate memories for compaction along with their embeddings.
-    ///
-    /// Fetches max_candidates + 1 rows to detect truncation, then trims to max_candidates.
-    /// Returns (candidates, truncated).
-    async fn fetch_candidates(
-        &self,
-        agent_id: &str,
-        max_candidates: u32,
-    ) -> Result<(Vec<CandidateMemory>, bool), ApiError> {
-        let agent_id = agent_id.to_string();
-        let fetch_limit = max_candidates as i64 + 1;
-
-        let mut candidates = self.db.call(move |c| -> Result<Vec<CandidateMemory>, rusqlite::Error> {
-            let mut stmt = c.prepare(
-                "SELECT m.id, m.content, m.tags, m.created_at, v.embedding
-                 FROM memories m
-                 JOIN vec_memories v ON v.memory_id = m.id
-                 WHERE m.agent_id = ?1
-                 ORDER BY m.created_at DESC
-                 LIMIT ?2"
-            )?;
-            let rows = stmt.query_map(
-                rusqlite::params![agent_id, fetch_limit],
-                |row| {
-                    let tags_str: String = row.get(2)?;
-                    let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-                    let bytes: Vec<u8> = row.get(4)?;
-                    // SAFETY: sqlite-vec stores 384 aligned f32 values as 1536 bytes (IEEE 754 little-endian)
-                    let embedding: Vec<f32> = unsafe {
-                        std::slice::from_raw_parts(bytes.as_ptr() as *const f32, bytes.len() / 4).to_vec()
-                    };
-                    Ok(CandidateMemory {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        tags,
-                        created_at: row.get(3)?,
-                        embedding,
-                    })
-                },
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()
-        }).await?;
-
-        let truncated = candidates.len() > max_candidates as usize;
-        if truncated {
-            candidates.truncate(max_candidates as usize);
-        }
-
-        Ok((candidates, truncated))
-    }
-
     /// Synthesize content for a cluster.
     ///
     /// Uses LLM (Tier 2) if a summarization engine is configured; falls back to
     /// chronological concatenation (Tier 1) on any LLM error.
-    async fn synthesize_content(&self, cluster_memories: &[&CandidateMemory]) -> String {
+    async fn synthesize_content(&self, cluster_memories: &[&CandidateRecord]) -> String {
         if let Some(engine) = &self.summarization {
             let texts: Vec<String> = cluster_memories.iter().map(|m| m.content.clone()).collect();
             match engine.summarize(&texts).await {
@@ -255,7 +198,7 @@ impl CompactionService {
         {
             let run_id_c = run_id.clone();
             let agent_id_c = agent_id.clone();
-            self.db.call(move |c| {
+            self.audit_db.call(move |c| {
                 c.execute(
                     "INSERT INTO compact_runs (id, agent_id, threshold, dry_run, status)
                      VALUES (?1, ?2, ?3, ?4, 'running')",
@@ -264,13 +207,13 @@ impl CompactionService {
             }).await?;
         }
 
-        // Fetch candidates
-        let (candidates, truncated) = self.fetch_candidates(&agent_id, max_candidates).await?;
+        // Fetch candidates via backend
+        let (candidates, truncated) = self.backend.fetch_candidates(&agent_id, max_candidates).await?;
 
         // Early exit if nothing to compact
         if candidates.is_empty() {
             let run_id_c = run_id.clone();
-            self.db.call(move |c| {
+            self.audit_db.call(move |c| {
                 c.execute(
                     "UPDATE compact_runs
                      SET status='completed', completed_at=datetime('now'),
@@ -299,7 +242,7 @@ impl CompactionService {
         // (new_id, source_ids, merged_content, tags, earliest_created_at, embedding)
 
         for cluster_indices in &clusters {
-            let cluster_memories: Vec<&CandidateMemory> = cluster_indices
+            let cluster_memories: Vec<&CandidateRecord> = cluster_indices
                 .iter()
                 .map(|&i| &candidates[i])
                 .collect();
@@ -336,85 +279,41 @@ impl CompactionService {
             memories_merged = clusters.iter().map(|c| c.len() as u32).sum();
             memories_created = 0;
         } else {
-            // Atomic write for all clusters
-            let agent_id_c = agent_id.clone();
-            let embedding_model_c = self.embedding_model.clone();
-            let write_ops_c = write_ops;
+            // Per-cluster write via backend (each call is atomic within the backend)
+            let mut total_merged: u32 = 0;
+            let mut total_created: u32 = 0;
 
-            let result = self.db.call(move |c| -> Result<(u32, u32), rusqlite::Error> {
-                let tx = c.transaction()?;
-
-                let mut total_merged: u32 = 0;
-                let mut total_created: u32 = 0;
-
-                for (new_id, source_ids, merged_content, merged_tags, earliest, merged_embedding) in &write_ops_c {
-                    let tags_json = serde_json::to_string(merged_tags).unwrap_or_else(|_| "[]".to_string());
-                    let source_ids_json = serde_json::to_string(source_ids).unwrap_or_else(|_| "[]".to_string());
-                    let embedding_bytes: Vec<u8> = merged_embedding.as_bytes().to_vec();
-
-                    // INSERT merged memory
-                    tx.execute(
-                        "INSERT INTO memories (id, content, agent_id, session_id, tags, embedding_model, created_at, source_ids)
-                         VALUES (?1, ?2, ?3, '', ?4, ?5, ?6, ?7)",
-                        rusqlite::params![
-                            new_id,
-                            merged_content,
-                            agent_id_c,
-                            tags_json,
-                            embedding_model_c,
-                            earliest,
-                            source_ids_json
-                        ],
-                    )?;
-
-                    // INSERT vec embedding for merged memory
-                    tx.execute(
-                        "INSERT INTO vec_memories (memory_id, embedding) VALUES (?1, ?2)",
-                        rusqlite::params![new_id, embedding_bytes],
-                    )?;
-
-                    total_created += 1;
-
-                    // DELETE source vec entries first
-                    for src_id in source_ids {
-                        tx.execute(
-                            "DELETE FROM vec_memories WHERE memory_id = ?1",
-                            rusqlite::params![src_id],
-                        )?;
+            for (new_id, source_ids, merged_content, merged_tags, earliest, merged_embedding) in write_ops {
+                match self.backend.write_compaction_result(MergedMemoryRequest {
+                    new_id,
+                    agent_id: agent_id.clone(),
+                    content: merged_content,
+                    tags: merged_tags,
+                    embedding_model: self.embedding_model.clone(),
+                    created_at: earliest,
+                    source_ids: source_ids.clone(),
+                    embedding: merged_embedding,
+                }).await {
+                    Ok(_) => {
+                        total_created += 1;
+                        total_merged += source_ids.len() as u32;
                     }
-
-                    // DELETE source memories
-                    for src_id in source_ids {
-                        tx.execute(
-                            "DELETE FROM memories WHERE id = ?1",
-                            rusqlite::params![src_id],
-                        )?;
+                    Err(e) => {
+                        // Update compact_runs to 'failed'
+                        let run_id_c = run_id.clone();
+                        let _ = self.audit_db.call(move |c| {
+                            c.execute(
+                                "UPDATE compact_runs SET status='failed', completed_at=datetime('now') WHERE id=?1",
+                                rusqlite::params![run_id_c],
+                            )
+                        }).await;
+                        return Err(e);
                     }
-
-                    total_merged += source_ids.len() as u32;
-                }
-
-                tx.commit()?;
-                Ok((total_merged, total_created))
-            }).await;
-
-            match result {
-                Ok((merged, created)) => {
-                    memories_merged = merged;
-                    memories_created = created;
-                }
-                Err(e) => {
-                    // Update compact_runs to 'failed'
-                    let run_id_c = run_id.clone();
-                    let _ = self.db.call(move |c| {
-                        c.execute(
-                            "UPDATE compact_runs SET status='failed', completed_at=datetime('now') WHERE id=?1",
-                            rusqlite::params![run_id_c],
-                        )
-                    }).await;
-                    return Err(e.into());
                 }
             }
+
+            memories_merged = total_merged;
+            memories_created = total_created;
         }
 
         // Update compact_runs to 'completed'
@@ -423,7 +322,7 @@ impl CompactionService {
             let cf = clusters_found;
             let mm = memories_merged;
             let mc = memories_created;
-            self.db.call(move |c| {
+            self.audit_db.call(move |c| {
                 c.execute(
                     "UPDATE compact_runs
                      SET status='completed', completed_at=datetime('now'),
@@ -452,9 +351,10 @@ impl CompactionService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::CandidateRecord;
 
-    fn make_candidate(id: &str, content: &str, tags: Vec<&str>, created_at: &str, embedding: Vec<f32>) -> CandidateMemory {
-        CandidateMemory {
+    fn make_candidate(id: &str, content: &str, tags: Vec<&str>, created_at: &str, embedding: Vec<f32>) -> CandidateRecord {
+        CandidateRecord {
             id: id.to_string(),
             content: content.to_string(),
             tags: tags.into_iter().map(|t| t.to_string()).collect(),
@@ -496,7 +396,7 @@ mod tests {
         let a = make_candidate("a", "first content", vec![], "2024-01-01", vec![1.0]);
         let b = make_candidate("b", "second content", vec![], "2024-01-02", vec![0.0]);
         // Pass in reverse order to verify sorting
-        let refs: Vec<&CandidateMemory> = vec![&b, &a];
+        let refs: Vec<&CandidateRecord> = vec![&b, &a];
         let result = tier1_concat(&refs);
         assert_eq!(result, "first content\nsecond content", "content should be in chronological order");
     }
@@ -507,7 +407,7 @@ mod tests {
     fn test_union_tags_dedup() {
         let a = make_candidate("a", "", vec!["a", "b"], "2024-01-01", vec![]);
         let b = make_candidate("b", "", vec!["b", "c"], "2024-01-02", vec![]);
-        let refs: Vec<&CandidateMemory> = vec![&a, &b];
+        let refs: Vec<&CandidateRecord> = vec![&a, &b];
         let result = union_tags(&refs);
         assert_eq!(result, vec!["a", "b", "c"], "tags should be deduplicated with insertion order preserved");
     }

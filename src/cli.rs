@@ -36,6 +36,8 @@ pub enum Commands {
     Search(SearchArgs),
     /// Compact similar memories
     Compact(CompactArgs),
+    /// View configuration
+    Config(ConfigArgs),
 }
 
 /// Arguments for the `keys` subcommand.
@@ -127,6 +129,20 @@ pub struct CompactArgs {
     pub dry_run: bool,
 }
 
+/// Arguments for the `config` subcommand.
+#[derive(Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub subcommand: ConfigSubcommand,
+}
+
+/// Config subcommands.
+#[derive(Subcommand)]
+pub enum ConfigSubcommand {
+    /// Display current configuration
+    Show,
+}
+
 /// `keys` subcommands: create, list, revoke.
 #[derive(Subcommand)]
 pub enum KeysSubcommand {
@@ -153,6 +169,79 @@ pub async fn run_keys(subcommand: KeysSubcommand, key_service: crate::auth::KeyS
         KeysSubcommand::Create { name, agent_id } => cmd_create(key_service, name, agent_id, json).await,
         KeysSubcommand::List => cmd_list(key_service, json).await,
         KeysSubcommand::Revoke { id } => cmd_revoke(key_service, id, json).await,
+    }
+}
+
+/// Entry point for `mnemonic config show`. No DB, no embedding, no validation needed (per D-17).
+pub fn run_config_show(json_mode: bool) {
+    let config = match crate::config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: failed to load config: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if json_mode {
+        // JSON output with redaction (per D-20)
+        let obj = serde_json::json!({
+            "port": config.port,
+            "db_path": config.db_path,
+            "storage_provider": config.storage_provider,
+            "embedding_provider": config.embedding_provider,
+            "openai_api_key": redact_option(&config.openai_api_key),
+            "llm_provider": config.llm_provider,
+            "llm_api_key": redact_option(&config.llm_api_key),
+            "llm_base_url": config.llm_base_url,
+            "llm_model": config.llm_model,
+            "qdrant_url": config.qdrant_url,
+            "qdrant_api_key": redact_option(&config.qdrant_api_key),
+            "postgres_url": redact_option(&config.postgres_url),
+        });
+        println!("{}", serde_json::to_string_pretty(&obj).unwrap());
+    } else {
+        // Human-readable output grouped logically (per D-18)
+        println!("Server:");
+        println!("  port             {}", config.port);
+        println!("  db_path          {}", config.db_path);
+        println!();
+        println!("Storage:");
+        println!("  storage_provider {}", config.storage_provider);
+        if let Some(ref url) = config.qdrant_url {
+            println!("  qdrant_url       {}", url);
+        }
+        if config.qdrant_api_key.is_some() {
+            println!("  qdrant_api_key   ****");
+        }
+        if config.postgres_url.is_some() {
+            println!("  postgres_url     ****");
+        }
+        println!();
+        println!("Embedding:");
+        println!("  embedding_provider {}", config.embedding_provider);
+        if config.openai_api_key.is_some() {
+            println!("  openai_api_key     ****");
+        }
+        println!();
+        println!("LLM:");
+        println!("  llm_provider     {}", config.llm_provider.as_deref().unwrap_or("(none)"));
+        if config.llm_api_key.is_some() {
+            println!("  llm_api_key      ****");
+        }
+        if let Some(ref url) = config.llm_base_url {
+            println!("  llm_base_url     {}", url);
+        }
+        if let Some(ref model) = config.llm_model {
+            println!("  llm_model        {}", model);
+        }
+    }
+}
+
+/// Redact secret fields: any Some(value) becomes Some("****") (per D-19).
+fn redact_option(opt: &Option<String>) -> serde_json::Value {
+    match opt {
+        Some(_) => serde_json::Value::String("****".to_string()),
+        None => serde_json::Value::Null,
     }
 }
 
@@ -216,7 +305,10 @@ pub async fn init_db_and_embedding(
             _ => unreachable!(), // validate_config rejects unknown providers
         };
 
-    let service = crate::service::MemoryService::new(conn_arc, embedding, embedding_model);
+    let backend: std::sync::Arc<dyn crate::storage::StorageBackend> =
+        crate::storage::create_backend(&config, conn_arc).await
+            .map_err(|e| anyhow::anyhow!("backend creation failed: {}", e))?;
+    let service = crate::service::MemoryService::new(backend, embedding, embedding_model);
     Ok((service, config))
 }
 
@@ -284,7 +376,11 @@ pub async fn init_compaction(
             _ => unreachable!(),
         };
 
+    let backend: std::sync::Arc<dyn crate::storage::StorageBackend> =
+        crate::storage::create_backend(&config, conn_arc.clone()).await
+            .map_err(|e| anyhow::anyhow!("backend creation failed: {}", e))?;
     let compaction = crate::compaction::CompactionService::new(
+        backend,
         conn_arc,
         embedding,
         llm_engine,
@@ -829,12 +925,7 @@ mod tests {
         let config = crate::config::Config {
             port: 0,
             db_path: ":memory:".to_string(),
-            embedding_provider: "local".to_string(),
-            openai_api_key: None,
-            llm_provider: None,
-            llm_api_key: None,
-            llm_base_url: None,
-            llm_model: None,
+            ..crate::config::Config::default()
         };
         let conn = crate::db::open(&config).await.unwrap();
         crate::auth::KeyService::new(std::sync::Arc::new(conn))
@@ -896,6 +987,63 @@ mod tests {
         let keys = ks.list().await.unwrap();
         assert_eq!(keys.len(), 1);
         assert!(keys[0].revoked_at.is_some());
+    }
+
+    // ---- redact_option ----
+
+    #[test]
+    fn test_redact_option_some_returns_stars() {
+        let opt = Some("super-secret-key".to_string());
+        let result = redact_option(&opt);
+        assert_eq!(
+            result,
+            serde_json::Value::String("****".to_string()),
+            "Some value must be redacted as ****"
+        );
+    }
+
+    #[test]
+    fn test_redact_option_none_returns_null() {
+        let opt: Option<String> = None;
+        let result = redact_option(&opt);
+        assert_eq!(
+            result,
+            serde_json::Value::Null,
+            "None value must produce JSON null"
+        );
+    }
+
+    #[test]
+    fn test_redact_option_some_hides_actual_value() {
+        // The actual secret must NOT appear in the output regardless of content
+        let opt = Some("sk-1234567890abcdef".to_string());
+        let result = redact_option(&opt);
+        let serialized = result.to_string();
+        assert!(
+            !serialized.contains("sk-1234567890abcdef"),
+            "redacted output must not contain original secret; got: {}",
+            serialized
+        );
+        assert!(serialized.contains("****"), "output must contain ****; got: {}", serialized);
+    }
+
+    // ---- CONF-03: postgres_url redaction ----
+
+    #[test]
+    fn test_conf03_postgres_url_redacted_in_json() {
+        let dsn = Some("postgres://user:secret@localhost/mnemonic".to_string());
+        let result = redact_option(&dsn);
+        assert_eq!(
+            result,
+            serde_json::Value::String("****".to_string()),
+            "postgres_url must be redacted as ****"
+        );
+        let serialized = result.to_string();
+        assert!(
+            !serialized.contains("secret"),
+            "redacted output must not contain password; got: {}",
+            serialized
+        );
     }
 
     // ---- truncate helper ----

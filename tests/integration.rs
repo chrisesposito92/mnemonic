@@ -1,6 +1,7 @@
 use mnemonic::compaction::{CompactionService, CompactRequest};
 use mnemonic::embedding::{EmbeddingEngine, LocalEngine};
 use mnemonic::summarization::MockSummarizer;
+use mnemonic::storage::{StorageBackend, SqliteBackend};
 use std::sync::{Arc, Once, OnceLock};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -613,19 +614,21 @@ async fn build_test_state() -> (AppState, Arc<MemoryService>) {
     let conn = mnemonic::db::open(&config).await.unwrap();
     let db = Arc::new(conn);
     let embedding: Arc<dyn mnemonic::embedding::EmbeddingEngine> = Arc::new(MockEmbeddingEngine);
+    let backend: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::new(db.clone()));
     let service = Arc::new(MemoryService::new(
-        db.clone(),
+        backend.clone(),
         embedding.clone(),
         "mock-model".to_string(),
     ));
     let compaction = Arc::new(CompactionService::new(
-        db.clone(), embedding.clone(), None, "mock-model".to_string(),
+        backend.clone(), db.clone(), embedding.clone(), None, "mock-model".to_string(),
     ));
     let key_service = Arc::new(mnemonic::auth::KeyService::new(db.clone()));
     let state = AppState {
         service: service.clone(),
         compaction,
         key_service,
+        backend_name: "sqlite".to_string(),
     };
     (state, service)
 }
@@ -656,7 +659,7 @@ async fn response_json(response: axum::http::Response<Body>) -> serde_json::Valu
 // API Integration Tests
 // ────────────────────────────────────────────────────────────────────────────
 
-/// API-05: GET /health returns 200 with {"status":"ok"}.
+/// API-05, CONF-04: GET /health returns 200 with {"status":"ok","backend":"sqlite"}.
 #[tokio::test]
 async fn test_health() {
     let app = build_test_app().await;
@@ -667,6 +670,7 @@ async fn test_health() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = response_json(response).await;
     assert_eq!(json["status"], "ok");
+    assert_eq!(json["backend"], "sqlite", "health response must include backend field showing active storage provider");
 }
 
 /// API-01, API-06: POST /memories returns 201 Created with a full memory object.
@@ -1008,11 +1012,12 @@ async fn build_test_compaction(with_llm: bool) -> (Arc<CompactionService>, Arc<m
     } else {
         None
     };
+    let backend: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::new(db.clone()));
     let service = Arc::new(mnemonic::service::MemoryService::new(
-        db.clone(), embedding.clone(), "mock-model".to_string(),
+        backend.clone(), embedding.clone(), "mock-model".to_string(),
     ));
     let compaction = Arc::new(CompactionService::new(
-        db.clone(), embedding.clone(), summarization, "mock-model".to_string(),
+        backend.clone(), db.clone(), embedding.clone(), summarization, "mock-model".to_string(),
     ));
     (compaction, service)
 }
@@ -1302,17 +1307,19 @@ async fn build_test_compact_state() -> (AppState, Arc<mnemonic::service::MemoryS
     let conn = mnemonic::db::open(&config).await.unwrap();
     let db = Arc::new(conn);
     let embedding: Arc<dyn mnemonic::embedding::EmbeddingEngine> = Arc::new(MockEmbeddingEngine);
+    let backend: Arc<dyn StorageBackend> = Arc::new(SqliteBackend::new(db.clone()));
     let service = Arc::new(mnemonic::service::MemoryService::new(
-        db.clone(), embedding.clone(), "mock-model".to_string(),
+        backend.clone(), embedding.clone(), "mock-model".to_string(),
     ));
     let compaction = Arc::new(CompactionService::new(
-        db.clone(), embedding.clone(), None, "mock-model".to_string(),
+        backend.clone(), db.clone(), embedding.clone(), None, "mock-model".to_string(),
     ));
     let key_service = Arc::new(mnemonic::auth::KeyService::new(db.clone()));
     let state = AppState {
         service: service.clone(),
         compaction,
         key_service,
+        backend_name: "sqlite".to_string(),
     };
     (state, service)
 }

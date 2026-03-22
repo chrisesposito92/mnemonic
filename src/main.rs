@@ -10,6 +10,7 @@ mod embedding;
 mod error;
 mod server;
 mod service;
+mod storage;
 mod summarization;
 
 #[tokio::main]
@@ -83,6 +84,14 @@ async fn main() -> Result<()> {
         Some(cli::Commands::Compact(args)) => {
             let (compaction, _config) = cli::init_compaction(db_override).await?;
             cli::run_compact(args, compaction, json).await;
+            return Ok(());
+        }
+        Some(cli::Commands::Config(config_args)) => {
+            match config_args.subcommand {
+                cli::ConfigSubcommand::Show => {
+                    cli::run_config_show(json);
+                }
+            }
             return Ok(());
         }
         // Serve or no subcommand — both start the HTTP server (per D-04, D-05, D-06)
@@ -204,9 +213,14 @@ async fn main() -> Result<()> {
         ),
     }
 
+    // Factory: create the configured StorageBackend (per D-14)
+    let backend: std::sync::Arc<dyn storage::StorageBackend> =
+        storage::create_backend(&config, db_arc.clone()).await
+            .map_err(|e| anyhow::anyhow!("backend creation failed: {}", e))?;
+
     let service = std::sync::Arc::new(
         service::MemoryService::new(
-            db_arc.clone(),
+            backend.clone(),
             embedding.clone(),
             embedding_model.clone(),
         )
@@ -215,6 +229,7 @@ async fn main() -> Result<()> {
     // 6b. Build CompactionService
     let compaction = std::sync::Arc::new(
         compaction::CompactionService::new(
+            backend.clone(),
             db_arc.clone(),
             embedding.clone(),
             llm_engine,
@@ -227,6 +242,7 @@ async fn main() -> Result<()> {
         service,
         compaction,
         key_service,
+        backend_name: config.storage_provider.clone(),  // per D-24
     };
     server::serve(&config, state).await?;
 

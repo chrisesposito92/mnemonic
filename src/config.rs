@@ -15,6 +15,18 @@ pub struct Config {
     pub llm_api_key: Option<String>,
     pub llm_base_url: Option<String>,
     pub llm_model: Option<String>,
+    /// Storage backend to use. Defaults to "sqlite". Valid values: "sqlite", "qdrant", "postgres".
+    /// Set via MNEMONIC_STORAGE_PROVIDER env var or storage_provider in TOML config.
+    pub storage_provider: String,
+    /// URL for Qdrant backend. Required when storage_provider is "qdrant".
+    /// Set via MNEMONIC_QDRANT_URL env var or qdrant_url in TOML config.
+    pub qdrant_url: Option<String>,
+    /// API key for Qdrant backend (optional even when qdrant_url is set).
+    /// Set via MNEMONIC_QDRANT_API_KEY env var or qdrant_api_key in TOML config.
+    pub qdrant_api_key: Option<String>,
+    /// Connection URL for Postgres backend. Required when storage_provider is "postgres".
+    /// Set via MNEMONIC_POSTGRES_URL env var or postgres_url in TOML config.
+    pub postgres_url: Option<String>,
 }
 
 impl Default for Config {
@@ -28,6 +40,10 @@ impl Default for Config {
             llm_api_key: None,
             llm_base_url: None,
             llm_model: None,
+            storage_provider: "sqlite".to_string(),
+            qdrant_url: None,
+            qdrant_api_key: None,
+            postgres_url: None,
         }
     }
 }
@@ -72,6 +88,33 @@ pub fn validate_config(config: &Config) -> anyhow::Result<()> {
         }
     }
 
+    // Storage provider validation (per D-04 through D-09)
+    // Note: validation passes for "qdrant"/"postgres" even when built without the feature flag —
+    // the feature-gate error comes at backend construction time (create_backend), not here.
+    match config.storage_provider.as_str() {
+        "sqlite" => {} // db_path already validated by existing logic
+        "qdrant" => {
+            if config.qdrant_url.is_none() {
+                anyhow::bail!(
+                    "storage_provider is \"qdrant\" but MNEMONIC_QDRANT_URL is not set"
+                );
+            }
+        }
+        "postgres" => {
+            if config.postgres_url.is_none() {
+                anyhow::bail!(
+                    "storage_provider is \"postgres\" but MNEMONIC_POSTGRES_URL is not set"
+                );
+            }
+        }
+        other => {
+            anyhow::bail!(
+                "unknown storage_provider {:?}: expected \"sqlite\", \"qdrant\", or \"postgres\"",
+                other
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -110,6 +153,10 @@ mod tests {
             assert!(config.llm_api_key.is_none());
             assert!(config.llm_base_url.is_none());
             assert!(config.llm_model.is_none());
+            assert_eq!(config.storage_provider, "sqlite");
+            assert!(config.qdrant_url.is_none());
+            assert!(config.qdrant_api_key.is_none());
+            assert!(config.postgres_url.is_none());
             Ok(())
         });
     }
@@ -229,5 +276,120 @@ mod tests {
     fn test_validate_config_no_llm_ok() {
         let config = Config::default(); // llm_provider defaults to None
         validate_config(&config).unwrap();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Storage provider validation tests
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_config_defaults_storage_provider() {
+        figment::Jail::expect_with(|_jail: &mut figment::Jail| {
+            let config = load_config().unwrap();
+            assert_eq!(config.storage_provider, "sqlite");
+            assert!(config.qdrant_url.is_none());
+            assert!(config.qdrant_api_key.is_none());
+            assert!(config.postgres_url.is_none());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_validate_config_sqlite_ok() {
+        let config = Config::default(); // storage_provider defaults to "sqlite"
+        validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn test_validate_config_qdrant_no_url() {
+        let config = Config {
+            storage_provider: "qdrant".to_string(),
+            qdrant_url: None,
+            ..Config::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(
+            err.to_string().contains("MNEMONIC_QDRANT_URL"),
+            "error was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_config_qdrant_with_url() {
+        let config = Config {
+            storage_provider: "qdrant".to_string(),
+            qdrant_url: Some("http://localhost:6334".to_string()),
+            ..Config::default()
+        };
+        validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn test_validate_config_postgres_no_url() {
+        let config = Config {
+            storage_provider: "postgres".to_string(),
+            postgres_url: None,
+            ..Config::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(
+            err.to_string().contains("MNEMONIC_POSTGRES_URL"),
+            "error was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_config_postgres_with_url() {
+        let config = Config {
+            storage_provider: "postgres".to_string(),
+            postgres_url: Some("postgres://user:pass@localhost/mnemonic".to_string()),
+            ..Config::default()
+        };
+        validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn test_validate_config_unknown_storage_provider() {
+        let config = Config {
+            storage_provider: "redis".to_string(),
+            ..Config::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown storage_provider"), "error was: {}", msg);
+        assert!(msg.contains("sqlite"), "error was: {}", msg);
+        assert!(msg.contains("qdrant"), "error was: {}", msg);
+        assert!(msg.contains("postgres"), "error was: {}", msg);
+    }
+
+    #[test]
+    fn test_storage_provider_env_override() {
+        figment::Jail::expect_with(|jail: &mut figment::Jail| {
+            jail.set_env("MNEMONIC_STORAGE_PROVIDER", "qdrant");
+            jail.set_env("MNEMONIC_QDRANT_URL", "http://localhost:6334");
+            let config = load_config().unwrap();
+            assert_eq!(config.storage_provider, "qdrant");
+            assert_eq!(config.qdrant_url, Some("http://localhost:6334".to_string()));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_storage_provider_toml_override() {
+        figment::Jail::expect_with(|jail: &mut figment::Jail| {
+            jail.create_file(
+                "mnemonic.toml",
+                "storage_provider = \"postgres\"\npostgres_url = \"postgres://localhost/db\"\n",
+            )?;
+            let config = load_config().unwrap();
+            assert_eq!(config.storage_provider, "postgres");
+            assert_eq!(
+                config.postgres_url,
+                Some("postgres://localhost/db".to_string())
+            );
+            Ok(())
+        });
     }
 }

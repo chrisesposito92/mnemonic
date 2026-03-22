@@ -36,6 +36,7 @@ pub struct AppState {
     pub service: std::sync::Arc<crate::service::MemoryService>,
     pub compaction: std::sync::Arc<crate::compaction::CompactionService>,
     pub key_service: std::sync::Arc<crate::auth::KeyService>,
+    pub backend_name: String,  // from config.storage_provider (per D-23, D-24)
 }
 
 /// Constructs the axum Router with all routes wired to AppState.
@@ -93,9 +94,9 @@ fn enforce_scope(
     }
 }
 
-/// GET /health — returns {"status":"ok"} with HTTP 200.
-async fn health_handler() -> Json<Value> {
-    Json(serde_json::json!({"status": "ok"}))
+/// GET /health — returns {"status":"ok","backend":"<provider>"} with HTTP 200.
+async fn health_handler(State(state): State<AppState>) -> Json<Value> {
+    Json(serde_json::json!({"status": "ok", "backend": state.backend_name}))
 }
 
 /// POST /memories — creates a new memory and returns 201 Created.

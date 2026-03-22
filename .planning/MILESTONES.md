@@ -1,5 +1,39 @@
 # Milestones
 
+## v1.4 Pluggable Storage Backends (Shipped: 2026-03-22)
+
+**Phases completed:** 5 phases, 9 plans
+
+**Key accomplishments:**
+
+- StorageBackend async trait with 7 methods + SqliteBackend wrapping existing code with zero behavior change — all 247 tests passing
+- MemoryService and CompactionService fully decoupled from SQLite via Arc<dyn StorageBackend> with dual-connection design for audit logging
+- Config extension with storage_provider field, create_backend() factory, `mnemonic config show` with secret redaction, health endpoint reports backend name
+- QdrantBackend (807 lines) behind `backend-qdrant` feature flag — gRPC via qdrant-client, score-to-distance normalization, multi-agent payload filtering
+- PostgresBackend (548 lines) behind `backend-postgres` feature flag — pgvector cosine distance, atomic transactional compaction via BEGIN/COMMIT
+- All secrets redacted (including postgres_url), dead code resolved, SUMMARY frontmatter backfilled across all phases
+
+**Delivered:** Pluggable storage layer — SQLite remains the zero-config default while Qdrant and Postgres are available as opt-in backends behind feature flags, with a config CLI for backend inspection and full secret redaction.
+
+**Stats:**
+
+- Lines of Rust: 10,763 (total)
+- Lines changed: +12,969 / -487
+- Files modified: 57
+- Commits: 41
+- Timeline: 2026-03-21 → 2026-03-22 (2 days)
+- Tests: 286 passing (84+84+60+4+54 across crates), 1 ignored
+- Requirements: 17/17 satisfied
+- Nyquist: COMPLIANT (all 5 phases)
+- Audit: TECH_DEBT (3 minor items, no blockers)
+- Git range: docs(21) → docs(25-01)
+
+### Known Gaps
+
+- `recall` CLI bypasses StorageBackend — uses raw SQLite regardless of storage_provider (cli.rs:455, v1.3 scope — defer to v1.5)
+
+---
+
 ## v1.3 CLI (Shipped: 2026-03-21)
 
 **Phases completed:** 6 phases, 11 plans, 19 tasks

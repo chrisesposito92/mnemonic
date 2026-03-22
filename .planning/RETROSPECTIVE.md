@@ -167,6 +167,53 @@
 
 ---
 
+## Milestone: v1.4 — Pluggable Storage Backends
+
+**Shipped:** 2026-03-22
+**Phases:** 5 | **Plans:** 9
+
+### What Was Built
+- StorageBackend async trait with 7 methods + SqliteBackend wrapping existing code (zero behavior change)
+- MemoryService and CompactionService decoupled from SQLite via Arc<dyn StorageBackend>
+- Config extension with storage_provider field, create_backend() factory, and `mnemonic config show` CLI
+- QdrantBackend (807 lines) behind backend-qdrant feature flag with gRPC, score normalization, multi-agent filtering
+- PostgresBackend (548 lines) behind backend-postgres feature flag with pgvector, atomic transactional compaction
+- Gap closure phase (25) for secret redaction, dead code, and frontmatter backfill
+
+### What Worked
+- Trait-first design (Phase 21) meant QdrantBackend (Phase 23) and PostgresBackend (Phase 24) could follow the SqliteBackend template exactly — no discovery work during implementation
+- Feature-gated backends (backend-qdrant, backend-postgres) kept the default binary zero-dependency; each backend is a clean opt-in
+- create_backend() factory centralized all backend construction — adding a new backend is one match arm
+- Dual-connection CompactionService design (backend + audit_db) preserved audit logging across all backends without leaking SQLite concerns into the trait
+- Milestone audit caught postgres_url redaction gap and dead_code annotation before shipping — Phase 25 closed them cleanly
+- Research phases (21, 23, 24) upfront resolved API surface questions (qdrant-client scroll vs query, sqlx bind patterns) before hitting code
+
+### What Was Inefficient
+- SUMMARY.md one-liner field extraction unreliable — 4 of 9 summaries returned empty "One-liner:" (recurring bookkeeping issue)
+- 21-02-SUMMARY.md `requirements-completed` frontmatter left empty — same gap as prior milestones, only partially fixed in Phase 25
+- recall CLI bypass of StorageBackend not caught until milestone audit — a v1.3 scope issue surfacing as v1.4 tech debt
+
+### Patterns Established
+- #[async_trait] for dyn-compatible async trait objects (native async fn in traits not dyn-compatible in 2026 Rust)
+- Feature gate errors at create_backend() not validate_config() — keeps config portable across builds
+- Per-cluster write_compaction_result() atomicity — backend-neutral pattern replacing SQLite-specific all-clusters transaction
+- sqlx default-features=false to avoid libsqlite3-sys version conflict with rusqlite
+- Julian Day Number algorithm for ISO 8601 conversion without chrono dependency (Qdrant backend)
+
+### Key Lessons
+1. Trait-first abstraction pays off: defining the contract before any implementation made all 3 backends consistent with no cross-phase rework
+2. Feature-gated optional dependencies are the right granularity — users who don't need Qdrant/Postgres never download those crates
+3. Milestone audit remains essential — it caught a real security gap (postgres_url not redacted) that phase-level verification missed
+4. recall CLI bypassing the storage abstraction shows that older code doesn't automatically benefit from new abstractions — explicit migration is needed
+5. Research phases upfront for unfamiliar APIs (qdrant-client, sqlx) prevented implementation-time surprises and kept plans accurate
+
+### Cost Observations
+- Model mix: balanced profile throughout
+- Notable: 5 phases in 2 days with 41 commits; QdrantBackend and PostgresBackend followed template pattern from SqliteBackend
+- Test suite grew from 239 → 286 (47 new tests across default, qdrant, and postgres feature sets)
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -177,6 +224,7 @@
 | v1.1 | 4 | 6 | Pattern mirroring reduced design overhead; tiered delivery (Tier 1/2) |
 | v1.2 | 5 | 8 | Layered auth (schema->service->middleware->HTTP->CLI); per-request mode detection |
 | v1.3 | 6 | 11 | Tiered init helpers for CLI UX; zero new dependencies; global --json consistency |
+| v1.4 | 5 | 9 | Trait-first abstraction; feature-gated optional backends; research phases upfront |
 
 ### Cumulative Quality
 
@@ -186,11 +234,13 @@
 | v1.1 | 68 (35 unit + 33 integration) | Yes | COMPLIANT |
 | v1.2 | 194 (57 unit + 53 integration) | Yes | COMPLIANT |
 | v1.3 | 239 (63 unit + 55+54 integration) | Yes | COMPLIANT |
+| v1.4 | 286 (across default + feature sets) | Yes | COMPLIANT |
 
 ### Top Lessons (Verified Across Milestones)
 
-1. Milestone audits before shipping catch integration gaps that per-phase verification misses (v1.0, v1.1, v1.2, v1.3)
-2. Mirror existing trait patterns when adding new engines — consistent architecture and near-zero design friction (v1.0 EmbeddingEngine -> v1.1 SummarizationEngine)
-3. SUMMARY frontmatter `requirements_completed` field is consistently skipped during execution — recurring debt across all 4 milestones; needs process fix
+1. Milestone audits before shipping catch integration gaps that per-phase verification misses (v1.0, v1.1, v1.2, v1.3, v1.4 — caught postgres_url redaction gap)
+2. Mirror existing trait patterns when adding new engines — consistent architecture and near-zero design friction (v1.0 EmbeddingEngine -> v1.1 SummarizationEngine -> v1.4 StorageBackend)
+3. SUMMARY frontmatter `requirements_completed` field is consistently skipped during execution — recurring debt across all 5 milestones; needs process fix
 4. Init tier design is load-bearing for CLI UX — users feel the difference between 50ms and 3s (v1.3)
 5. Zero new dependencies for an entire milestone is achievable when the foundation is well-designed (v1.3)
+6. Trait-first abstraction design (define contract before implementation) makes subsequent implementations template-driven with near-zero rework (v1.4)

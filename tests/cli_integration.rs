@@ -1900,3 +1900,170 @@ fn test_json_flag_no_human_output() {
     let _: serde_json::Value = serde_json::from_str(&stdout)
         .expect("stdout must be valid JSON");
 }
+
+// ---- CONF-03: config show -------------------------------------------------------
+
+/// CONF-03: `mnemonic config show` exits 0 and prints all expected section headers.
+#[test]
+fn test_config_show_exits_zero_and_prints_sections() {
+    let db = TempDb::new("config_show_sections");
+    let bin = binary();
+
+    let output = Command::new(&bin)
+        .args(["--db", db.path_str(), "config", "show"])
+        .output()
+        .expect("failed to run mnemonic binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "config show must exit 0; stderr: {}",
+        stderr
+    );
+    assert!(
+        stdout.contains("Server:"),
+        "output must contain 'Server:' section; got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Storage:"),
+        "output must contain 'Storage:' section; got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Embedding:"),
+        "output must contain 'Embedding:' section; got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("LLM:"),
+        "output must contain 'LLM:' section; got:\n{}",
+        stdout
+    );
+}
+
+/// CONF-03: `mnemonic config show` displays expected config keys.
+#[test]
+fn test_config_show_displays_expected_fields() {
+    let db = TempDb::new("config_show_fields");
+    let bin = binary();
+
+    let output = Command::new(&bin)
+        .args(["--db", db.path_str(), "config", "show"])
+        .output()
+        .expect("failed to run mnemonic binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "config show must exit 0");
+    assert!(
+        stdout.contains("port"),
+        "output must contain 'port' field; got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("db_path"),
+        "output must contain 'db_path' field; got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("storage_provider"),
+        "output must contain 'storage_provider' field; got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("embedding_provider"),
+        "output must contain 'embedding_provider' field; got:\n{}",
+        stdout
+    );
+}
+
+/// CONF-03: `mnemonic config show` redacts secrets as **** when set.
+#[test]
+fn test_config_show_redacts_secrets() {
+    let db = TempDb::new("config_show_redact");
+    let bin = binary();
+
+    let output = Command::new(&bin)
+        .args(["--db", db.path_str(), "config", "show"])
+        .env("MNEMONIC_OPENAI_API_KEY", "sk-super-secret")
+        .output()
+        .expect("failed to run mnemonic binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "config show must exit 0 even with secrets set");
+    assert!(
+        stdout.contains("****"),
+        "output must redact secret as ****; got:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("sk-super-secret"),
+        "output must NOT expose the actual secret value; got:\n{}",
+        stdout
+    );
+}
+
+/// CONF-03: `mnemonic config show --json` outputs valid JSON with expected keys.
+#[test]
+fn test_config_show_json_outputs_valid_json_with_expected_keys() {
+    let db = TempDb::new("config_show_json");
+    let bin = binary();
+
+    let output = Command::new(&bin)
+        .args(["--db", db.path_str(), "--json", "config", "show"])
+        .output()
+        .expect("failed to run mnemonic binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "config show --json must exit 0; stderr: {}",
+        stderr
+    );
+
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .expect("stdout must be valid JSON for config show --json");
+
+    assert!(parsed.is_object(), "config show --json must output a JSON object");
+    assert!(parsed["port"].is_number(), "JSON must contain numeric 'port' field");
+    assert!(parsed["db_path"].is_string(), "JSON must contain string 'db_path' field");
+    assert!(parsed["storage_provider"].is_string(), "JSON must contain string 'storage_provider' field");
+    assert!(parsed["embedding_provider"].is_string(), "JSON must contain string 'embedding_provider' field");
+}
+
+/// CONF-03: `mnemonic config show --json` redacts secrets as "****" in JSON output.
+#[test]
+fn test_config_show_json_redacts_secrets() {
+    let db = TempDb::new("config_show_json_redact");
+    let bin = binary();
+
+    let output = Command::new(&bin)
+        .args(["--db", db.path_str(), "--json", "config", "show"])
+        .env("MNEMONIC_OPENAI_API_KEY", "sk-openai-secret-value")
+        .output()
+        .expect("failed to run mnemonic binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "config show --json must exit 0");
+
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .expect("stdout must be valid JSON");
+
+    assert_eq!(
+        parsed["openai_api_key"],
+        serde_json::Value::String("****".to_string()),
+        "openai_api_key must be redacted as **** in JSON; got: {}",
+        parsed["openai_api_key"]
+    );
+    assert!(
+        !stdout.contains("sk-openai-secret-value"),
+        "JSON output must NOT contain actual secret value"
+    );
+}

@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A single Rust binary that gives any AI agent persistent memory via a simple REST API and full CLI — including agent-triggered memory compaction with optional LLM summarization, API key authentication, and terminal-native subcommands for every operation. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
+A single Rust binary that gives any AI agent persistent memory via a simple REST API and full CLI — including agent-triggered memory compaction with optional LLM summarization, API key authentication, pluggable storage backends (SQLite, Qdrant, Postgres), and terminal-native subcommands for every operation. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
 
 ## Core Value
 
@@ -45,27 +45,31 @@ Any AI agent can store and semantically search memories out of the box with zero
 - `mnemonic compact` subcommand with dry-run, agent scoping, and threshold control — v1.3
 - Global `--json` flag for machine-readable output across all subcommands — v1.3
 - Consistent exit codes (0 success, 1 error) and stdout/stderr separation — v1.3
+- StorageBackend async trait with store, get_by_id, list, search, delete, fetch_candidates, write_compaction_result — v1.4
+- SqliteBackend wraps existing SQLite+sqlite-vec code with zero behavior change — v1.4
+- MemoryService and CompactionService hold Arc<dyn StorageBackend> instead of direct connections — v1.4
+- CompactionService dual-connection design (backend + audit_db) for cross-backend audit logging — v1.4
+- Config struct extended with storage_provider, qdrant_url, qdrant_api_key, postgres_url fields — v1.4
+- create_backend() factory function returns correct StorageBackend based on config — v1.4
+- `mnemonic config show` CLI subcommand with human-readable and JSON output, all secrets redacted — v1.4
+- GET /health reports active storage backend name — v1.4
+- QdrantBackend implements all 7 StorageBackend methods using qdrant-client gRPC, feature-gated behind backend-qdrant — v1.4
+- Qdrant cosine score normalized to lower-is-better distance via 1.0 - score — v1.4
+- Compaction on Qdrant uses upsert-first-then-delete with documented non-transactional semantics — v1.4
+- Multi-agent namespace isolation via Qdrant payload filtering on agent_id — v1.4
+- PostgresBackend implements all 7 StorageBackend methods using sqlx + pgvector, feature-gated behind backend-postgres — v1.4
+- pgvector cosine distance via `<=>` operator with HNSW index for search — v1.4
+- Postgres transactions for atomic compaction (BEGIN/INSERT/DELETE/COMMIT) — v1.4
+- Multi-agent namespace isolation via SQL WHERE agent_id filtering — v1.4
 
 ### Active
 
-<!-- v1.4 Pluggable Storage Backends -->
-
-(Defining requirements — see REQUIREMENTS.md)
-
-## Current Milestone: v1.4 Pluggable Storage Backends
-
-**Goal:** Make the storage layer pluggable via a trait so users can swap SQLite for Qdrant, Postgres, or other backends — with a `mnemonic config` CLI for managing backend selection.
-
-**Target features:**
-- Storage trait abstraction behind which SQLite, Qdrant, and Postgres can sit
-- `mnemonic config` subcommand for viewing/switching backend configuration
-- SQLite remains the zero-config default — new backends are opt-in
+(No active requirements — next milestone not yet defined)
 
 ### Out of Scope
 
 - Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
-- ~~Pluggable storage backends (Qdrant, Postgres)~~ — Promoted to Active in v1.4
 - Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
 - gRPC support — doubles interface surface; REST sufficient for all reviewed use cases
 - Memory decay / TTL — surprising behavior that silently loses data
@@ -76,22 +80,28 @@ Any AI agent can store and semantically search memories out of the box with zero
 - Background daemon mode (--daemon) — platform-specific complexity; systemd/launchd handle this better
 - Multi-format output (--format csv/table/json) — --json + jq covers all machine formats; two modes (human/JSON) not three
 - Automatic model download — model is bundled in binary; clear error better than silent download
+- Cross-backend migration (v1.4 decision) — all backends must be stable first; deferred to v1.5
+- Auto-migration on config change — surprising behavior that silently moves data; explicit migration better
+- Multi-backend fan-out (write to multiple) — complexity explosion; single active backend is simpler and sufficient
+- Backend-specific query syntax — leaky abstraction; trait must normalize all operations
+- Auth keys in remote backends — auth must stay in local SQLite; no network round-trip per request
 
 ## Context
 
-v1.3 shipped with 20 phases (36 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3). v1.4 adds pluggable storage backends — SQLite remains default, with Qdrant and Postgres as opt-in alternatives behind a trait abstraction.
-Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output).
-22,198 lines of Rust. 239 tests passing, zero compiler warnings. MIT licensed.
+v1.4 shipped with 25 phases (45 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4). Storage layer is now pluggable via StorageBackend trait — SQLite remains the zero-config default, with Qdrant and Postgres as opt-in alternatives behind feature flags.
+Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional).
+~10,763 lines of Rust. 286 tests passing, 1 ignored, zero compiler warnings. MIT licensed.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
-CLI: 6 subcommands — `serve`, `remember`, `recall`, `search`, `compact`, `keys` — all with `--json` flag, consistent exit codes, stdout/stderr separation.
-Init tiers: DB-only (~50ms) for keys/recall, medium (DB+embedding, ~2-3s) for remember/search, full (DB+embedding+LLM) for compact.
+CLI: 7 subcommands — `serve`, `remember`, `recall`, `search`, `compact`, `keys`, `config` — all with `--json` flag, consistent exit codes, stdout/stderr separation.
+Init tiers: DB-only (~50ms) for keys/recall/config, medium (DB+embedding, ~2-3s) for remember/search, full (DB+embedding+LLM) for compact.
 Target users: AI agent developers who need persistent memory across sessions.
-Single-binary distribution — no Python, no Docker, no external services required.
+Single-binary distribution — no Python, no Docker, no external services required (SQLite default). Optional Qdrant or Postgres backends for teams wanting scalable infrastructure.
 
 ## Constraints
 
 - **Language**: Rust — required for single-binary distribution and performance
-- **Storage**: SQLite + sqlite-vec — no external databases, everything in one file
+- **Default Storage**: SQLite + sqlite-vec — zero-config default, everything in one file
+- **Optional Storage**: Qdrant (gRPC, feature-gated) and Postgres+pgvector (SQL, feature-gated) — opt-in
 - **Async DB**: tokio-rusqlite — async wrapper to avoid blocking tokio runtime
 - **Embeddings**: candle — pure Rust inference, not ort (which requires ONNX Runtime)
 - **HTTP**: axum — modern, ergonomic Rust HTTP framework
@@ -127,6 +137,15 @@ Single-binary distribution — no Python, no Docker, no external services requir
 | Direct rusqlite seeding for fast-path tests | Avoids embedding model overhead in recall/keys tests; seed_memory() pattern | Good — v1.3 |
 | Global --json on Cli struct (not per-subcommand) | One extraction point in main.rs; consistent across all handlers | Good — v1.3 |
 | stderr audit trail regardless of --json mode | Operators always see progress; scripts parse stdout only | Good — v1.3 |
+| #[async_trait] for StorageBackend (not native async fn) | Native async fn in traits is not dyn-compatible as of early 2026 | Good — v1.4 |
+| KeyService stays on direct Arc<Connection> | Auth must not route through a potentially remote StorageBackend | Good — v1.4 |
+| StorageBackend distance contract is lower-is-better | Qdrant scores (higher-is-better) must convert via 1.0 - score; consistent for all backends | Good — v1.4 |
+| Feature-gated backends (backend-qdrant, backend-postgres) | Default binary carries zero new dependencies; opt-in only | Good — v1.4 |
+| CompactionService dual-connection design | backend for memory ops, audit_db for compact_runs — audit is SQLite-specific infrastructure | Good — v1.4 |
+| Per-cluster write_compaction_result() atomicity | Replaces all-clusters-in-one-transaction; necessary for backend abstraction | Good — v1.4 |
+| Feature gate errors at create_backend() not validate_config() | Keeps config portable across builds with different feature sets | Good — v1.4 |
+| sqlx default-features=false | Prevents libsqlite3-sys version conflict between sqlx-sqlite and rusqlite 0.37 | Good — v1.4 |
+| postgres_url treated as secret (redacted in config show) | Credentials may be embedded in connection string; consistent with other secrets | Good — v1.4 |
 
 ## Evolution
 
@@ -146,4 +165,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after v1.4 milestone start*
+*Last updated: 2026-03-22 after v1.4 milestone completion*
