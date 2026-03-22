@@ -16,6 +16,9 @@ mod summarization;
 #[cfg(feature = "interface-grpc")]
 mod grpc;
 
+#[cfg(feature = "dashboard")]
+mod dashboard;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI args FIRST — before any I/O or initialization (per D-04)
@@ -247,6 +250,9 @@ async fn main() -> Result<()> {
         key_service: key_service.clone(),
         backend_name: config.storage_provider.clone(),
     };
+
+    #[cfg(feature = "dashboard")]
+    tracing::info!("Dashboard enabled -- serving at /ui");
 
     #[cfg(feature = "interface-grpc")]
     {

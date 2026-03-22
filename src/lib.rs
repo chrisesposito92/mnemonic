@@ -12,3 +12,6 @@ pub mod summarization;
 
 #[cfg(feature = "interface-grpc")]
 pub mod grpc;
+
+#[cfg(feature = "dashboard")]
+pub mod dashboard;

@@ -19,6 +19,8 @@ backend-postgres = ["dep:sqlx", "dep:pgvector"]
 # qdrant-client's prost ^0.13.3 anchor. DO NOT upgrade to tonic 0.14
 # without verifying qdrant-client also moves to prost 0.14.
 interface-grpc = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-health", "dep:tonic-reflection", "dep:tower"]
+# Optional embedded web dashboard (Phase 30). Build with: npm ci && npm run build in dashboard/, then cargo build --features dashboard
+dashboard = ["dep:rust-embed", "dep:axum-embed"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -56,6 +58,8 @@ prost = { version = "0.13", optional = true }
 tonic-health = { version = "0.13", optional = true }
 tonic-reflection = { version = "0.13", optional = true }
 tower = { version = "0.5", optional = true }
+rust-embed = { version = "8.11", optional = true }
+axum-embed = { version = "0.1", optional = true }
 
 [build-dependencies]
 # tonic-build is always present as a build dependency so build.rs compiles correctly.
