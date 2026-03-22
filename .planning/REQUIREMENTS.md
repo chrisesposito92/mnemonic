@@ -74,30 +74,30 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PROTO-01 | — | Pending |
-| PROTO-02 | — | Pending |
-| PROTO-03 | — | Pending |
-| PROTO-04 | — | Pending |
-| GRPC-01 | — | Pending |
-| GRPC-02 | — | Pending |
-| GRPC-03 | — | Pending |
-| GRPC-04 | — | Pending |
-| GRPC-05 | — | Pending |
-| HEALTH-01 | — | Pending |
-| HEALTH-02 | — | Pending |
-| AUTH-01 | — | Pending |
-| AUTH-02 | — | Pending |
-| AUTH-03 | — | Pending |
-| SERVER-01 | — | Pending |
-| SERVER-02 | — | Pending |
-| SERVER-03 | — | Pending |
-| DEBT-01 | — | Pending |
+| PROTO-01 | Phase 26 | Pending |
+| PROTO-02 | Phase 26 | Pending |
+| PROTO-03 | Phase 26 | Pending |
+| PROTO-04 | Phase 26 | Pending |
+| GRPC-01 | Phase 28 | Pending |
+| GRPC-02 | Phase 28 | Pending |
+| GRPC-03 | Phase 28 | Pending |
+| GRPC-04 | Phase 28 | Pending |
+| GRPC-05 | Phase 28 | Pending |
+| HEALTH-01 | Phase 28 | Pending |
+| HEALTH-02 | Phase 28 | Pending |
+| AUTH-01 | Phase 27 | Pending |
+| AUTH-02 | Phase 27 | Pending |
+| AUTH-03 | Phase 27 | Pending |
+| SERVER-01 | Phase 27 | Pending |
+| SERVER-02 | Phase 27 | Pending |
+| SERVER-03 | Phase 27 | Pending |
+| DEBT-01 | Phase 29 | Pending |
 
 **Coverage:**
 - v1.5 requirements: 18 total
-- Mapped to phases: 0
-- Unmapped: 18
+- Mapped to phases: 18
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-22*
-*Last updated: 2026-03-22 after initial definition*
+*Last updated: 2026-03-22 after roadmap creation*

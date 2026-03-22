@@ -2,7 +2,7 @@
 
 Framework-agnostic agent memory server — persistent semantic memory via a simple REST API.
 
-Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. Optionally protect your instance with API key authentication — scoped to individual agents for enforced namespace isolation. No external services, no configuration required — it works out of the box with a bundled embedding model.
+Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. Optionally protect your instance with API key authentication — scoped to individual agents for enforced namespace isolation. Choose your storage backend — SQLite (zero-config default), Qdrant, or Postgres+pgvector — depending on your scale needs. No external services, no configuration required — it works out of the box with a bundled embedding model.
 
 ## Table of Contents
 
@@ -13,7 +13,8 @@ Mnemonic is a single binary that gives any AI agent durable, semantically search
 - [API Reference](#api-reference)
   - [POST /memories/compact](#post-memoriescompact)
   - [Key Management](#key-management-endpoints)
-- [CLI](#cli) (serve, remember, recall, search, compact, keys)
+- [Storage Backends](#storage-backends)
+- [CLI](#cli) (serve, remember, recall, search, compact, keys, config)
 - [Usage Examples](#usage-examples)
 - [How It Works](#how-it-works)
 - [Contributing](#contributing)
@@ -81,6 +82,10 @@ All configuration is optional. Mnemonic works with zero configuration.
 | `MNEMONIC_LLM_API_KEY` | — | LLM API key (required when `MNEMONIC_LLM_PROVIDER` is set) |
 | `MNEMONIC_LLM_BASE_URL` | — | Custom LLM API base URL (for OpenAI-compatible providers) |
 | `MNEMONIC_LLM_MODEL` | — | LLM model name (defaults to provider's default) |
+| `MNEMONIC_STORAGE_PROVIDER` | `sqlite` | Storage backend: `sqlite`, `qdrant`, or `postgres` |
+| `MNEMONIC_QDRANT_URL` | — | Qdrant gRPC URL (required when `MNEMONIC_STORAGE_PROVIDER=qdrant`) |
+| `MNEMONIC_QDRANT_API_KEY` | — | Qdrant API key (optional) |
+| `MNEMONIC_POSTGRES_URL` | — | Postgres connection URL (required when `MNEMONIC_STORAGE_PROVIDER=postgres`) |
 
 **Precedence:** env vars > TOML file > compiled defaults.
 
@@ -96,6 +101,14 @@ embedding_provider = "local"
 # llm_provider = "openai"
 # llm_api_key = "sk-..."
 # llm_model = "gpt-4o-mini"
+
+# Optional: switch storage backend (default: "sqlite")
+# storage_provider = "qdrant"
+# qdrant_url = "http://localhost:6334"
+# qdrant_api_key = "..."
+
+# storage_provider = "postgres"
+# postgres_url = "postgres://user:pass@localhost/mnemonic"
 ```
 
 Set `MNEMONIC_CONFIG_PATH` to point to a different TOML file location.
@@ -152,7 +165,7 @@ Check server readiness.
 
 **Response 200:**
 ```json
-{"status": "ok"}
+{"status": "ok", "backend": "sqlite"}
 ```
 
 **curl:**
@@ -479,6 +492,66 @@ curl -s -X DELETE http://localhost:8080/keys/019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5
 
 ---
 
+## Storage Backends
+
+Mnemonic supports three storage backends. The default binary uses SQLite with zero configuration. Qdrant and Postgres backends are opt-in via Cargo feature flags — the default binary carries no extra dependencies.
+
+### SQLite (default)
+
+Zero-config, everything in a single file. Uses [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector search. No setup needed.
+
+```bash
+./mnemonic  # Just works — stores data in ./mnemonic.db
+```
+
+### Qdrant
+
+Requires a running Qdrant instance. Build with the `backend-qdrant` feature flag.
+
+```bash
+# Build with Qdrant support
+cargo build --features backend-qdrant
+
+# Start Qdrant (Docker)
+docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+
+# Run Mnemonic with Qdrant backend
+MNEMONIC_STORAGE_PROVIDER=qdrant MNEMONIC_QDRANT_URL=http://localhost:6334 ./mnemonic
+```
+
+Mnemonic auto-creates the collection and payload indexes on first start. Compaction uses upsert-then-delete (non-transactional — safe but not atomic).
+
+### Postgres + pgvector
+
+Requires a Postgres instance with the [pgvector](https://github.com/pgvector/pgvector) extension. Build with the `backend-postgres` feature flag.
+
+```bash
+# Build with Postgres support
+cargo build --features backend-postgres
+
+# Start Postgres with pgvector (Docker)
+docker run -e POSTGRES_PASSWORD=secret -p 5432:5432 pgvector/pgvector:pg17
+
+# Run Mnemonic with Postgres backend
+MNEMONIC_STORAGE_PROVIDER=postgres \
+  MNEMONIC_POSTGRES_URL=postgres://postgres:secret@localhost/mnemonic \
+  ./mnemonic
+```
+
+Mnemonic auto-creates the `vector` extension, table, and HNSW index on first start. Compaction is fully atomic via Postgres transactions.
+
+### Backend Comparison
+
+| | SQLite | Qdrant | Postgres |
+|---|--------|--------|----------|
+| Setup | Zero-config | Docker/hosted | Docker/hosted |
+| Feature flag | *(default)* | `backend-qdrant` | `backend-postgres` |
+| Vector search | sqlite-vec KNN | Native cosine | pgvector HNSW |
+| Compaction | Atomic (SQLite txn) | Non-transactional | Atomic (Postgres txn) |
+| Best for | Single-agent, local dev | Dedicated vector DB at scale | Teams with existing Postgres |
+
+---
+
 ## CLI
 
 Mnemonic includes a full CLI with subcommands for every operation. CLI commands operate directly on the database — the server does not need to be running. All subcommands support `--json` for machine-readable output.
@@ -512,6 +585,10 @@ echo "piped content" | ./mnemonic remember --agent-id my-agent
 ./mnemonic keys create --name "scoped-key" --scope research-bot
 ./mnemonic keys list
 ./mnemonic keys revoke a1b2c3d4
+
+# Show resolved configuration (secrets redacted)
+./mnemonic config show
+./mnemonic config show --json
 
 # JSON output (works on all subcommands)
 ./mnemonic recall --json
@@ -725,11 +802,13 @@ def handle_tool_call(tool_name, args, agent_id):
 
 ## How It Works
 
-Mnemonic stores memories in a single SQLite file using [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector similarity search. When you POST a memory, Mnemonic embeds the content using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) (~22 MB), a compact but high-quality sentence embedding model, running locally via [candle](https://github.com/huggingface/candle) — a pure-Rust ML framework with no native library dependencies. The model is downloaded from HuggingFace Hub on first run and cached at `~/.cache/huggingface/`. When you search, your query is embedded with the same model and KNN vector search finds the closest memories by L2 distance. Optionally, you can switch to OpenAI `text-embedding-3-small` by setting `MNEMONIC_OPENAI_API_KEY` — no other configuration needed.
+Mnemonic stores memories in a pluggable storage backend accessed through an async `StorageBackend` trait. By default, it uses a single SQLite file with [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector similarity search — zero configuration, everything in one file. Alternatively, you can use [Qdrant](https://qdrant.tech/) (via gRPC) or [Postgres + pgvector](https://github.com/pgvector/pgvector) for teams that need scalable infrastructure. Qdrant and Postgres backends are opt-in via Cargo feature flags — the default binary carries no extra dependencies.
+
+When you POST a memory, Mnemonic embeds the content using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) (~22 MB), a compact but high-quality sentence embedding model, running locally via [candle](https://github.com/huggingface/candle) — a pure-Rust ML framework with no native library dependencies. The model is downloaded from HuggingFace Hub on first run and cached at `~/.cache/huggingface/`. When you search, your query is embedded with the same model and the storage backend finds the closest memories by vector distance. Optionally, you can switch to OpenAI `text-embedding-3-small` by setting `MNEMONIC_OPENAI_API_KEY` — no other configuration needed.
 
 **Authentication** is optional and activates automatically when API keys exist. Keys are hashed with BLAKE3 and compared in constant time. Each key can be scoped to a specific `agent_id`, enforcing namespace isolation at the handler layer — a scoped key physically cannot access another agent's memories. When no keys exist, all requests pass through (open mode). The `GET /health` endpoint is always public.
 
-**Compaction** works in two tiers. **Tier 1 (default)** uses vector cosine similarity to cluster near-duplicate memories and merges them algorithmically — tags are unioned, timestamps take the earliest, and content is concatenated. No LLM required. **Tier 2 (opt-in)** activates when `MNEMONIC_LLM_PROVIDER` is configured — clustered memories are sent to the LLM for rich summarization instead of simple concatenation. If the LLM call fails, compaction falls back to Tier 1 automatically. All merges are atomic (single SQLite transaction) and scoped to the requesting agent — one agent's compaction never touches another agent's memories.
+**Compaction** works in two tiers. **Tier 1 (default)** uses vector cosine similarity to cluster near-duplicate memories and merges them algorithmically — tags are unioned, timestamps take the earliest, and content is concatenated. No LLM required. **Tier 2 (opt-in)** activates when `MNEMONIC_LLM_PROVIDER` is configured — clustered memories are sent to the LLM for rich summarization instead of simple concatenation. If the LLM call fails, compaction falls back to Tier 1 automatically. Merges are scoped to the requesting agent — one agent's compaction never touches another agent's memories. Atomicity depends on the storage backend: SQLite and Postgres use transactions; Qdrant uses upsert-then-delete (safe but not atomic).
 
 ---
 
