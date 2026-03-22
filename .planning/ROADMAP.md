@@ -99,8 +99,8 @@
   5. Build fails with a clear compile-time error if `--features dashboard` is set but `dashboard/dist/index.html` is missing
 **Plans:** 2 plans
 Plans:
-- [ ] 30-01-PLAN.md — Frontend scaffold + Rust feature gate wiring
-- [ ] 30-02-PLAN.md — Integration tests + CI release workflow
+- [ ] 30-01-PLAN.md — Frontend scaffold, Rust feature gate, developer docs
+- [ ] 30-02-PLAN.md — Full-router integration tests + CI release workflow
 **UI hint**: yes
 
 ### Phase 31: Core UI
