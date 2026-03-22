@@ -81,7 +81,7 @@
 
 **Milestone Goal:** Embed a lightweight operational dashboard into the mnemonic binary for visual memory exploration, agent/session monitoring, and compaction triggering — served at `/ui`, feature-gated behind `dashboard`, zero impact on default binary.
 
-- [ ] **Phase 30: Dashboard Foundation** — Build pipeline, rust-embed integration, feature gate, and CI wiring
+- [x] **Phase 30: Dashboard Foundation** — Build pipeline, rust-embed integration, feature gate, and CI wiring (completed 2026-03-22)
 - [ ] **Phase 31: Core UI** — Auth flow, memory browsing, search, agent breakdown, and GET /stats endpoint
 - [ ] **Phase 32: Operational Actions** — Compaction panel with dry-run diff preview and UI polish
 
@@ -97,10 +97,10 @@
   3. CI release workflow runs `npm ci && npm run build` in `dashboard/` before `cargo build --release --features dashboard`, producing a release artifact with an embedded UI
   4. A separate CI job runs `cargo build` (default features) + `cargo test` as a regression gate — failure blocks the release
   5. Build fails with a clear compile-time error if `--features dashboard` is set but `dashboard/dist/index.html` is missing
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
-- [ ] 30-01-PLAN.md — Frontend scaffold, Rust feature gate, developer docs
-- [ ] 30-02-PLAN.md — Full-router integration tests + CI release workflow
+- [x] 30-01-PLAN.md — Frontend scaffold, Rust feature gate, developer docs
+- [x] 30-02-PLAN.md — Full-router integration tests + CI release workflow
 **UI hint**: yes
 
 ### Phase 31: Core UI
@@ -161,6 +161,6 @@ Plans:
 | 27. Dual-Server Skeleton and Auth Layer | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 28. Core RPC Handlers, Health, and Discoverability | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 29. StorageBackend Routing Fix | v1.5 | 1/1 | Complete | 2026-03-22 |
-| 30. Dashboard Foundation | v1.6 | 0/2 | Planning | - |
+| 30. Dashboard Foundation | v1.6 | 2/2 | Complete   | 2026-03-22 |
 | 31. Core UI | v1.6 | 0/TBD | Not started | - |
 | 32. Operational Actions | v1.6 | 0/TBD | Not started | - |

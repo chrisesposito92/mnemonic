@@ -9,9 +9,9 @@ Requirements for the embedded web dashboard milestone. Each maps to roadmap phas
 
 ### Build Infrastructure
 
-- [ ] **BUILD-01**: Dashboard assets embedded into binary at compile time via rust-embed, served at `/ui` via axum-embed with SPA fallback
-- [ ] **BUILD-02**: Dashboard feature-gated behind `dashboard` Cargo feature with zero impact on default binary
-- [ ] **BUILD-03**: CI release workflow updated with Node.js build step before cargo build; separate job verifies default binary still passes all tests
+- [x] **BUILD-01**: Dashboard assets embedded into binary at compile time via rust-embed, served at `/ui` via axum-embed with SPA fallback
+- [x] **BUILD-02**: Dashboard feature-gated behind `dashboard` Cargo feature with zero impact on default binary
+- [x] **BUILD-03**: CI release workflow updated with Node.js build step before cargo build; separate job verifies default binary still passes all tests
 
 ### Data Browsing
 
@@ -57,9 +57,9 @@ Deferred to future release. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BUILD-01 | Phase 30 | Pending |
-| BUILD-02 | Phase 30 | Pending |
-| BUILD-03 | Phase 30 | Pending |
+| BUILD-01 | Phase 30 | Complete |
+| BUILD-02 | Phase 30 | Complete |
+| BUILD-03 | Phase 30 | Complete |
 | BROWSE-01 | Phase 31 | Pending |
 | BROWSE-02 | Phase 31 | Pending |
 | BROWSE-03 | Phase 31 | Pending |

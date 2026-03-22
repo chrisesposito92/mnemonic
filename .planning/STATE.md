@@ -2,16 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: Web UI/Dashboard
-status: planning
-stopped_at: Phase 30 UI-SPEC approved
-last_updated: "2026-03-22T19:40:53.474Z"
-last_activity: 2026-03-22 — Roadmap created for v1.6 (3 phases, 12 requirements mapped)
+status: Phase complete — ready for verification
+stopped_at: Completed 30-dashboard-foundation 30-02-PLAN.md
+last_updated: "2026-03-22T21:21:29.968Z"
 progress:
   total_phases: 3
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  completed_phases: 1
+  total_plans: 2
+  completed_plans: 2
 ---
 
 # Project State
@@ -21,16 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** v1.6 Web UI/Dashboard — Phase 30: Dashboard Foundation
+**Current focus:** Phase 30 — dashboard-foundation
 
 ## Current Position
 
-Phase: 30 of 32 (Dashboard Foundation)
-Plan: — (not yet planned)
-Status: Ready to plan
-Last activity: 2026-03-22 — Roadmap created for v1.6 (3 phases, 12 requirements mapped)
-
-Progress: [░░░░░░░░░░] 0% (v1.6)
+Phase: 30 (dashboard-foundation) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -49,6 +43,8 @@ Progress: [░░░░░░░░░░] 0% (v1.6)
 | v1.3 CLI | 6 | 11 | 2 days |
 | v1.4 Pluggable Storage Backends | 5 | 9 | 2 days |
 | v1.5 gRPC | 4 | 7 | 1 day |
+| Phase 30-dashboard-foundation P01 | 356 | 2 tasks | 19 files |
+| Phase 30-dashboard-foundation P02 | 4min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -63,6 +59,12 @@ Recent decisions relevant to v1.6:
 - Hash routing (#/path) chosen over history routing to avoid SPA hard-reload 404s at zero cost
 - Bearer token stored in Preact component state only — never localStorage; CSP header on all /ui/ responses
 - Dashboard router merged at top level (not inside protected router) to prevent auth middleware blocking asset loads
+- [Phase 30-dashboard-foundation]: vite-plugin-singlefile must come after tailwindcss() in plugins array (Research Pitfall 2) — verified: single-file output produced
+- [Phase 30-dashboard-foundation]: Dashboard router merged outside protected router in build_router() — D-15 prevents auth middleware blocking /ui/ assets
+- [Phase 30-dashboard-foundation]: No #[allow_missing = true] on DashboardAssets — compile-time error when dist/ absent is the BUILD-01 safety gate
+- [Phase 30-dashboard-foundation]: build_router(test_state) as test boundary — proves /ui is mounted in merged router, not just that dashboard::router() works in isolation
+- [Phase 30-dashboard-foundation]: Regression CI job uses debug mode (cargo build not --release) — saves CI time, proves compile and tests pass
+- [Phase 30-dashboard-foundation]: node-version-file: dashboard/.node-version — guarantees CI and local dev use same Node version
 
 ### Pending Todos
 
@@ -75,6 +77,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-22T19:40:53.472Z
-Stopped at: Phase 30 UI-SPEC approved
-Resume file: .planning/phases/30-dashboard-foundation/30-UI-SPEC.md
+Last session: 2026-03-22T21:21:29.966Z
+Stopped at: Completed 30-dashboard-foundation 30-02-PLAN.md
+Resume file: None
