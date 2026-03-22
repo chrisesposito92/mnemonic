@@ -1,15 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.4
-milestone_name: Pluggable Storage Backends
-status: complete
-stopped_at: Milestone v1.4 archived
-last_updated: "2026-03-22T05:00:00Z"
+milestone: v1.5
+milestone_name: gRPC
+status: defining_requirements
+stopped_at: null
+last_updated: "2026-03-22T06:00:00Z"
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 9
-  completed_plans: 9
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # Project State
@@ -19,13 +19,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Milestone v1.4 complete — planning next milestone
+**Current focus:** Milestone v1.5 gRPC — defining requirements
 
 ## Current Position
 
-Phase: 25 (final)
-Plan: Complete
-Milestone: v1.4 SHIPPED
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-22 — Milestone v1.5 started
 
 ## Performance Metrics
 
@@ -56,10 +57,10 @@ None.
 
 ### Blockers/Concerns
 
-- recall CLI bypasses StorageBackend — uses raw SQLite regardless of storage_provider (cli.rs:455, tech debt from v1.3 — defer to v1.5)
+- recall CLI bypasses StorageBackend — uses raw SQLite regardless of storage_provider (cli.rs:455, tech debt from v1.3 — fixing in v1.5)
 
 ## Session Continuity
 
 Last session: 2026-03-22
-Stopped at: Milestone v1.4 archived
+Stopped at: Milestone v1.5 started — defining requirements
 Resume file: None

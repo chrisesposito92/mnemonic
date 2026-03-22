@@ -64,14 +64,23 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-(No active requirements — next milestone not yet defined)
+#### Current Milestone: v1.5 gRPC
+
+**Goal:** Add a gRPC interface for high-throughput agent-to-server communication alongside the existing REST API.
+
+**Target features:**
+- gRPC service definition (.proto) for hot-path operations (store, search, recall/list, delete, health)
+- Tonic-based gRPC server on a separate port alongside REST (dual protocol)
+- Unary RPCs mirroring REST behavior — no streaming
+- gRPC configuration (port, optional TLS)
+- Fix recall CLI to route through StorageBackend trait (v1.4 tech debt)
 
 ### Out of Scope
 
 - Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
 - Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
-- gRPC support — doubles interface surface; REST sufficient for all reviewed use cases
+- gRPC support for compaction/keys — hot-path only in v1.5; compaction and key management stay REST-only to limit interface surface
 - Memory decay / TTL — surprising behavior that silently loses data
 - Multi-node / distributed mode — SQLite not designed for multi-writer distributed use
 - Session-scoped compaction — agent_id scoping sufficient; session_id adds complexity
@@ -80,7 +89,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 - Background daemon mode (--daemon) — platform-specific complexity; systemd/launchd handle this better
 - Multi-format output (--format csv/table/json) — --json + jq covers all machine formats; two modes (human/JSON) not three
 - Automatic model download — model is bundled in binary; clear error better than silent download
-- Cross-backend migration (v1.4 decision) — all backends must be stable first; deferred to v1.5
+- Cross-backend migration (v1.4 decision) — all backends must be stable first; deferred to future milestone
 - Auto-migration on config change — surprising behavior that silently moves data; explicit migration better
 - Multi-backend fan-out (write to multiple) — complexity explosion; single active backend is simpler and sufficient
 - Backend-specific query syntax — leaky abstraction; trait must normalize all operations
@@ -89,6 +98,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 ## Context
 
 v1.4 shipped with 25 phases (45 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4). Storage layer is now pluggable via StorageBackend trait — SQLite remains the zero-config default, with Qdrant and Postgres as opt-in alternatives behind feature flags.
+v1.5 adds a gRPC interface (tonic) for high-throughput agent-to-server communication, running alongside REST on a separate port.
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional).
 ~10,763 lines of Rust. 286 tests passing, 1 ignored, zero compiler warnings. MIT licensed.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
@@ -165,4 +175,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-22 after v1.4 milestone completion*
+*Last updated: 2026-03-22 after v1.5 milestone start*
