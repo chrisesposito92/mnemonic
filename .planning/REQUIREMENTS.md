@@ -57,24 +57,24 @@ Deferred to future release. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BUILD-01 | — | Pending |
-| BUILD-02 | — | Pending |
-| BUILD-03 | — | Pending |
-| BROWSE-01 | — | Pending |
-| BROWSE-02 | — | Pending |
-| BROWSE-03 | — | Pending |
-| BROWSE-04 | — | Pending |
-| BROWSE-05 | — | Pending |
-| OPS-01 | — | Pending |
-| OPS-02 | — | Pending |
-| AUTH-01 | — | Pending |
-| AUTH-02 | — | Pending |
+| BUILD-01 | Phase 30 | Pending |
+| BUILD-02 | Phase 30 | Pending |
+| BUILD-03 | Phase 30 | Pending |
+| BROWSE-01 | Phase 31 | Pending |
+| BROWSE-02 | Phase 31 | Pending |
+| BROWSE-03 | Phase 31 | Pending |
+| BROWSE-04 | Phase 31 | Pending |
+| BROWSE-05 | Phase 31 | Pending |
+| OPS-01 | Phase 31 | Pending |
+| OPS-02 | Phase 32 | Pending |
+| AUTH-01 | Phase 31 | Pending |
+| AUTH-02 | Phase 31 | Pending |
 
 **Coverage:**
 - v1.6 requirements: 12 total
-- Mapped to phases: 0
-- Unmapped: 12
+- Mapped to phases: 12
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-22*
-*Last updated: 2026-03-22 after initial definition*
+*Last updated: 2026-03-22 after roadmap creation (v1.6 phases 30-32)*

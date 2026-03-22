@@ -8,6 +8,7 @@
 - ✅ **v1.3 CLI** — Phases 15-20 (shipped 2026-03-21)
 - ✅ **v1.4 Pluggable Storage Backends** — Phases 21-25 (shipped 2026-03-22)
 - ✅ **v1.5 gRPC** — Phases 26-29 (shipped 2026-03-22)
+- 🚧 **v1.6 Web UI/Dashboard** — Phases 30-32 (in progress)
 
 ## Phases
 
@@ -76,6 +77,54 @@
 
 </details>
 
+### 🚧 v1.6 Web UI/Dashboard (In Progress)
+
+**Milestone Goal:** Embed a lightweight operational dashboard into the mnemonic binary for visual memory exploration, agent/session monitoring, and compaction triggering — served at `/ui`, feature-gated behind `dashboard`, zero impact on default binary.
+
+- [ ] **Phase 30: Dashboard Foundation** — Build pipeline, rust-embed integration, feature gate, and CI wiring
+- [ ] **Phase 31: Core UI** — Auth flow, memory browsing, search, agent breakdown, and GET /stats endpoint
+- [ ] **Phase 32: Operational Actions** — Compaction panel with dry-run diff preview and UI polish
+
+## Phase Details
+
+### Phase 30: Dashboard Foundation
+**Goal**: The `dashboard` Cargo feature compiles, the binary serves the embedded SPA at `/ui`, and CI verifies both the dashboard build and the default binary regression gate
+**Depends on**: Phase 29
+**Requirements**: BUILD-01, BUILD-02, BUILD-03
+**Success Criteria** (what must be TRUE):
+  1. `cargo build --features dashboard` succeeds and `GET /ui/` returns `200 text/html` with the embedded app shell
+  2. `cargo build` (default features, no dashboard) produces a binary with identical behavior to v1.5 — all 286 existing tests pass unchanged
+  3. CI release workflow runs `npm ci && npm run build` in `dashboard/` before `cargo build --release --features dashboard`, producing a release artifact with an embedded UI
+  4. A separate CI job runs `cargo build` (default features) + `cargo test` as a regression gate — failure blocks the release
+  5. Build fails with a clear compile-time error if `--features dashboard` is set but `dashboard/dist/index.html` is missing
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 31: Core UI
+**Goal**: Users can browse, filter, and search memories from the dashboard, see per-agent breakdowns, and the dashboard correctly handles auth-gated deployments
+**Depends on**: Phase 30
+**Requirements**: BROWSE-01, BROWSE-02, BROWSE-03, BROWSE-04, BROWSE-05, OPS-01, AUTH-01, AUTH-02
+**Success Criteria** (what must be TRUE):
+  1. User can view a paginated memory list showing content preview, agent_id, session_id, tags, and created_at — and filter it by agent_id, session_id, or tag without a page reload
+  2. User can type a query into the search bar and see semantically ranked results with distance scores returned from `GET /memories/search`
+  3. User can expand a memory row to read its full content and all metadata fields
+  4. User can view a per-agent breakdown table (memory count, last-active timestamp) populated from the new `GET /stats` endpoint
+  5. Dashboard header shows a live health indicator and active storage backend name from `GET /health`; when API keys are active, the dashboard prompts for an `mnk_...` bearer token stored only in component state (never localStorage), and all `/ui/` responses include a Content-Security-Policy header
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 32: Operational Actions
+**Goal**: Users can trigger memory compaction from the dashboard with a dry-run diff preview before committing, and all UI surfaces handle empty states and async loading gracefully
+**Depends on**: Phase 31
+**Requirements**: OPS-02
+**Success Criteria** (what must be TRUE):
+  1. User can select an agent scope and trigger a dry-run compaction, seeing a before/after diff (N memories → M compacted) before any data is mutated
+  2. User can confirm the compaction after reviewing the dry-run diff, executing `POST /memories/compact` and seeing the result reflected in the memory list
+  3. All dashboard views display appropriate empty states (zero memories, zero agents, zero search results) instead of blank or broken layouts
+  4. All async data fetches show loading skeleton states while in flight, and unhandled API errors surface via an error boundary rather than a silent blank panel
+**Plans**: TBD
+**UI hint**: yes
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -109,3 +158,6 @@
 | 27. Dual-Server Skeleton and Auth Layer | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 28. Core RPC Handlers, Health, and Discoverability | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 29. StorageBackend Routing Fix | v1.5 | 1/1 | Complete | 2026-03-22 |
+| 30. Dashboard Foundation | v1.6 | 0/TBD | Not started | - |
+| 31. Core UI | v1.6 | 0/TBD | Not started | - |
+| 32. Operational Actions | v1.6 | 0/TBD | Not started | - |
