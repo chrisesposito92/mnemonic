@@ -1,16 +1,12 @@
 # Feature Research
 
-**Domain:** Pluggable storage backends for a Rust memory-server binary (v1.4 milestone)
-**Researched:** 2026-03-21
-**Confidence:** HIGH (patterns sourced from Rust trait ecosystem, qdrant-client docs, pgvector-rust, redis/agent-memory-server, production migration case studies, existing mnemonic codebase)
-
----
+**Domain:** gRPC interface for agent memory server (Rust/tonic, v1.5 milestone)
+**Researched:** 2026-03-22
+**Confidence:** HIGH
 
 ## Scope Note
 
-This document covers **only the new features for v1.4**: adding a storage trait abstraction so the existing SQLite backend can sit behind an interface, with Qdrant and Postgres as opt-in alternatives selectable via config. The v1.0–v1.3 baseline (REST API, embeddings, compaction, auth, full CLI) is already shipped and represents the _consumer_ of these backends, not a feature here.
-
-The central question: what does pluggable storage look like when the existing compaction, auth, and semantic search surface must work transparently across backends?
+This research covers only the **new gRPC features for v1.5**. The existing REST API (9 endpoints), API key auth, CLI (7 subcommands), and pluggable storage backends (SQLite, Qdrant, Postgres) are already built and out of scope. The question is: what does a well-designed gRPC interface look like for hot-path memory operations — and what does the ecosystem expect?
 
 ---
 
@@ -18,130 +14,133 @@ The central question: what does pluggable storage look like when the existing co
 
 ### Table Stakes (Users Expect These)
 
-Features that any production-grade pluggable backend system provides. Missing these makes the abstraction feel like a toy.
+Features users assume exist in a gRPC memory service. Missing these means agents cannot adopt the gRPC path.
 
-| Feature | Why Expected | Complexity | Dependencies on Existing Architecture |
-|---------|--------------|------------|---------------------------------------|
-| **`StorageBackend` trait** covering all memory CRUD operations | Any backend system requires a single interface that every implementation satisfies. Without a trait, "pluggable" is just conditional code paths, not an abstraction. | MEDIUM | Must cover: `store_memory`, `get_memory`, `delete_memory`, `list_memories`, `search_memories` (KNN), `bulk_delete` (for compaction), `store_compact_run`, `get_compact_run`. All methods are currently direct `tokio_rusqlite` calls inside `MemoryService` and `CompactionService`. Both services must be refactored to hold `Arc<dyn StorageBackend>` instead of `Arc<Connection>`. |
-| **SQLite remains default with zero config change** | Existing users cannot be broken. Changing the default behavior requires explicit opt-in. Every tool with pluggable backends (n8n, Open Web UI) maintains backward compat: SQLite stays until the user changes `storage_backend` in config. | LOW | SQLite implementation of the trait wraps existing `tokio_rusqlite` code. The `db.rs` open/schema path stays identical. `service.rs` and `compaction.rs` are refactored to use the trait, not the concrete `Connection`. |
-| **Config-driven backend selection via TOML/env** | Users expect `storage_backend = "qdrant"` in `mnemonic.toml` or `MNEMONIC_STORAGE_BACKEND=qdrant` env var to switch backends. This is the same pattern already used for `embedding_provider` and `llm_provider`. Config-driven > code changes. | LOW | Extend `Config` struct with `storage_backend: String` (default `"sqlite"`), plus backend-specific fields: `qdrant_url`, `qdrant_api_key`, `qdrant_collection`, `postgres_url`. Follow existing `validate_config()` pattern: gate startup on required fields being present for the selected backend. |
-| **`validate_config()` expanded for new backends** | Startup should fail loudly if `storage_backend = "qdrant"` but `qdrant_url` is missing. Users expect the same "gates startup on valid config" behavior already present for embedding/LLM providers. | LOW | Extend the existing `validate_config()` match arm logic. No new mechanism — same pattern already ships. |
-| **Qdrant backend implementation** | Qdrant is the most-requested vector-native backend for agent memory tools. It manages embeddings as first-class data (not a bolt-on virtual table), supports advanced filtering, and is the vector database agents teams most commonly reach for. The Rust client (`qdrant-client`) is mature and async-native. | HIGH | Requires adding `qdrant-client` crate. Must map Mnemonic's `Memory` struct to Qdrant Points (payload fields + vector). `agent_id`, `session_id`, `tags`, `created_at`, `id` become payload fields. Vector = the 384-dim embedding. Search uses Qdrant's `query` with payload filters for `agent_id`. Compaction: fetch N candidate points with embeddings via scroll API, run existing clustering logic in Rust, delete old points, upsert new ones — all via Qdrant client. API key auth table: Qdrant is a vector DB, not relational — auth keys must remain in SQLite (or a separate simple file store) even when the memory backend is Qdrant. |
-| **Postgres + pgvector backend implementation** | Postgres is the "I already have Postgres" use case. Teams running Postgres in production for their app data want to co-locate agent memory without operating a second service. pgvector-rust crate provides the `Vector` type and operator support. | HIGH | Requires `sqlx` (or `tokio-postgres` + `pgvector`) crates. Schema: `memories` table with a `vector(384)` column, plus `compact_runs`. Similarity search: `ORDER BY embedding <-> $1 LIMIT N` with `WHERE agent_id = $2` filter. Compaction: same pattern as Qdrant — fetch candidates, cluster in Rust, batch delete+insert inside a transaction. API key auth: Postgres can host the `api_keys` table (all relational). This makes Postgres the only backend where auth and memories live in the same DB. |
-| **`mnemonic config` subcommand** | Users need to inspect and validate their current backend configuration without starting the server. Same pattern as Heroku CLI's `heroku config`, kubectl's `kubectl config view`. A tool that requires reading the TOML manually to know what backend is active has poor UX. | LOW | New clap subcommand. `mnemonic config show` prints current resolved config (backend, relevant URLs, no secrets). `mnemonic config validate` runs `validate_config()` and exits 0/1. Does NOT mutate config (no `set` subcommand for v1.4 — writing TOML programmatically is scope creep). |
-| **Startup error message identifies missing backend dependency** | If `qdrant_url` is set but Qdrant is unreachable, the error should say "cannot connect to Qdrant at http://localhost:6334" — not a generic connection refused. Users deploy mnemonic to production and need actionable error messages. | LOW | Ping / health check the backend at startup before accepting traffic. Qdrant: `client.health_check().await`. Postgres: connection pool creation failure is sufficient. SQLite: file open error (already exists). |
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| `StoreMemory` unary RPC | Every memory API needs a write path; agents call this on every turn | LOW | Mirrors POST /memories; takes content, agent_id, session_id, tags in request message |
+| `SearchMemories` unary RPC | Semantic search is the core value prop; must be gRPC-accessible | LOW | Takes query string + agent_id filter + limit; returns ranked list with scores |
+| `ListMemories` unary RPC | Agents need to enumerate memories without semantic query (session replay, pagination) | LOW | Mirrors GET /memories with optional agent_id/session_id filters |
+| `DeleteMemory` unary RPC | Cleanup is expected; sessions end and memories become stale | LOW | Takes memory_id; returns success or NOT_FOUND status |
+| `HealthCheck` via `grpc.health.v1` | Load balancers, Kubernetes probes, and agent orchestrators use the standard health proto — not a custom service | LOW | `tonic-health` crate provides the standard `grpc.health.v1.Health` service out of the box |
+| Dual-protocol server (REST + gRPC on separate ports) | Existing REST clients must not break; agents choose their protocol | MEDIUM | Separate port (e.g., 50051) is simpler than same-port multiplexing; PROJECT.md explicitly specifies separate port |
+| Auth via gRPC metadata (authorization header) | Existing API keys must work over gRPC; agents cannot re-authenticate on protocol change | MEDIUM | Bearer token in gRPC metadata key `authorization` (lowercase, per HTTP/2 header convention); validated in tonic interceptor mirroring existing axum middleware |
+| `google.protobuf.Timestamp` for time fields | Proto3 best practice; standard well-known type for `created_at`; do not use int64 epoch seconds | LOW | Requires `prost-types` crate; Qdrant uses the same convention |
+| Canonical gRPC status codes | Callers expect NOT_FOUND (5), UNAUTHENTICATED (16), INVALID_ARGUMENT (3) — not raw HTTP codes or generic errors | LOW | Map StorageBackend errors to `tonic::Status` codes in service impl |
+| Proto3 field stability guarantees | Agents build clients from the .proto file; field tag numbers must never be reused | LOW | Reserve deleted tags; use `optional` keyword for presence-tracked fields (proto3 v3.15+) |
 
 ### Differentiators (Competitive Advantage)
 
-Features that are not universally expected but align with Mnemonic's positioning and solve real user pain.
+Features beyond baseline that give Mnemonic's gRPC interface an edge.
 
-| Feature | Value Proposition | Complexity | Dependencies on Existing Architecture |
-|---------|-------------------|------------|---------------------------------------|
-| **`mnemonic migrate` subcommand for data portability** | The biggest pain point when switching backends is data loss. Real-world migrations (SQLite→Postgres in n8n, Postgres→Qdrant in OpenWebUI) fail because users change config and discover their data is stranded. A built-in migration command is table stakes for trusted backend switching, but the _implementation_ is a differentiator since most tools leave this to the user. | HIGH | Reads from source backend (any `StorageBackend` impl), writes to target backend. Must preserve: memory IDs, content, agent_id, session_id, tags, created_at, embeddings. Does NOT re-embed (preserves existing vectors to avoid model mismatch). Runs as a one-shot command: `mnemonic migrate --from sqlite --to qdrant`. Progress output to stderr. Atomicity: best-effort (insert-then-verify, not transactional across backends). This is a genuine differentiator — the qdrant/migration tool only handles Qdrant targets. |
-| **API key auth remains in SQLite regardless of memory backend** | Auth is relational, not vector-native. Qdrant is the wrong store for `api_keys`. Mixing auth state into the vector backend adds complexity and breaks Qdrant's data model. Keeping auth in a lightweight local SQLite file (even when memories are in Qdrant) is simpler and avoids a second Qdrant collection for non-vector data. | MEDIUM | Introduce a split: `StorageBackend` trait covers memory + compaction. `AuthBackend` (or just a hard-coded SQLite file) covers API keys. Config: `auth_db_path` (default `mnemonic-auth.db` or same `mnemonic.db`). For Postgres backend users, the option to keep auth in Postgres is a v1.5+ consideration. |
-| **Compaction works identically across all backends** | Compaction's clustering is done in Rust memory (fetch candidates → cluster → write results). The `StorageBackend` trait provides `fetch_memories_with_embeddings(agent_id, limit)` and `atomic_compact(deletions, insertions)`. This means the compaction algorithm doesn't need to know which backend is active — same logic runs against SQLite, Qdrant, or Postgres. | MEDIUM | `CompactionService` currently holds `Arc<Connection>` and runs SQL directly. Refactor to use `Arc<dyn StorageBackend>` and call trait methods. The clustering logic in `compaction.rs` is pure Rust — no SQL dependency — and moves cleanly. `atomic_compact` semantics differ: SQLite wraps in a transaction, Qdrant does delete+upsert (no cross-point transaction), Postgres wraps in a transaction. Document this semantic difference. |
-| **`mnemonic config show --json` for automation** | Shell scripts and CI pipelines that deploy mnemonic need to introspect the active backend without parsing TOML. `mnemonic config show --json` outputs `{"backend":"qdrant","qdrant_url":"http://..."}`. Extends the existing `--json` global flag convention. | LOW | Trivially extends `mnemonic config show` with `--json` serialization of the sanitized config struct (no secrets). Already a project-wide pattern. |
-| **Backend-specific health info in `/health` endpoint** | The existing `GET /health` returns `{"status":"ok"}`. With pluggable backends, operators want `{"status":"ok","backend":"qdrant","backend_status":"ok","latency_ms":3}`. This surfaces backend connectivity issues before they manifest as memory operation failures. | LOW | Extend `HealthResponse` struct with `backend` and `backend_latency_ms` fields. Each `StorageBackend` impl exposes a `health_check() -> HealthStatus` method. Minimal implementation effort, high operational value. |
+| Feature | Value Proposition | Complexity | Notes |
+|---------|-------------------|------------|-------|
+| `agent_id` and `session_id` in request messages (not metadata) | Namespacing is a first-class Mnemonic concept; putting routing fields in the proto body makes clients statically typed and explicit — metadata is stringly typed and easy to forget | LOW | Industry norm (Qdrant, Weaviate) puts collection/namespace in the request body, not metadata; same approach here |
+| `score` in `SearchMemoriesResponse` per result | Agents need to threshold results; returning a float distance per result enables quality filtering client-side without round-trips | LOW | Already computed in storage layer (`lower_is_better` contract); just expose it in the proto message |
+| `tonic-reflection` for service discoverability | gRPC reflection lets `grpcurl` and Postman introspect services without the .proto file — reduces agent developer friction considerably | LOW | Add `tonic-reflection` crate; can be behind a config flag to allow disabling in production |
+| Optional TLS via rustls (config-driven) | Production deployments need encryption; dev mode should work without certs | MEDIUM | Tonic supports rustls natively (tls-ring or tls-aws-lc feature); expose `grpc_tls_cert_path` and `grpc_tls_key_path` in Config; if not set, server starts without TLS |
+| `tags` repeated field on `StoreMemoryRequest` | Mirrors REST behavior exactly; agents can tag memories at write time with zero additional calls | LOW | Repeated string field in proto; no complexity |
+| `storage_backend` in `HealthCheckResponse` | Operators want to know which backend is active — already reported in REST /health; gRPC health response should match | LOW | Return the backend name string alongside ServingStatus via extended `HealthCheckResponse` or a separate custom health RPC |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| **Auto-migrate on config change** | "When I change `storage_backend`, my data should follow automatically." | Silent data migration on startup is dangerous: partial failures leave data in inconsistent state across both backends. Users who change config accidentally could trigger a large migration. The right UX is explicit: run `mnemonic migrate` deliberately. | Detect backend mismatch (e.g., SQLite file exists but config says `qdrant`) and print a warning with the `mnemonic migrate` command. Never auto-migrate. |
-| **Simultaneous multi-backend writes** | "Write to SQLite AND Qdrant at the same time for redundancy." | Multi-backend fan-out adds distributed systems complexity: partial write failures, consistency guarantees, write amplification. For agent memory at the scale Mnemonic targets (N<100K memories), single-backend reliability is sufficient. | Choose one backend. Use OS-level backups or Qdrant's own snapshot feature for durability. |
-| **ORM-based query builder** | "Use Diesel or SeaORM to abstract SQL differences between SQLite and Postgres." | ORMs add Rust compile time, binary size, and leaky abstraction (not all SQL features map cleanly). Mnemonic already uses raw SQL with `tokio_rusqlite`. For vector operations, ORMs either don't support `<->` operators or require plugins. SeaORM doesn't natively support pgvector. | Use raw SQL for SQLite and Postgres backends (same as current approach). Qdrant uses its own gRPC/REST client — no SQL involved. |
-| **Pinecone / Weaviate / Chroma backends** | "Add Pinecone support too!" | Each additional backend multiplies trait implementation surface and test matrix. Pinecone is managed-only (no local dev). Weaviate and Chroma have Rust clients but niche user bases for Mnemonic's target audience. The three backends (SQLite, Qdrant, Postgres) cover: zero-external-dependency, vector-native, and "I already have Postgres" — the actual usage segments. | Document the `StorageBackend` trait so the community can implement additional backends. The trait is the extension point, not the binary. |
-| **Hot backend switching without restart** | "Let me change `storage_backend` in the TOML and have mnemonic switch live." | `Arc<dyn StorageBackend>` is initialized at startup and shared via `AppState`. Live-swapping it requires replacing a shared reference while requests may be in flight — complex synchronization. The operational benefit is marginal (most deploys involve restart anyway). | Restart mnemonic after changing the backend config. Document this explicitly. |
-| **Per-agent backend routing** | "Route agent A's memories to SQLite and agent B's to Qdrant." | Adds routing logic to every operation, breaks the clean trait abstraction, and creates data spread across multiple backends that `mnemonic migrate` can't handle atomically. | Use a single backend per mnemonic instance. Run two instances if isolation is required. |
-| **mnemonic config set <key> <value>** | "Let me change config from the CLI without editing TOML." | Programmatic TOML writing is fragile (comments get stripped, ordering changes, existing formatting lost). The existing env var override path is the right mechanism for scripting. | Use `MNEMONIC_STORAGE_BACKEND=qdrant mnemonic serve` for ephemeral overrides, or edit `mnemonic.toml` for permanent config. |
+| gRPC streaming for search results | Looks like a natural fit for paginated result delivery | Streaming adds connection-lifecycle complexity; agents use small result sets (k=10-20 typical); unary is simpler to implement, debug, and test; PROJECT.md explicitly scopes v1.5 to unary only | Unary RPC with `limit` field; callers paginate via subsequent calls with offset if needed |
+| Same-port HTTP/REST + gRPC multiplexing | Simplifies firewall rules (one port exposed) | Requires a `HybridService` tower wrapper that inspects `Content-Type: application/grpc` on every request; adds complexity and latency; debugging split-protocol traffic is harder; community guidance favors separate ports | Separate port (e.g., 50051 for gRPC, existing for REST); cleaner separation, consistent with Qdrant (6333 REST, 6334 gRPC) and standard production practice |
+| gRPC for compaction and key management | "Everything should be gRPC" | Hot-path only was the explicit v1.5 scope decision in PROJECT.md; compaction is admin-tier (infrequent, latency-tolerant); key management is auth-tier (CLI-driven); expanding scope balloons the proto surface area and implementation cost | Keep compaction and key management REST-only; document this explicitly in proto file comments |
+| Bidirectional streaming for live memory updates | Agents could subscribe to memory changes in real time | Complex server-side state management; no existing event/pub-sub system in Mnemonic; agent-memory access patterns are pull-based (request-response), not push-based | Polling via `ListMemories` is sufficient for current agent patterns; streaming is a v2+ consideration if event infrastructure is added |
+| gRPC-Web support | Browser clients using gRPC | Requires `tonic-web` crate and CORS configuration; Mnemonic targets server-side agents, not browsers; REST API already covers browser use cases | REST API handles any browser or non-gRPC client |
+| Client-side load balancing / name resolution | Enterprise multi-instance patterns | Tonic supports DNS SRV, but it requires infrastructure most Mnemonic users don't have; adds complexity disproportionate to target user (single-server deployments) | Single-server deployment; agents connect to one configured endpoint; load balancing at the infrastructure layer (nginx, AWS ALB) if needed |
 
 ---
 
 ## Feature Dependencies
 
 ```
-[StorageBackend trait]
-    └──required by──> [SQLite backend] (wraps existing tokio_rusqlite code)
-    └──required by──> [Qdrant backend] (new — uses qdrant-client)
-    └──required by──> [Postgres backend] (new — uses sqlx or tokio-postgres + pgvector)
-    └──required by──> [MemoryService refactor] (holds Arc<dyn StorageBackend> not Arc<Connection>)
-    └──required by──> [CompactionService refactor] (same — trait-based fetch + atomic_compact)
+[gRPC server process]
+    └──requires──> [tokio runtime] (already present — shared with REST server)
+    └──requires──> [tonic crate + tonic-build codegen in build.rs]
+    └──requires──> [prost + prost-types for proto3 messages and google.protobuf.Timestamp]
+    └──requires──> [.proto file defining MnemonicService]
 
-[Config extension: storage_backend field]
-    └──required by──> [validate_config() expansion] (new backend-specific validation branches)
-    └──required by──> [startup backend initialization] (factory function: match backend → Box<dyn StorageBackend>)
+[StoreMemory RPC]
+    └──requires──> [MemoryService via Arc<dyn StorageBackend>] (present since v1.4)
+    └──requires──> [EmbeddingEngine for vector generation] (present since v1.0)
+    └──shares──> [Arc<Mutex<LocalEngineInner>>] (must NOT instantiate a second embedding model)
 
-[MemoryService refactor]
-    └──required by──> [Qdrant backend]
-    └──required by──> [Postgres backend]
-    └──required by──> [mnemonic migrate] (reads and writes via trait, not concrete type)
+[SearchMemories RPC]
+    └──requires──> [EmbeddingEngine] (present since v1.0)
+    └──requires──> [StorageBackend.search()] (present since v1.4)
 
-[CompactionService refactor]
-    └──required by──> [Qdrant backend] (compaction must work without SQL transactions)
-    └──required by──> [Postgres backend] (compaction in a Postgres transaction)
+[ListMemories RPC]
+    └──requires──> [StorageBackend.list()] (present since v1.4)
+    └──BLOCKED BY──> [v1.4 tech debt: recall CLI bypasses StorageBackend trait]
+    └──prerequisite: recall routing fix must land before ListMemories RPC]
 
-[mnemonic config subcommand]
-    └──requires──> [Config struct] (reads and displays resolved config)
-    └──enhances──> [--json flag] (trivially — same global flag pattern)
+[DeleteMemory RPC]
+    └──requires──> [StorageBackend.delete()] (present since v1.4)
 
-[mnemonic migrate subcommand]
-    └──requires──> [StorageBackend trait] (reads from source impl, writes to target impl)
-    └──requires──> [All backend implementations] (both source and target must be available)
-    └──requires──> [Config extension] (needs to know source and target backend config)
+[HealthCheck via grpc.health.v1]
+    └──requires──> [tonic-health crate]
+    └──enhances──> [existing GET /health REST endpoint] (parallel, not replacing)
 
-[Auth key isolation]
-    └──requires──> [SQLite backend] (auth stays in SQLite even when memory backend is Qdrant)
-    └──conflicts with──> [Qdrant backend for api_keys] (Qdrant is not the right store for relational auth data)
+[Auth interceptor for gRPC]
+    └──requires──> [KeyService on Arc<Connection>] (present since v1.2, stays SQLite-only)
+    └──mirrors──> [axum auth middleware] (same validation logic, different entry point)
+    └──convention: reads gRPC metadata key "authorization" value "Bearer mnk_..."]
 
-[/health endpoint extension]
-    └──requires──> [StorageBackend trait: health_check() method]
-    └──enhances──> [existing HealthResponse struct] (adds backend fields)
+[gRPC server configuration]
+    └──requires──> [Config struct extension: grpc_port, grpc_tls_cert_path, grpc_tls_key_path]
+    └──requires──> [separate tokio::spawn task for gRPC server alongside REST server]
+
+[Optional TLS]
+    └──requires──> [rustls feature flag in tonic dependency]
+    └──requires──> [grpc_tls_cert_path / grpc_tls_key_path config fields]
+    └──enhances──> [gRPC server startup]
+
+[tonic-reflection]
+    └──enhances──> [gRPC server] (optional discoverability, not required for operation)
+    └──conflicts with──> [minimizing binary size] (adds generated descriptor bytes — minor, worth flagging)
 ```
 
 ### Dependency Notes
 
-- **`StorageBackend` trait is the load-bearing piece.** Every other feature in this milestone either implements it or consumes it. Phase 1 must define and stabilize the trait before any backend or consumer code is written.
-- **Auth key isolation is a design decision, not an implementation detail.** The `api_keys` table exists in SQLite today. When users switch to Qdrant, the auth system must continue to work — either by keeping a local SQLite file just for auth, or by adding an `AuthBackend` trait separately. The cleaner choice is keeping auth in a separate SQLite file, always. This avoids forcing Qdrant to store relational data it is not designed for.
-- **CompactionService is the hardest refactor.** It currently fetches embeddings via raw SQL, runs Rust clustering, and does atomic writes via a single SQLite transaction. The Qdrant equivalent has no cross-point transactions — delete and upsert are separate operations. The trait's `atomic_compact` method must document that "atomic" means best-effort for non-transactional backends (Qdrant), and true atomic for transactional backends (SQLite, Postgres).
-- **`mnemonic migrate` requires all backends to be implemented first.** It is the last feature to implement, not the first.
-- **SQLite backend implementation is just a refactor, not new code.** The current `db.rs` + `service.rs` + `compaction.rs` code becomes the `SqliteBackend` struct that implements `StorageBackend`. No functional change, only structural.
+- **ListMemories is blocked by a tech debt prerequisite.** The v1.3 recall CLI bypasses the StorageBackend trait, accessing SQLite directly. Before exposing ListMemories via gRPC, the underlying list call must be normalized through the trait so it works across all three backends. PROJECT.md explicitly names this as a v1.5 prerequisite.
+- **Embedding model must be shared, not duplicated.** The gRPC server and REST server must share the same `Arc<Mutex<LocalEngineInner>>`. If the gRPC server initializes its own embedding engine, cold start doubles (two 2-3s model loads) and memory doubles. AppState must be extended to pass the shared engine to both servers.
+- **Auth interceptor mirrors axum middleware.** Both validate the same `mnk_...` bearer tokens from the same SQLite key store. The gRPC interceptor reads the `authorization` metadata key (lowercase, per gRPC HTTP/2 header conventions). The validation logic should be extracted into a shared function callable from both the axum middleware and the tonic interceptor.
+- **tonic v0.14.5 is the stable production release.** The GitHub master branch is preparing breaking changes as of March 2026; pin to `0.14.x` in Cargo.toml.
 
 ---
 
 ## MVP Definition
 
-### Ship in v1.4 (This Milestone)
+### Launch With (v1.5)
 
-- [ ] `StorageBackend` trait with all memory + compaction operations defined
-- [ ] `SqliteBackend` — wraps existing code behind the trait (zero functional change)
-- [ ] `MemoryService` refactored to `Arc<dyn StorageBackend>` (removes `Arc<Connection>` coupling)
-- [ ] `CompactionService` refactored to use trait methods for fetch + atomic_compact
-- [ ] `QdrantBackend` — full implementation behind the trait
-- [ ] `PostgresBackend` — full implementation behind the trait (pgvector)
-- [ ] Config extension: `storage_backend`, `qdrant_url`, `qdrant_api_key`, `qdrant_collection`, `postgres_url`
-- [ ] `validate_config()` expanded for Qdrant and Postgres required fields
-- [ ] Startup backend health check with actionable error messages
-- [ ] Auth keys always remain in SQLite (isolated from memory backend)
-- [ ] `mnemonic config show` subcommand (read-only, with `--json`)
-- [ ] `mnemonic config validate` subcommand (runs validate_config, exits 0/1)
-- [ ] `/health` endpoint extended with `backend` and `backend_latency_ms` fields
+The five RPCs specified in PROJECT.md as the v1.5 target, plus their prerequisites.
 
-### Add After Validation (v1.5+)
+- [ ] StorageBackend routing fix for `list` (v1.4 tech debt — prerequisite for ListMemories)
+- [ ] `.proto` file defining `MnemonicService` with all five operations
+- [ ] `tonic-build` codegen in `build.rs`
+- [ ] `StoreMemory` unary RPC — core write path; agents cannot use gRPC without it
+- [ ] `SearchMemories` unary RPC — core semantic read path; primary hot-path operation
+- [ ] `ListMemories` unary RPC — list/filter without semantic query; session recall
+- [ ] `DeleteMemory` unary RPC — cleanup path; completes CRUD
+- [ ] `HealthCheck` via `grpc.health.v1` — required for load balancers and orchestrators
+- [ ] Auth via gRPC metadata interceptor — security parity with REST
+- [ ] gRPC server on separate port with config (`grpc_port`, optional TLS config fields)
+- [ ] Shared embedding engine between REST and gRPC servers (no second model load)
 
-- [ ] `mnemonic migrate --from <backend> --to <backend>` — high value but requires all backends stable first; the data portability guarantee is most credible when backends are proven
-- [ ] `mnemonic config set <key> <value>` — only if users report TOML editing friction at scale
-- [ ] Auth keys in Postgres when Postgres is the memory backend — eliminates the split-DB concern for Postgres users
-- [ ] Additional community backends (Weaviate, Chroma) — document the trait, let community implement
+### Add After Validation (v1.5.x)
 
-### Confirmed Out of Scope (v1.4)
+- [ ] `tonic-reflection` for grpcurl discoverability — add when agent developer adoption is measured; currently adds binary size for marginal benefit at launch
+- [ ] Optional TLS (rustls) — add when any production user requests it; current users are localhost or VPN-connected
 
-- [ ] Auto-migrate on config change — too dangerous
-- [ ] Multi-backend fan-out writes — distributed systems complexity without proportionate value
-- [ ] ORM-based query builder — binary bloat, no vector support
-- [ ] Pinecone / Weaviate / Chroma backends — document trait for community extension instead
-- [ ] Hot backend switching without restart — requires complex shared-ref swap
-- [ ] Per-agent backend routing — breaks trait abstraction, creates multi-backend data spread
-- [ ] `mnemonic config set` — TOML writing is fragile; env vars cover the scripting use case
+### Future Consideration (v2+)
+
+- [ ] Server-streaming `SearchMemoriesStream` — defer until agents demonstrably need >50 results per call
+- [ ] Bidirectional streaming for memory subscriptions — defer until event system exists
+- [ ] gRPC for compaction — defer; admin operations don't need low-latency binary protocol
 
 ---
 
@@ -149,81 +148,156 @@ Features that are not universally expected but align with Mnemonic's positioning
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| `StorageBackend` trait definition | HIGH | MEDIUM | P1 — everything else is blocked on this |
-| SQLite backend (refactor existing code) | HIGH | LOW | P1 — preserves existing users |
-| `MemoryService` + `CompactionService` refactor | HIGH | MEDIUM | P1 — consumers of the trait |
-| Config extension + validate_config expansion | HIGH | LOW | P1 — config-driven switching is the UX |
-| `QdrantBackend` implementation | HIGH | HIGH | P1 — primary new backend |
-| `PostgresBackend` implementation | HIGH | HIGH | P1 — "I already have Postgres" use case |
-| Auth key SQLite isolation design | HIGH | MEDIUM | P1 — correctness concern, not a feature |
-| Startup backend health check | MEDIUM | LOW | P1 — operational necessity |
-| `mnemonic config show` + `validate` subcommands | MEDIUM | LOW | P1 — UX without this is "read the TOML" |
-| `/health` endpoint extension | MEDIUM | LOW | P2 |
-| `mnemonic migrate` subcommand | HIGH | HIGH | P2 (v1.5) — needs all backends stable first |
-| `mnemonic config show --json` | LOW | LOW | P2 — easy extension of existing pattern |
+| StorageBackend routing fix (tech debt) | HIGH | LOW | P1 — blocks ListMemories |
+| `.proto` file + `tonic-build` codegen | HIGH | LOW | P1 — foundation for all RPCs |
+| `StoreMemory` RPC | HIGH | LOW | P1 |
+| `SearchMemories` RPC | HIGH | LOW | P1 |
+| `ListMemories` RPC | HIGH | LOW | P1 |
+| `DeleteMemory` RPC | MEDIUM | LOW | P1 |
+| `HealthCheck` (grpc.health.v1) | HIGH | LOW | P1 |
+| Auth interceptor | HIGH | MEDIUM | P1 |
+| gRPC port + config | HIGH | LOW | P1 |
+| Shared embedding engine across servers | HIGH | LOW | P1 — correctness, not optional |
+| `score` in SearchResponse | MEDIUM | LOW | P1 — already in storage layer |
+| `google.protobuf.Timestamp` fields | MEDIUM | LOW | P1 — proto best practice |
+| Canonical status codes | MEDIUM | LOW | P1 |
+| Optional TLS (rustls) | MEDIUM | MEDIUM | P2 |
+| `tonic-reflection` | LOW | LOW | P2 |
+| Streaming RPCs | LOW | HIGH | P3 |
+| Same-port multiplexing | LOW | HIGH | P3 |
 
 **Priority key:**
-- P1: Must have for v1.4 to be a working backend abstraction
-- P2: High value, add when possible (v1.4 end or v1.5)
+- P1: Must have for v1.5 launch
+- P2: Should have, add when possible
 - P3: Nice to have, future consideration
 
 ---
 
-## Cross-Cutting Concerns: Existing Features vs. Backend Abstraction
+## Proto Message Shape Reference
 
-The existing features (v1.0–v1.3) are consumers of the storage backend. Each has specific requirements the `StorageBackend` trait must satisfy.
+Based on ecosystem research (Qdrant gRPC proto, Weaviate proto patterns, Mnemosyne MemoryService, and proto3 best practices), here are the recommended message shapes for the Mnemonic proto file.
 
-### Compaction (v1.1)
+### Service Definition Sketch
 
-Compaction requires: (1) fetching candidate memories with their embeddings for a given `agent_id`, (2) writing a compact run audit log entry, (3) an atomic operation that deletes source memories and inserts merged memories in one logical transaction.
+```proto
+syntax = "proto3";
+package mnemonic.v1;
 
-For SQLite: this is a single SQL transaction. For Postgres: same. For Qdrant: delete and upsert are separate gRPC calls — "atomic" means sequential with error rollback, not true ACID. The trait must document this semantic difference.
+import "google/protobuf/timestamp.proto";
 
-The `StorageBackend` trait method `atomic_compact(run_id, agent_id, deletions: Vec<String>, insertions: Vec<MemoryWithEmbedding>) -> Result<()>` encapsulates this complexity. Each backend implements whatever "atomic" means for its model.
+service MnemonicService {
+  rpc StoreMemory(StoreMemoryRequest) returns (StoreMemoryResponse);
+  rpc SearchMemories(SearchMemoriesRequest) returns (SearchMemoriesResponse);
+  rpc ListMemories(ListMemoriesRequest) returns (ListMemoriesResponse);
+  rpc DeleteMemory(DeleteMemoryRequest) returns (DeleteMemoryResponse);
+}
+// Health: use the standard grpc.health.v1.Health service (tonic-health crate)
+// Compaction and key management: REST only, not exposed via gRPC
+```
 
-### Auth (v1.2)
+### Key Message Shapes
 
-The `api_keys` table is relational: lookup by key hash, join with `agent_id` scopes, revocation. This is a poor fit for Qdrant (a vector DB) or for a generic `StorageBackend` trait focused on memories. Auth must be a parallel concern, not a `StorageBackend` method.
+```proto
+message StoreMemoryRequest {
+  string content = 1;              // required — validate non-empty before embedding
+  string agent_id = 2;             // required — namespace isolation
+  optional string session_id = 3;  // optional presence-tracked (proto3 optional keyword)
+  repeated string tags = 4;        // optional tagging, zero or more values
+}
 
-Decision: `api_keys` always lives in a SQLite file (default: same `mnemonic.db`, or a separate `mnemonic-auth.db` if the memory backend is non-SQLite). The `AuthService` holds its own `Arc<tokio_rusqlite::Connection>` independently of the memory backend. This is a split that the `AppState` must reflect: `memory_backend: Arc<dyn StorageBackend>` and `auth_db: Arc<tokio_rusqlite::Connection>`.
+message StoreMemoryResponse {
+  string id = 1;                   // UUID of stored memory
+}
 
-### CLI Subcommands (v1.3)
+message SearchMemoriesRequest {
+  string query = 1;                // required — semantic search text
+  string agent_id = 2;             // required — namespace filter
+  optional string session_id = 3;  // optional narrowing filter
+  uint32 limit = 4;                // 0 = use server default (e.g., 10)
+}
 
-The CLI subcommands (`remember`, `recall`, `search`, `compact`) all currently initialize the DB via `db::open()`. After refactoring, they must initialize the appropriate backend via the factory function. The tiered init pattern (DB-only for `recall`/`keys`, full for `remember`/`search`) still applies — but "DB-only" now means "lightweight backend init" (SQLite opens the file; Qdrant creates a client connection; Postgres creates a connection pool). The fast path is maintained by not loading the embedding model, not by skipping backend init.
+message MemoryResult {
+  string id = 1;
+  string content = 2;
+  string agent_id = 3;
+  optional string session_id = 4;
+  repeated string tags = 5;
+  float score = 6;                 // lower = more similar (normalized cosine distance)
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message SearchMemoriesResponse {
+  repeated MemoryResult memories = 1;
+}
+
+message ListMemoriesRequest {
+  optional string agent_id = 1;   // filter by agent_id; if absent, returns all (admin use)
+  optional string session_id = 2;
+  uint32 limit = 3;               // 0 = use server default
+  uint32 offset = 4;              // for pagination
+}
+
+message ListMemoriesResponse {
+  repeated MemoryResult memories = 1;
+}
+
+message DeleteMemoryRequest {
+  string id = 1;                  // memory UUID
+}
+
+message DeleteMemoryResponse {
+  bool deleted = 1;               // true if deleted, false if not found (or return NOT_FOUND status)
+}
+```
+
+### Auth Convention
+
+Token passed as gRPC metadata key `authorization` with value `Bearer mnk_...` (lowercase key, matching HTTP/2 header conventions that gRPC is built on). Server-side tonic interceptor reads `request.metadata().get("authorization")`. Status `UNAUTHENTICATED` (16) returned when token is missing or malformed; `PERMISSION_DENIED` (7) returned when token is valid but the token's authorized `agent_id` does not match the request's `agent_id` field.
+
+### Status Code Mapping
+
+| Condition | gRPC Status Code |
+|-----------|-----------------|
+| Memory not found by ID | NOT_FOUND (5) |
+| Missing or invalid auth token | UNAUTHENTICATED (16) |
+| Token valid but wrong agent namespace | PERMISSION_DENIED (7) |
+| Empty content or query string | INVALID_ARGUMENT (3) |
+| Storage backend error | INTERNAL (13) |
+| Embedding model overloaded | RESOURCE_EXHAUSTED (8) |
 
 ---
 
 ## Competitor / Reference Analysis
 
-| Feature | redis/agent-memory-server | Open Web UI | Mnemonic v1.4 |
-|---------|--------------------------|-------------|----------------|
-| Pluggable backend mechanism | Factory pattern (Python) | Env var `DATABASE_URL` | Rust trait + config |
-| Default backend | Redis | SQLite | SQLite |
-| Postgres support | No (Redis-centric) | Yes (via SQLAlchemy) | Yes (via pgvector-rust) |
-| Qdrant support | Yes (primary vector DB) | Yes (separate collection) | Yes (via qdrant-client) |
-| Migration tool | No | No | `mnemonic migrate` (v1.5) |
-| Auth backend isolation | N/A | SQLite always for auth | SQLite always for auth |
-| Backend health in /health | No | No | Yes (latency + status) |
-| Config subcommand | No | No | `mnemonic config show/validate` |
+| Feature | Qdrant gRPC | Weaviate gRPC | Mnemosyne gRPC | Mnemonic v1.5 Approach |
+|---------|-------------|---------------|----------------|------------------------|
+| Protocol | proto3, port 6334 | proto3, stable v1.23.7 | proto3 | proto3, configurable port (default 50051) |
+| Health check | Custom service | Not documented | Dedicated HealthService | Standard `grpc.health.v1` via tonic-health |
+| Auth | API key in metadata | API key in metadata | Not documented | Bearer `mnk_...` in `authorization` metadata |
+| Namespace isolation | Collection name in request body | Class name in request body | Not documented | `agent_id` field in every request message |
+| Timestamps | google.protobuf.Timestamp | google.protobuf.Timestamp | Not documented | google.protobuf.Timestamp |
+| Streaming | Batch upsert streaming | Batch search streaming | RecallStream, ListMemoriesStream | None (unary only for v1.5) |
+| Reflection | Available | Not documented | Not documented | Optional via tonic-reflection (P2) |
+| TLS | Supported | Supported | Not documented | Optional via rustls config (P2) |
+| Separate vs shared port | Separate (6333/6334) | Separate | Separate | Separate port (simpler, consistent with ecosystem) |
 
 ---
 
 ## Sources
 
-- [qdrant-client Rust docs](https://docs.rs/qdrant-client/latest/qdrant_client/index.html) — `Qdrant::from_url`, `create_collection`, `upsert_points`, `query`, `delete_points` APIs. HIGH confidence (official docs).
-- [pgvector-rust GitHub](https://github.com/pgvector/pgvector-rust) — `Vector` type, `<->` operator support for tokio-postgres and sqlx. HIGH confidence (official repo).
-- [redis/agent-memory-server GitHub](https://github.com/redis/agent-memory-server) — Pluggable memory vector database factory pattern reference. MEDIUM confidence (README-level).
-- [Migrating Vector Embeddings from PostgreSQL to Qdrant (Medium)](https://0xhagen.medium.com/migrating-vector-embeddings-from-postgresql-to-qdrant-challenges-learnings-and-insights-f101f42f78f5) — Real-world migration pitfalls: type mismatches, scroll API patterns, delete-after-insert workflow. MEDIUM confidence (practitioner post).
-- [Qdrant migration tool](https://qdrant.tech/blog/beta-database-migration-tool/) — What Qdrant's own migration tool covers (and what it doesn't: no SQLite source). MEDIUM confidence (official blog).
-- [n8n SQLite→Postgres migration](https://community.n8n.io/t/how-to-migrate-from-sqlite-to-postgres/97414) — User pain: "changing DATABASE_URL does not migrate data." Validates `mnemonic migrate` as a real need. MEDIUM confidence (community forum).
-- [pgvector vs Qdrant comparison (TigerData)](https://www.tigerdata.com/blog/pgvector-vs-qdrant) — Backend selection tradeoffs: Postgres for teams already on Postgres, Qdrant for vector-native workloads. HIGH confidence (detailed technical comparison).
-- [Working with data storages in Rust (Medium)](https://medium.com/@disserman/working-with-data-storages-in-rust-a1428fd9ba2c) — Rust storage trait abstraction patterns, async_trait usage. MEDIUM confidence.
-- [async-fn in trait stabilized (Rust Blog)](https://blog.rust-lang.org/inside-rust/2022/11/17/async-fn-in-trait-nightly/) — Rust 1.75 stabilized async fn in traits; `async_trait` macro still needed for object-safe dyn traits with async methods. HIGH confidence (official Rust blog).
-- Mnemonic `src/service.rs` — `MemoryService` struct, `Memory`, `SearchResultItem`, `ListParams`, `SearchParams` types. HIGH confidence (primary source).
-- Mnemonic `src/compaction.rs` — `CompactionService`, clustering logic, `atomic_compact` semantics needed from trait. HIGH confidence (primary source).
-- Mnemonic `src/config.rs` — `Config` struct, `validate_config()` pattern, `load_config()`. HIGH confidence (primary source).
-- Mnemonic `src/auth.rs` — API key table design, auth middleware. HIGH confidence (primary source — auth isolation decision).
+- [gRPC official docs — metadata](https://grpc.io/docs/guides/metadata/) — metadata conventions, authorization header patterns. HIGH confidence.
+- [gRPC official docs — authentication](https://grpc.io/docs/guides/auth/) — bearer token passing, interceptor-based validation. HIGH confidence.
+- [gRPC official docs — status codes](https://grpc.io/docs/guides/status-codes/) — canonical status code definitions and when to use each. HIGH confidence.
+- [gRPC official docs — health checking](https://grpc.io/docs/guides/health-checking/) — standard grpc.health.v1 protocol, Check vs Watch RPCs. HIGH confidence.
+- [tonic GitHub (v0.14.5, Feb 2026)](https://github.com/hyperium/tonic) — current stable version, rustls TLS, tonic-health, tonic-reflection. HIGH confidence.
+- [tonic-health crate docs](https://docs.rs/tonic-health) — standard grpc.health.v1 implementation for tonic. HIGH confidence.
+- [Proto3 best practices (protobuf.dev)](https://protobuf.dev/best-practices/dos-donts/) — never reuse tag numbers, reserve deleted fields, use google.protobuf.Timestamp, make all fields optional. HIGH confidence.
+- [Qdrant gRPC API services (DeepWiki)](https://deepwiki.com/qdrant/qdrant/9.2-grpc-api-services) — UpsertPoints, SearchPoints, GetPoints, DeletePoints message shapes. MEDIUM confidence.
+- [Weaviate gRPC API docs](https://docs.weaviate.io/weaviate/api/grpc) — proto file organization, batch.proto, search_get.proto, base.proto pattern. MEDIUM confidence.
+- [Axum + Tonic hybrid service pattern](https://academy.fpblock.com/blog/axum-hyper-tonic-tower-part4/) — Content-Type inspection for same-port routing; confirms separate port is simpler. MEDIUM confidence.
+- [Mnemosyne gRPC memory service](https://rand.github.io/mnemosyne/) — MemoryService with 13 methods including streaming; HealthService pattern. MEDIUM confidence.
+- [gRPC basics for Rust developers (DockYard, 2025)](https://dockyard.com/blog/2025/04/08/grpc-basics-for-rust-developers) — tonic setup, build.rs codegen, async/await patterns. MEDIUM confidence.
 
 ---
-*Feature research for: Mnemonic v1.4 Pluggable Storage Backends*
-*Researched: 2026-03-21*
+*Feature research for: Mnemonic v1.5 gRPC Interface*
+*Researched: 2026-03-22*

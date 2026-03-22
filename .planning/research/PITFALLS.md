@@ -1,329 +1,381 @@
 # Pitfalls Research
 
-**Domain:** Rust pluggable storage backend abstraction — adding a trait layer over an existing single-backend (SQLite+sqlite-vec) system
-**Researched:** 2026-03-21 (v1.4 pluggable backends milestone)
-**Confidence:** HIGH (critical pitfalls verified against official Rust docs, async-trait crate docs, sqlite-vec API reference, pgvector GitHub issues, Qdrant documentation, and direct codebase inspection)
+**Domain:** Adding gRPC (tonic) to existing axum REST server — Mnemonic v1.5
+**Researched:** 2026-03-22
+**Confidence:** HIGH (tonic/axum internals verified against official docs and GitHub issues), MEDIUM (binary size, CI cross-platform specifics)
 
 ---
 
 ## Critical Pitfalls
 
-### Pitfall 1: Async fn in Traits Is Not dyn-Compatible — `async_trait` Must Stay
+### Pitfall 1: Tonic and Axum Body Type Mismatch on Same Port
 
 **What goes wrong:**
-Rust 1.75 stabilized `async fn` in traits, which tempts developers to remove `#[async_trait]` and write native async trait methods. The EmbeddingEngine and SummarizationEngine traits already use `#[async_trait]` and work as `Arc<dyn EmbeddingEngine>`. If a new storage trait is written with native `async fn` instead of `#[async_trait]`, it will compile for generic monomorphic code but fail the moment you try `Box<dyn StorageBackend>` or `Arc<dyn StorageBackend>`. The error message is "the trait `StorageBackend` is not dyn compatible."
+When multiplexing gRPC and REST on the same port, axum produces `Response<Body>` while tonic (through `GrpcWebLayer` or custom multiplexers) produces `Response<UnsyncBoxBody<Bytes, Status>>`. Routing between them fails to compile with a wall of trait errors. The pre-axum-0.7 pattern using `Router::into_router()` was deprecated, and the modern `Routes::new().into_axum_router()` combined with `GrpcWebLayer` has an open incompatibility (GitHub issue #1964, still unresolved as of September 2025).
 
 **Why it happens:**
-Rust 1.75's stabilization announcement says "async fn in traits" and developers assume this includes dyn compatibility. It does not. Native stabilized async fn in traits produces opaque `impl Future` return types that cannot be placed in a vtable. The `async_trait` crate works specifically because it desugars to `Pin<Box<dyn Future + Send + 'async_trait>>`, which is dyn-compatible.
+tonic and axum both upgraded to hyper 1.x but still use different body wrapper types internally. Developers copy-paste examples from older blog posts that predate the hyper 1.0 upgrade and hit type errors. The axum multiplexing PR #2825 resolved part of the issue by using `tower::steer` and `tonic::Routes::into_axum_router()`, but these methods still fall short when `GrpcWebLayer` is involved.
 
 **How to avoid:**
-Continue using `#[async_trait]` on the storage backend trait, exactly as EmbeddingEngine does today. The pattern is already proven in the codebase. Do not attempt to use native `async fn` in the storage trait expecting it to be dyn-compatible — it will not be until the Rust team stabilizes dyn-compatible async fn (not yet done as of early 2026).
+Run tonic on a **separate port** entirely — the v1.5 spec already mandates this ("gRPC server on a separate port alongside REST"). Bind tonic's own `TcpListener` via `tonic::transport::Server::builder()` and run it concurrently with the existing axum server using `tokio::join!`. Separate ports sidestep all body-type unification problems completely and no custom multiplex service is needed.
 
 **Warning signs:**
-- Compiler error: "the trait `X` is not dyn compatible" when writing `Box<dyn StorageBackend>`.
-- Compiler error: "cannot be made into an object" on a trait with `async fn`.
-- Confusion when `impl StorageBackend for SqliteBackend` compiles but `Arc<dyn StorageBackend>` does not.
+- Error messages referencing `UnsyncBoxBody`, `BoxBody`, or `impl Service<axum::http::Request<Body>>` is not satisfied
+- Blog posts or examples that reference `multiplex_service.rs` — those target a pre-0.12 tonic API
+- Dependency on the `axum-tonic` crate being added to `Cargo.toml`
 
-**Phase to address:** Storage trait definition phase (the very first phase of v1.4). Get this right before writing any backend implementations.
+**Phase to address:**
+Phase 1 (server skeleton and dual-listener setup). Decide on separate ports before writing any handler code. The main() startup sequence should wire both listeners in `tokio::join!` from the beginning.
 
 ---
 
-### Pitfall 2: The Send Bound Problem With `async_trait`
+### Pitfall 2: protoc System Dependency Breaks CI
 
 **What goes wrong:**
-`#[async_trait]` by default adds `Send` bounds to all futures returned by trait methods: `Pin<Box<dyn Future<Output = ...> + Send + 'async_trait>>`. This is correct for axum handlers and tokio multi-thread runtime. However, if an implementation uses any non-`Send` type internally (e.g., `Rc<T>`, `RefCell<T>`, `MutexGuard<T>` held across an await point), the impl will fail to compile with confusing error messages about lifetime or Send bounds. Conversely, using `#[async_trait(?Send)]` on the trait removes the Send requirement and makes `Arc<dyn StorageBackend>` fail to satisfy the `Send + Sync` bounds required by axum State.
+`tonic-build` (via `prost-build` v0.11+) requires a system-installed `protoc` binary. The build appears to succeed locally but then fails in CI with a cryptic `No such file or directory` error pointing into `OUT_DIR` when the proto-generated `.rs` file is included. In GitHub Actions, `which protoc` may succeed yet `cargo build` still fails because the PATH inherited by the build script environment is different.
+
+The existing release workflow (`release.yml`) has zero protoc installation steps — it only installs the Rust toolchain and calls `cargo build --release`. Adding `tonic-build` to `[build-dependencies]` without updating the workflow is silently broken until the first CI run.
 
 **Why it happens:**
-The Qdrant Rust client and the tokio-postgres client are async and Send-safe. The SQLite backend wraps `tokio_rusqlite::Connection` which is also Send-safe. The pitfall occurs when developers write a test stub or in-memory backend using `RefCell<Vec<Memory>>` for simplicity — this causes the entire `Arc<dyn StorageBackend>` to become non-Send, which breaks the axum State constraint at compile time.
+`prost-build` changed in v0.11 to require `protoc` rather than bundling it. When `protoc` is absent, the build script does not fail immediately — it exits silently and leaves no generated `.rs` file. The failure surfaces later as `include!(concat!(env!("OUT_DIR"), "/mnemonic.rs"))` producing "No such file or directory."
 
 **How to avoid:**
-Use `#[async_trait]` (with Send, the default) on both the trait definition and all impl blocks. For in-memory test backends, use `tokio::sync::Mutex<Vec<Memory>>` instead of `RefCell`. Establish a compile-time test at the trait definition site: `fn _assert_send_sync<T: Send + Sync>() {}` called with the trait object type. This will surface violations immediately.
+Update the release workflow in the same phase that adds `build.rs`. Add these steps before `cargo build`:
+- **Ubuntu:** `sudo apt-get install -y protobuf-compiler`
+- **macOS:** `brew install protobuf`
+- Explicitly set `PROTOC=$(which protoc)` as an env var in the workflow step
+
+Alternative: add the `protoc-bin-vendored` crate as a `[build-dependencies]` entry and call `prost_build::Config::new().protoc_executable(protoc_bin_vendored::protoc_bin_path().unwrap())` — this provides a pre-built protoc binary, removes the system dependency entirely, and is the lower-risk path for a project that already cross-compiles.
 
 **Warning signs:**
-- Impl compiles individually but `Arc<dyn StorageBackend>` fails in AppState.
-- Error: "the trait bound `dyn StorageBackend: Send` is not satisfied."
-- Error: "cannot be shared between threads safely."
+- Build succeeds locally (where `brew install protobuf` was done at some point) but fails in CI
+- CI error: `could not find `protoc`` or `No such file or directory` in `target/debug/build/.../out/mnemonic.rs`
+- `cargo build` exits 101 during the build script phase, not the compile phase
 
-**Phase to address:** Storage trait definition phase. Add Send+Sync compile-time assertions to `lib.rs` before any backend implementations are written.
+**Phase to address:**
+Phase 1 (build.rs and tonic-build setup). Update `release.yml` in the same commit that adds `build.rs`. Do not merge a `build.rs` without a corresponding workflow update.
 
 ---
 
-### Pitfall 3: Threshold Semantics Inversion — Lower-Is-Better vs Higher-Is-Better
+### Pitfall 3: build.rs Causes Always-Dirty Incremental Builds
 
 **What goes wrong:**
-This is the most dangerous silent correctness bug in the v1.4 milestone. The current codebase has a deep semantic dependency that is easy to get wrong:
+`tonic_build::compile_protos("proto/mnemonic.proto")` internally emits `cargo:rerun-if-changed=mnemonic.proto` (the literal filename argument) rather than the resolved path `proto/mnemonic.proto`. Cargo checks whether a file named `mnemonic.proto` exists in the workspace root — it doesn't — so it considers the build perpetually dirty. Every `cargo build` re-runs the entire build script and recompiles all generated code, adding 5-15 seconds to every build.
 
-- **Search threshold (service.rs line 221):** `distance <= t` — lower distance means more similar. The `distance` field in `SearchResultItem` is a value returned by sqlite-vec's `vec0` MATCH query. sqlite-vec defaults to **L2 Euclidean distance** for `vec0` tables (cosine is opt-in via `distance_metric=cosine`). The current `vec_memories` table does NOT specify `distance_metric=cosine`, so it uses L2. Lower L2 = more similar.
-
-- **Compaction threshold (compaction.rs line 96):** `sim >= threshold` with default 0.85 — the compaction service fetches raw embeddings from the database and computes cosine similarity directly via dot product (works because embeddings are L2-normalized). Higher similarity = more similar. The threshold logic is `>=`.
-
-These two uses of "threshold" have **opposite directions**: search threshold is a maximum distance (lower-is-better), compaction threshold is a minimum similarity (higher-is-better). If a new backend's search implementation returns a similarity score (higher-is-better) instead of a distance score (lower-is-better), the search threshold filter will invert — very similar results will be filtered out, very dissimilar results will pass through. No test currently catches this inversion because tests set `threshold` to very permissive or very tight values that behave identically under both interpretations when extreme.
-
-Additionally:
-- **pgvector's `<=>` operator** returns cosine distance (0-2 range, lower is better, same direction as search threshold).
-- **Qdrant's search API** returns a `score` where **higher is better** for cosine collections (opposite direction from search threshold).
+**Why it happens:**
+Known tonic-build bug (issue #2239): the `rerun-if-changed` directive emits the literal path argument rather than the fully resolved path. This is especially triggered when proto files live in a subdirectory (`proto/`) but only the filename or a relative sub-path is passed to `compile_protos`.
 
 **How to avoid:**
-The storage trait must standardize on one semantic for its return type. The safest choice is to adopt what the public API surface already exposes: a `distance` field that is lower-is-better. Every backend must convert its native output to this semantic:
-- SQLite vec0 with default L2: native output already lower-is-better (pass through).
-- pgvector `<=>`: native output is cosine distance, lower-is-better (pass through).
-- Qdrant: native output is `score` where higher-is-better (must convert: `distance = 1.0 - score` for cosine).
+Always add an explicit `println!` directive using the full relative path, and pass the full relative path to `compile_protos`. The explicit directive overrides tonic-build's incorrect implicit one:
 
-The compaction service fetches raw embeddings and computes similarity itself — this logic can remain backend-independent as long as the backend returns `Vec<f32>` embeddings alongside memories. The compaction threshold (similarity >= 0.85) must NOT be conflated with the search threshold.
+```rust
+// build.rs
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=proto/mnemonic.proto");
+    tonic_build::compile_protos("proto/mnemonic.proto")?;
+    Ok(())
+}
+```
+
+Verify by running `cargo build && cargo build` — the second run must complete in under one second with no build script output.
 
 **Warning signs:**
-- New backend returns all results when threshold is set, or returns nothing when no threshold is set.
-- Search results appear reversed (distant results come first).
-- CLI `--threshold 0.9` returns zero results even for semantically identical content on a non-SQLite backend.
-- Compaction finds no clusters after backend migration even with low threshold.
+- `cargo build` takes >10 seconds on the second consecutive run with no source changes
+- `cargo build -v` shows `Running build script` on every invocation
+- Build output mentions "the file `mnemonic.proto` is missing" as a dirty trigger
 
-**Phase to address:** Storage trait design phase (define the return type semantics explicitly in the trait docs) and each backend implementation phase (verify with a threshold boundary test for each backend).
+**Phase to address:**
+Phase 1 (build.rs setup). Verify incremental behavior before declaring the phase complete — this is a pass/fail criterion, not a nice-to-have.
 
 ---
 
-### Pitfall 4: SQLite-Specific Behavior Leaking Through the Trait (Leaky Abstraction)
+### Pitfall 4: prost/tonic Version Conflict with qdrant-client
 
 **What goes wrong:**
-The current MemoryService has several SQLite-specific behaviors that will leak through the trait boundary if the trait is not designed carefully:
+mnemonic already depends on `qdrant-client = "1"` (optional, `backend-qdrant` feature). `qdrant-client 1.16+` depends on `tonic ^0.12.3` and `prost ^0.13.3`. When you add your own `tonic` and `prost` to `[dependencies]` for the gRPC server, Cargo must unify these versions. If you pin to an incompatible version (e.g., `tonic = "0.11"`) the dependency resolver fails. Conversely, if you accidentally pick `tonic = "0.13"` (which does not exist as of early 2026), you get an error. The resolved versions must satisfy both constraints simultaneously.
 
-1. **Dual-table write atomicity:** Every `create_memory` write touches both `memories` (relational) and `vec_memories` (virtual vec0 table) in a single SQLite transaction. Backends like Qdrant store the vector and metadata in a single point — there is no dual-table split. A trait method that exposes `write_to_memories_table()` and `write_to_vec_table()` as separate operations forces all backends to fake this split.
-
-2. **The 10x KNN over-fetch pattern:** `service.rs` line 159 computes `k = limit * 10` when agent_id/session_id filters are present, because sqlite-vec KNN returns unfiltered candidates that are then filtered post-hoc in SQL. Qdrant performs filter-aware HNSW natively — it doesn't need over-fetching. A trait that exposes `k` as a required parameter leaks the SQLite workaround into all backends.
-
-3. **Tags stored as JSON string:** SQLite stores tags as `TEXT NOT NULL DEFAULT '[]'` (JSON serialized). The LIKE '%tag%' filter on line 186 works for SQLite but is not portable. Other backends have native array or set semantics for metadata filtering.
-
-4. **compact_runs audit table:** The compaction service writes audit records to `compact_runs` after every compaction. This table is entirely SQLite-specific. If the storage trait includes a `record_compaction_run()` method, all non-SQLite backends must implement this for an audit concern they don't natively have.
-
-5. **Idempotent schema migration via error swallowing:** `db.rs` line 95 catches `extended_code == 1` to detect "duplicate column name." This is purely a SQLite behavior and must not appear in the storage trait.
+**Why it happens:**
+Both qdrant-client and your new gRPC server need tonic and prost. Writing `tonic = "0.12"` satisfies `^0.12.3` cleanly, but writing `tonic = "0.11"` does not. This is an easy mistake when copying from tutorials that predate qdrant-client's 1.x release.
 
 **How to avoid:**
-Design the storage trait from the consumer's perspective, not the SQLite implementation's perspective. The right interface level is: `store(memory, embedding)`, `search_semantic(embedding, limit, filters)`, `list(filters)`, `get(id)`, `delete(id)`. Keep compaction logic (fetch all + cluster in Rust) above the trait, taking raw embeddings from the backend. Keep the `compact_runs` audit table as a SQLite-only concern hidden in the SQLite implementation, or extract it to a separate optional trait. The over-fetch factor should be decided per-backend, not passed in from the service layer.
+Match what qdrant-client requires. As of early 2026:
+- `tonic = "0.12"` in `[dependencies]`
+- `prost = "0.13"` in `[dependencies]`
+- `tonic-build = "0.12"` in `[build-dependencies]`
+
+Run `cargo tree -d` immediately after adding these dependencies to check for duplicate versions. Zero duplicates of tonic or prost is the success criterion.
 
 **Warning signs:**
-- The trait method signature mentions `vec_memories`, `compact_runs`, `rusqlite`, or SQLite-specific types.
-- A non-SQLite backend implementation has `unimplemented!()` stubs for methods that make no sense for it.
-- The trait requires a `Connection` or transaction object to be passed in from outside.
-- Adding a new backend requires changing the trait definition rather than just adding a new impl.
+- `error: failed to select a version for 'tonic'` during `cargo build`
+- `cargo tree -d` shows two copies of `tonic` or `prost` at different versions
+- Compilation errors referencing `prost::Message` trait not being satisfied at a crate boundary
 
-**Phase to address:** Storage trait design phase. Audit every trait method against "would Qdrant implement this differently from Postgres?" If yes, the method is exposing the wrong level of abstraction.
+**Phase to address:**
+Phase 1 (Cargo.toml changes). Run `cargo tree -d` immediately after adding tonic/prost and before writing any code.
 
 ---
 
-### Pitfall 5: The 239 Existing Tests All Assume Concrete SQLite Types
+### Pitfall 5: Tonic Interceptor Cannot Do Async Auth — Tower Layer Required
 
 **What goes wrong:**
-The test suite currently directly calls `mnemonic::db::open(&config)` and works with `Arc<tokio_rusqlite::Connection>`. Tests in `integration.rs` use `conn.call(|c| ...)` to seed data directly into SQLite. The auth tests in `auth.rs` access `ks.conn` directly to verify stored hash values. The compaction tests use `PRAGMA table_info(memories)` and inspect SQLite-specific column structures.
+The natural first instinct for porting the existing `auth_middleware` to gRPC is to use `tonic::service::interceptor()`. This looks like the gRPC equivalent of an axum middleware. However, tonic interceptors are **sync-only** and see only `MetadataMap` — they cannot perform async operations, cannot call `KeyService::count_active_keys().await`, and cannot inject extensions that handlers later extract via `req.extensions()`.
 
-After abstracting behind a trait, all of this breaks:
-- `Arc<Connection>` is no longer the concrete type in `MemoryService` — it becomes `Arc<dyn StorageBackend>`.
-- Direct DB seeding via `conn.call()` no longer exists for tests against non-SQLite backends.
-- Schema verification tests (`test_schema_created`) are SQLite-specific and cannot run against Qdrant.
-- Tests that access `ks.conn` (a private field of `KeyService` currently typed to `Arc<Connection>`) will not compile.
+The existing auth pattern requires:
+1. Async SQLite query (`count_active_keys().await`) to determine open-mode vs. auth-active
+2. Async SQLite query (`validate().await`) to hash and compare the bearer token
+3. Injecting `AuthContext` into request extensions for handler-level scope enforcement
 
-This is not a minor issue. 239 tests passing is the quality bar. An abstraction that breaks 100 of them to pass 139 is not acceptable — the refactor strategy must keep them green throughout.
+None of these work inside a sync tonic interceptor closure.
+
+**Why it happens:**
+tonic interceptors are intentionally restricted: they strip the body before calling the interceptor function so it only receives metadata. This is documented behavior. Developers familiar with axum's `middleware::from_fn_with_state()` assume interceptors are the equivalent — they are not.
 
 **How to avoid:**
-Use the "branch by abstraction" pattern:
-1. First, introduce the trait without changing any concrete types. The SQLite implementation becomes `SqliteBackend` implementing the trait. `MemoryService` keeps its `Arc<Connection>` internally but delegates to `SqliteBackend` behind the trait at the service boundary.
-2. Make all existing tests pass against `SqliteBackend`. Do not touch test files during the trait definition phase.
-3. Only after all existing tests pass, wire `MemoryService` to use `Arc<dyn StorageBackend>` and move the seeding helpers to a test-utility module that creates `SqliteBackend` directly.
-4. Schema-level tests (PRAGMA, table names) belong in the `SqliteBackend` unit tests, not in service-level integration tests. Move them during the refactor, do not delete them.
+Use a Tower `Layer` applied to the tonic `Server::builder()`, not `with_interceptor()`:
 
-The `seed_memory()` fast-path pattern used in recall/keys tests seeds via direct rusqlite — this will need a `SqliteBackend::seed_for_test()` associated function, not a trait method.
+```rust
+tonic::transport::Server::builder()
+    .layer(
+        ServiceBuilder::new()
+            .layer(GrpcAuthLayer::new(Arc::clone(&key_service)))
+    )
+    .add_service(MnemonicServiceServer::new(grpc_impl))
+    .serve(grpc_addr)
+    .await?;
+```
+
+`GrpcAuthLayer` wraps a `tower::Service` implementation that is async, has access to the full request, can call `KeyService` async methods, and injects `AuthContext` into `request.extensions_mut()`. The `tonic-middleware` crate provides a simpler async interceptor API as an alternative if full Tower layer boilerplate is undesirable.
 
 **Warning signs:**
-- More than 10 tests fail after introducing the storage trait.
-- Tests that previously seeded data via `conn.call()` panic with "method not found."
-- `auth.rs` tests fail to access `ks.conn` after it changes type.
-- Test compile time increases dramatically because trait objects require different monomorphization.
+- Using `with_interceptor()` and adding `.await` inside the closure — the compiler rejects it with a confusing future/Send error
+- Auth that only checks for header presence (not validates it via async DB call) — a sync interceptor can do that, but the full validation logic cannot
+- The gRPC server accepts any bearer token without failing in tests
 
-**Phase to address:** A dedicated "keep tests green" sub-phase within the storage trait introduction phase. Set a hard rule: no phase is complete until `cargo test` shows the same 239 passing tests.
+**Phase to address:**
+Phase 2 (gRPC auth layer). Write the Tower auth layer before implementing any protected handler. Never ship a gRPC endpoint without auth for a server that has REST auth enabled.
 
 ---
 
-### Pitfall 6: Auth Keys Stored in SQLite — Backend Selection Breaks the Auth Assumption
+### Pitfall 6: gRPC Status Codes Are Not HTTP Status Codes
 
 **What goes wrong:**
-The `api_keys` table lives in SQLite alongside the memories tables. The `KeyService` holds an `Arc<tokio_rusqlite::Connection>` and reads/writes API keys via SQL. If a user switches to Qdrant or Postgres for memory storage, there are two dangerous assumptions that break:
+The existing `ApiError` enum maps to HTTP status codes (401, 403, 400, 404, 500) and implements `IntoResponse` for axum. When porting auth and handler logic to gRPC, trying to return `ApiError` directly from a tonic handler causes a type mismatch. If forced by wrapping, the gRPC client receives `Code::Unknown` or `Code::Internal` for every error because HTTP codes do not map directly to gRPC codes.
 
-1. **Auth keys will not move:** If the pluggable backend applies only to memory storage, auth keys stay in SQLite. This means even a user with `backend=qdrant` in config still needs a SQLite file for auth. This must be communicated explicitly to users — it is not a bug but it will be unexpected.
+Correct gRPC status code mapping for this project:
+- HTTP 401 → `tonic::Status::unauthenticated("...")`
+- HTTP 403 → `tonic::Status::permission_denied("...")`
+- HTTP 400 → `tonic::Status::invalid_argument("...")`
+- HTTP 404 → `tonic::Status::not_found("...")`
+- HTTP 500 → `tonic::Status::internal("...")`
 
-2. **Auth keys could accidentally move:** If the storage backend abstraction is too broad (e.g., includes auth key operations in the `StorageBackend` trait), a misconfigured Qdrant backend could receive auth key lookups. Qdrant has no concept of `hashed_key`-based auth tables — `unimplemented!()` in the trait impl would cause a runtime panic on every auth request.
-
-3. **The per-request `count_active_keys()` call in auth_middleware:** This runs on every protected request. If auth keys were ever moved to a remote backend (Qdrant or Postgres over network), this becomes a per-request network call. At 100 req/s, that is 100 auth-only network round trips per second that didn't exist before.
+**Why it happens:**
+`ApiError` is axum-specific (implements `axum::response::IntoResponse`). There is no automatic conversion to `tonic::Status`. Developers try to reuse the existing error type across both protocols without a conversion layer.
 
 **How to avoid:**
-Keep auth key storage permanently in SQLite, independent of the memory storage backend. The `StorageBackend` trait should cover only memory operations. `KeyService` keeps its `Arc<tokio_rusqlite::Connection>` and is explicitly not part of the pluggable backend. Document this decision clearly: "auth keys always use local SQLite; only memory storage is pluggable." The config system should have `backend=` only configure the memory storage, not auth.
+Create a `fn api_error_to_grpc_status(e: ApiError) -> tonic::Status` conversion function in a shared module (e.g., `src/grpc/error.rs`). Every tonic handler result type must be `Result<tonic::Response<T>, tonic::Status>`. Do not add `impl From<ApiError> for tonic::Status` as a blanket — make the conversion explicit at each call site so every mapping gets reviewed.
+
+Note: `tonic::Status::from_error()` is explicitly documented as having unstable downcast behavior — do not use it for mapping known error types.
 
 **Warning signs:**
-- The `StorageBackend` trait has a `create_api_key()` or `validate_api_key()` method.
-- `KeyService` is refactored to hold `Arc<dyn StorageBackend>` instead of `Arc<Connection>`.
-- Config accepts `backend=qdrant` but user can no longer create API keys after switching.
+- Tonic handler functions with return type `Result<..., ApiError>` instead of `Result<..., tonic::Status>`
+- gRPC clients receiving `Code::Unknown` for auth failures
+- Error messages appearing as empty strings in gRPC responses
 
-**Phase to address:** Storage trait design phase. Explicitly exclude auth operations from the trait scope with a code comment explaining the decision.
+**Phase to address:**
+Phase 2 (gRPC handler implementations). Define the `api_error_to_grpc_status` function before writing any handler body.
 
 ---
 
-### Pitfall 7: Compaction's Embedding Fetch Assumes Stored Raw Bytes in vec_memories
+### Pitfall 7: Proto Field Optionality Mismatch — Scalar vs. Message Types
 
 **What goes wrong:**
-`compaction.rs` line 187-216 fetches candidate embeddings as raw bytes from `vec_memories` and reinterprets them via unsafe pointer casting (`std::slice::from_raw_parts` as `*const f32`). This works because sqlite-vec stores float32 embeddings as raw IEEE-754 little-endian bytes.
+In proto3, scalar fields (`string`, `int32`, `bool`) are **not** `Option<T>` in prost-generated Rust code by default — they use their zero value (`""`, `0`, `false`) when absent from the wire. Message fields are `Option<T>`. This creates asymmetry:
 
-If compaction is moved behind the storage trait, this coupling breaks in two ways:
-1. Backends that store embeddings as `Vec<f32>` directly (Qdrant stores vectors natively, Postgres with pgvector stores vectors in a typed column) cannot return raw bytes — the deserialization logic is backend-specific.
-2. If the trait exposes embeddings as `Vec<f32>` uniformly, the unsafe byte cast in `fetch_candidates` must be removed. The current code is the only place in the codebase with `unsafe` beyond the sqlite-vec extension registration.
+- `string agent_id = 1;` missing from the wire becomes `""`  not `None`
+- A nested message field missing from the wire becomes `None`
 
-There is also a subtle endianness assumption: the cast `std::slice::from_raw_parts(bytes.as_ptr() as *const f32, bytes.len() / 4)` assumes the system is little-endian (x86/ARM). This will produce wrong similarity values on a big-endian architecture even with the same SQLite backend.
+For mnemonic, `agent_id` being `""` looks like "no agent filter" to the client but the existing service layer receives it as an empty string. The current service behavior with `agent_id = ""` is inconsistent across search, list, and store operations. An agent that sends no `agent_id` in a gRPC request could inadvertently access the global default namespace or hit a validation error depending on how the service interprets `""`.
+
+**Why it happens:**
+proto3 removed field presence tracking for scalars to simplify the wire format. Developers coming from REST (where missing field = null) do not realize that `""` and "not present" are indistinguishable in proto3 scalars unless the `optional` keyword is explicitly used.
 
 **How to avoid:**
-The storage trait's "fetch candidates for compaction" method should return `Vec<(Memory, Vec<f32>)>` — memories with their embeddings already deserialized to `Vec<f32>`. Each backend is responsible for its own embedding deserialization. The unsafe byte cast stays inside `SqliteBackend::fetch_candidates_with_embeddings()` and is not exposed through the trait. The compaction service remains backend-agnostic: it receives `Vec<(Memory, Vec<f32>)>` and runs the Rust-side clustering algorithm unchanged.
+Use the `optional` keyword on every scalar field where absence vs. empty string has semantic significance:
+
+```protobuf
+syntax = "proto3";
+
+message StoreRequest {
+  string content = 1;                  // Required — always present
+  optional string agent_id = 2;        // Option<String> in Rust
+  optional string session_id = 3;      // Option<String> in Rust
+  repeated string tags = 4;            // Vec<String>, empty = not provided
+}
+```
+
+`optional` on a proto3 scalar generates `pub agent_id: Option<String>` in prost-generated Rust. Review every field before finalizing the `.proto` file — changing field optionality after clients exist is a wire-breaking change.
 
 **Warning signs:**
-- The storage trait has a `fetch_raw_embedding_bytes()` method returning `Vec<u8>`.
-- The unsafe byte cast appears anywhere except inside `SqliteBackend`.
-- Compaction produces wildly wrong similarity values after switching backends.
-- Tests pass on CI (x86) but produce wrong clusters on ARM if endianness handling is wrong (unlikely — ARM is also little-endian, but log the assumption explicitly).
+- prost-generated struct shows `pub agent_id: String` instead of `pub agent_id: Option<String>`
+- Service layer receiving `agent_id: ""` when the gRPC client sent no agent_id
+- Tests that pass `agent_id: ""` and observe unexpected all-namespace behavior
 
-**Phase to address:** Storage trait design phase, and explicitly in the compaction refactor phase (separate from the basic CRUD trait).
+**Phase to address:**
+Phase 1 (proto file design). Finalize all field optionality in the `.proto` file before implementing any handlers. This is a breaking change if modified after clients exist.
+
+---
+
+### Pitfall 8: Missing enforce_scope() in gRPC Handlers
+
+**What goes wrong:**
+The REST handlers all call `enforce_scope(auth_ctx, body.agent_id.as_deref())` at the top of each handler to enforce key-scoped namespace isolation. This logic is easy to forget when writing gRPC handlers. A gRPC `Store` call from an agent using a key scoped to `agent-A` that supplies `agent_id: "agent-B"` in the request should be rejected with `PERMISSION_DENIED`. Without the scope check, it silently stores the memory under the wrong agent.
+
+**Why it happens:**
+gRPC handlers are written separately from REST handlers and the enforcement pattern is not part of the service layer — it lives in `server.rs` as a function called by each axum handler. When writing new tonic handler implementations, this call site is easy to miss because it is not enforced by the type system.
+
+**How to avoid:**
+Move `enforce_scope()` into a shared module that is required to be called by both REST and gRPC handlers. Or, add it to the service layer so that `MemoryService::store()` takes an `Option<&AuthContext>` and enforces scope internally — this makes the enforcement impossible to forget because it is inside the business logic, not the transport layer.
+
+For v1.5, at minimum: add a test for each gRPC handler that verifies a scoped key cannot access a different agent's data.
+
+**Warning signs:**
+- gRPC handlers that call `state.service.create_memory(body).await` directly without checking scope
+- No test that tries a scoped key with a mismatched agent_id via gRPC and asserts `PERMISSION_DENIED`
+- REST and gRPC allow different agent access patterns under the same API key
+
+**Phase to address:**
+Phase 2 (gRPC handler implementations). Add scope enforcement test before declaring any handler complete.
 
 ---
 
 ## Technical Debt Patterns
 
-Shortcuts that seem reasonable but create long-term problems.
-
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Feature-flag the new trait behind `#[cfg(feature = "pluggable-backends")]` | Keeps existing code unchanged | Two code paths to maintain; test matrix doubles | Never — use branch-by-abstraction instead |
-| Add a `backend: String` field to Config and match/dispatch in MemoryService | No trait required, simple | Match arms grow with every new backend; logic scattered everywhere | Never — this is exactly what traits prevent |
-| Store auth keys in the same backend as memories | Unified storage | Auth fails when backend is misconfigured; security-critical path exposed to new code | Never |
-| Make the storage trait take `&self` (immutable) for all methods including writes | Cleaner API, easy to implement | Cannot use interior mutability; write contention impossible to reason about | Only for read-only backends |
-| Include `compact_runs` in the storage trait | Audit log preserved across backends | All backends must implement a table that only SQLite needs | Never — keep audit in SQLite-only impl |
-| Return `serde_json::Value` from trait methods instead of typed structs | Maximum flexibility | Defeats Rust's type safety; runtime panics replace compile errors | Never |
-| Put all backends in the same crate | Simpler module structure | Qdrant client becomes a required dependency even when not used | Acceptable for v1.4, revisit if binary size grows |
+| Skip gRPC auth entirely for v1.5 | Faster to ship | Unauthenticated gRPC port is a security hole if REST auth is active; auth retrofit is harder than auth first | Never |
+| Copy axum handler logic into tonic handlers | Fast implementation | Duplicated validation at two call sites; bug fixed in REST not fixed in gRPC | Never — share the service layer via `Arc<MemoryService>` |
+| Same-port multiplexing via content-type routing | One port is simpler | Body-type incompatibility requires a custom Tower service that fights axum/tonic version drift | Only if separate ports are a hard external constraint |
+| Commit generated proto `.rs` files to git | Avoids build.rs dependency | Generated code in git causes merge conflicts; build state in source is an anti-pattern | Acceptable during initial scaffolding only; remove before v1.5 release |
+| Use `tonic::service::interceptor` for auth | Less boilerplate | Cannot do async key validation; open-mode check impossible in sync context | Never for this project's auth model |
+| Default tonic features (includes TLS via ring/aws-lc) | Works out of the box | Pulls in large TLS crates that increase binary size and cross-compilation friction | Use `default-features = false, features = ["transport", "codegen"]` if TLS is not required for v1.5 |
+| Hardcode gRPC port as REST_PORT + 1 | Simplifies initial implementation | Port conflict if user runs two instances; not configurable | Never — add `grpc_port` to Config from the start |
 
 ---
 
 ## Integration Gotchas
 
-Common mistakes when connecting to external services.
-
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Qdrant | Create collection with `Distance::Cosine` but compare scores as distances (lower-is-better) | Qdrant cosine collections return scores where higher=better; convert: `distance = 1.0 - score` before storing in `SearchResultItem.distance` |
-| pgvector | Use `<->` operator (L2) instead of `<=>` (cosine) for normalized embeddings | Use `<=>` (cosine distance) for all-MiniLM-L6-v2 normalized embeddings; L2 and cosine give different threshold semantics |
-| pgvector | Assume `<=>` returns range 0-1 | `<=>` returns 0-2 (cosine distance); threshold values that work for similarity scores (0-1) will silently pass everything through |
-| Qdrant | Use REST client and assume payload filtering is free | Qdrant's payload filtering uses indexed fields; create payload indexes for `agent_id` and `session_id` before filtering at scale |
-| Qdrant | Send 384-dim embeddings to a collection created with 768-dim | Vector dimension mismatch returns a Qdrant API error, not a Rust compile error; validate dim at startup |
-| tokio-postgres | Use a single connection for both reads and writes from multiple async tasks | Use a connection pool (deadpool-postgres or tokio-postgres built-in pool); unlike SQLite, Postgres handles concurrent writers safely |
-| All backends | Assume `agent_id = ""` (empty string, the default) filters correctly | Some backends treat empty string and null/absent differently; test explicitly with empty-string agent_id after each backend implementation |
+| tonic + axum AppState | Passing `AppState` directly to the tonic service struct (wrong type) | Clone `Arc<MemoryService>`, `Arc<CompactionService>`, `Arc<KeyService>` into both the axum `AppState` and the tonic service struct independently |
+| tonic + KeyService auth | Calling async `KeyService` methods inside a sync tonic interceptor | Implement auth as a Tower `Layer` applied to `Server::builder()`; interceptors are sync-only |
+| tonic + ApiError | Returning `ApiError` from a tonic handler | Create `api_error_to_grpc_status(ApiError) -> tonic::Status` conversion; never use `ApiError` in a tonic context |
+| tonic-build + release.yml | No protoc installation step in CI workflow | Add `brew install protobuf` (macOS) and `apt-get install protobuf-compiler` (Ubuntu) before `cargo build` in the workflow |
+| tonic + qdrant-client | Version conflict on prost/tonic | Pin `tonic = "0.12"` and `prost = "0.13"` to match qdrant-client's constraints; verify with `cargo tree -d` |
+| gRPC port config | Hardcoding gRPC port | Add `grpc_port: u16` to `Config` struct with a documented default (e.g., 50051); expose via env var `GRPC_PORT` and TOML config |
+| tonic TLS features | Enabling default TLS features that pull in `ring` | Use `tonic = { version = "0.12", default-features = false, features = ["transport", "codegen"] }` for v1.5 if TLS is not in scope |
+| gRPC metadata key casing | Using `"Authorization"` (capitalized) as metadata key | gRPC metadata keys are lowercase by convention and by HTTP/2 spec; use `"authorization"` — `MetadataKey::from_static("authorization")` |
 
 ---
 
 ## Performance Traps
 
-Patterns that work at small scale but fail as usage grows.
-
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Per-request auth `count_active_keys()` on remote backend | Auth adds 5-20ms latency per request when backend is Qdrant/Postgres | Keep auth keys in SQLite regardless of backend; never route auth through the pluggable storage trait | First request after switching auth to remote backend |
-| KNN over-fetch (10x) on Qdrant | Fetching 10x candidates from Qdrant at network cost | Use Qdrant's native payload filtering HNSW instead of post-filtering; pass filters into the Qdrant query directly | N > 100 candidates or >10 req/s with filters |
-| Single Postgres connection for writes | `connection pool exhausted` errors under concurrent store operations | Use deadpool-postgres with pool_size ≥ 10; unlike SQLite, Postgres benefits from multiple connections | > 5 concurrent agent write sessions |
-| Embedding vector stored in both Postgres memories table and pgvector | Double storage, sync problems on delete | Use pgvector as the single source: store embedding in a vector column on the memories table, not a separate table | Day 1 — architectural decision |
-| Re-embedding every candidate during compaction on a remote backend | Compaction fetches N memories + N embeddings from remote, then re-embeds | Fetch embeddings from backend (avoid re-embedding); only re-embed the merged output | N > 50 memories, compaction latency becomes seconds |
+| Per-request SQLite `count_active_keys()` on gRPC hot path | Auth adds 1 SQLite query per gRPC request; slower than REST equivalent under high concurrency | Intentional per D-04 decision; acceptable for v1.5 scale; document as a known single-file bottleneck | >10k req/s to a single SQLite file |
+| Embedding model mutex under concurrent gRPC `Store` calls | gRPC store latency spikes due to `Arc<Mutex<LocalEngineInner>>` contention | Same as REST — the existing `EmbeddingEngine` is already the bottleneck; document; no fix needed for v1.5 | >20 concurrent gRPC store calls |
+| Blocking inside a tonic async handler | Handler hangs; tokio runtime thread starved | Never call `std::thread::sleep`, `block_on()`, or synchronous I/O inside tonic handlers; all existing DB/embedding paths are already async | Any blocking call |
+| Default tonic max message size (4MB) exceeded | Silent truncation or gRPC error on large payloads | Set `.max_decoding_message_size()` on `Server::builder()` | Memory content batch exceeding 4MB; unlikely for v1.5 use cases |
 
 ---
 
 ## Security Mistakes
 
-Domain-specific security issues beyond general web security.
-
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Storing raw API key tokens in Qdrant or Postgres payload | Key exposure in DB dump or log | Auth keys must stay in SQLite with BLAKE3 hashed storage; never route auth through the pluggable backend |
-| Using Qdrant's gRPC API without TLS in production | Token/key interception in transit | Configure TLS on the Qdrant client; or use Qdrant Cloud which enforces TLS |
-| Passing `agent_id` from user-controlled input directly as a Qdrant filter without validation | Cross-agent data access if validation is missing | Validate agent_id scope in the service layer before passing to backend, same as current `enforce_scope()` in server.rs |
-| Logging raw Qdrant API responses | API keys or vector data in logs | Ensure tracing spans don't log full response bodies from external storage backends |
+| gRPC port open without auth while REST requires auth | Agent bypasses auth by using gRPC port | gRPC auth Tower layer must be implemented in the same phase as gRPC handlers — no "auth later" deferred phase |
+| Logging raw bearer token from gRPC metadata | Token exposed in structured logs (same risk as REST — see comment in `create_key_handler`) | Extract and validate token; never `tracing::debug!` or `tracing::info!` the raw bearer value in the auth layer |
+| gRPC port bound to `0.0.0.0` without TLS | Plaintext traffic visible on network | Document in v1.5 that TLS is optional; emit a startup warning if gRPC binds to a non-loopback address without TLS configured |
+| Missing `enforce_scope()` in gRPC handlers | Cross-agent memory access via gRPC even with valid API key | Call `enforce_scope()` at the top of every gRPC handler that accepts `agent_id`; add a test for each handler to verify scope rejection |
+| MetadataKey case sensitivity | `Authorization` vs `authorization` — HTTP/2 requires lowercase; tonic's MetadataKey enforces this at runtime with a panic on invalid keys | Always use lowercase metadata key strings; use `MetadataKey::from_static("authorization")` not a string literal with mixed case |
 
 ---
 
 ## UX Pitfalls
 
-Common user experience mistakes in this domain.
-
 | Pitfall | User Impact | Better Approach |
 |---------|-------------|-----------------|
-| Switching backends silently loses all existing memories | User loses all history without warning | Require explicit `--migrate` flag or document that backend switch is not a migration; memories stay where they are |
-| Config error (wrong Qdrant URL) shows cryptic Rust error at request time | User doesn't know backend failed | Validate backend connectivity at startup in `validate_config()`, same as current embedding provider validation |
-| `mnemonic config` shows backend=qdrant even when Qdrant is unreachable | Confuses user about system state | `mnemonic config` should probe the configured backend and show connectivity status |
-| Different search results between SQLite and Qdrant for the same query | User confusion — "why did search get worse?" | Document that L2 distance (SQLite default) and cosine distance (Qdrant) rank results slightly differently for non-normalized vectors |
+| gRPC port not discoverable | Agents cannot discover the gRPC port programmatically after startup | Add `"grpc_port": <n>` to the `GET /health` response body when gRPC is enabled |
+| gRPC server starts but emits no startup log | No confirmation that gRPC is accepting connections | Log `gRPC server listening on 0.0.0.0:<port>` at startup, matching the existing REST `server listening` log |
+| No reflection service | Agent developers must distribute the `.proto` file to use `grpcurl` | Add `tonic-reflection` with the compiled file descriptor set; enables `grpcurl ls` to enumerate services without distributing protos |
+| gRPC errors with empty message strings | Agent receives `Code::InvalidArgument` with no details | Every `tonic::Status` must include a human-readable message string consistent with the REST error message pattern |
+| Proto breaking change without service version | Existing agent gRPC clients silently receive wrong data after server upgrade | Treat `.proto` changes as a versioned API contract; field removals and type changes require a new service version |
 
 ---
 
 ## "Looks Done But Isn't" Checklist
 
-Things that appear complete but are missing critical pieces.
-
-- [ ] **Storage trait compiled:** Verify `Arc<dyn StorageBackend + Send + Sync>` compiles and can be passed to axum State — not just that `impl StorageBackend for SqliteBackend` compiles.
-- [ ] **SQLite backend parity:** Every existing test (239) passes with the SQLite backend behind the trait, not just the new backend-specific tests.
-- [ ] **Threshold semantics documented:** The `StorageBackend::search_semantic()` method must have a doc comment explicitly stating whether the returned distance is lower-is-better or higher-is-better.
-- [ ] **Qdrant score converted:** Qdrant returns `score` (higher-is-better for cosine); verify conversion to `distance` (lower-is-better) is applied before the threshold filter in service.rs.
-- [ ] **Auth keys stay in SQLite:** Run `mnemonic keys create` after switching to Qdrant backend; verify keys are still persisted and auth middleware still works.
-- [ ] **Compaction works across backends:** Run `POST /memories/compact` against Qdrant backend and verify clusters are found; this requires the embedding-fetch path to work through the trait.
-- [ ] **Empty agent_id tested:** Test that `agent_id = ""` (default namespace) works correctly for all backends, not just `agent_id = "some-agent"`.
-- [ ] **validate_config() extended:** Backend URL and credentials are validated at startup, not at first request.
-- [ ] **binary size regression checked:** Adding Qdrant and tokio-postgres client crates will increase binary size significantly; measure before and after and document for users.
+- [ ] **Incremental builds work:** Run `cargo build && cargo build` — the second run must complete in under 2 seconds with no `Running build script` output. Failure means the `rerun-if-changed` path is wrong.
+- [ ] **CI protoc installed:** The release workflow YAML has explicit protoc installation steps for both Ubuntu and macOS runners before `cargo build --release`.
+- [ ] **Version conflict free:** `cargo tree -d` shows zero duplicate `tonic` or `prost` entries after adding tonic to Cargo.toml.
+- [ ] **gRPC auth open-mode works:** Integration test calls a gRPC method with no API keys created and no `authorization` header; request succeeds.
+- [ ] **gRPC auth enforces tokens:** Integration test sends a bad bearer token; receives `Code::Unauthenticated`, not `Code::Unknown` or `Code::Internal`.
+- [ ] **Scope enforcement on gRPC:** Test that a scoped API key calling gRPC with wrong `agent_id` receives `Code::PermissionDenied`.
+- [ ] **Proto field optionality correct:** Every `agent_id`, `session_id`, `threshold`, `limit` field in the `.proto` uses `optional` where absence is meaningful; inspect the prost-generated structs to verify `Option<T>`.
+- [ ] **Status codes correct:** HTTP 401 → `Unauthenticated`, HTTP 403 → `PermissionDenied`, HTTP 404 → `NotFound`, HTTP 400 → `InvalidArgument` — not all collapsed to `Internal`.
+- [ ] **gRPC port in config:** `grpc_port` field exists in `Config`, has a documented default, appears in `mnemonic config show` output.
+- [ ] **Health endpoint updated:** `GET /health` JSON includes `grpc_port` when the server starts with gRPC enabled.
+- [ ] **No raw token in logs:** Grep the auth layer implementation for `tracing` calls and confirm no bearer token value is logged at any level.
+- [ ] **Separate port confirmed:** Both REST and gRPC listeners start on different ports; no content-type multiplexing code exists.
 
 ---
 
 ## Recovery Strategies
 
-When pitfalls occur despite prevention, how to recover.
-
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Trait is not dyn-compatible | LOW | Add `#[async_trait]` to trait and all impl blocks; remove native `async fn` from trait |
-| Threshold semantics inverted on one backend | MEDIUM | Add a `score_is_higher_is_better: bool` flag in the backend's search response and normalize in the service layer; re-run all search integration tests |
-| 239 tests broken by trait refactor | HIGH | Revert trait changes; apply branch-by-abstraction incrementally; never introduce the trait and change service types in the same commit |
-| Auth keys accidentally moved to non-SQLite backend | HIGH | Roll back config change; restore SQLite file from backup; add explicit guard in `validate_config()` that rejects `backend=X` for auth key operations |
-| Compaction produces wrong clusters on new backend | MEDIUM | Add a canary test: insert two identical memories, run compact, assert exactly 1 cluster found; run this test for each backend |
-| Binary too large after adding all backend crates | LOW | Use Cargo features to gate each backend behind a feature flag; `default = ["sqlite"]`; `qdrant` and `postgres` are opt-in features that add their crates only when enabled |
+| Same-port body type mismatch discovered mid-implementation | MEDIUM | Switch to separate-port architecture; remove multiplex service; axum and tonic bind independently via `tokio::join!` |
+| CI protoc missing on first CI run | LOW | Add protoc install step to release.yml; re-run CI |
+| Always-dirty incremental builds | LOW | Add `println!("cargo:rerun-if-changed=proto/mnemonic.proto")` with the full path to `build.rs`; verify timing |
+| prost/tonic version conflict | LOW-MEDIUM | Run `cargo tree -d`; update pins to match qdrant-client constraints; may require updating other transitive dependencies |
+| sync interceptor chosen for auth instead of Tower layer | MEDIUM | Replace `with_interceptor()` with `Server::builder().layer()`; rewrite auth as a Tower service; existing `KeyService` interface is unchanged |
+| Proto field type wrong after first release | HIGH | Requires a new `.proto` service version (`MnemonicServiceV2`); all existing clients must be updated simultaneously; proto design must be reviewed and locked before first release |
+| Missing scope enforcement discovered after release | HIGH | Add `enforce_scope()` calls to all affected gRPC handlers; release a patch; audit logs for cross-agent accesses |
 
 ---
 
 ## Pitfall-to-Phase Mapping
 
-How roadmap phases should address these pitfalls.
-
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| Async fn not dyn-compatible | Storage trait definition (Phase 1) | `Arc<dyn StorageBackend + Send + Sync>` compiles as AppState field |
-| Send bound breaks AppState | Storage trait definition (Phase 1) | In-memory test backend using `tokio::sync::Mutex` compiles in AppState |
-| Threshold semantics inversion | Storage trait design + each backend impl | Threshold boundary test: insert 2 identical memories, search with threshold=0.01, expect 2 results; insert 2 unrelated, search with threshold=0.01, expect 0 results |
-| Leaky SQLite abstraction | Storage trait design (Phase 1) | Zero mentions of `rusqlite`, `vec_memories`, `compact_runs` in the trait definition |
-| 239 tests broken | SQLite backend implementation (Phase 2) | `cargo test` after Phase 2 = 239 passing, 0 failing |
-| Auth key backend coupling | Storage trait design (Phase 1) | `KeyService` type unchanged; `StorageBackend` trait has no auth methods |
-| Compaction embedding fetch | Storage trait design (Phase 1) + compaction refactor | Compaction returns correct clusters on a fresh test backend with two identical mock embeddings |
-| Qdrant score direction | Qdrant backend implementation | Search for identical content with `threshold=0.1`, expect results; search for opposite content, expect empty |
-| pgvector operator choice | Postgres backend implementation | Confirm `<=>` operator is used, `<->` is not; check query plan uses HNSW index |
-| Config validation | Config extension phase | Starting with invalid Qdrant URL exits with clear error, does not silently degrade |
+| Body type mismatch (same-port) | Phase 1: Dual-server skeleton | Two listeners bind on different ports; axum and tonic start concurrently in `tokio::join!` |
+| CI protoc missing | Phase 1: build.rs + Cargo.toml changes | Release workflow runs successfully in CI with protoc install steps present |
+| Always-dirty build | Phase 1: build.rs setup | `cargo build && cargo build` — second run shows no build script output, completes under 2s |
+| prost/tonic version conflict with qdrant-client | Phase 1: Cargo.toml | `cargo tree -d` shows zero duplicate tonic or prost entries |
+| Sync interceptor for async auth | Phase 2: gRPC auth Tower layer | Auth layer compiles; integration test validates open-mode passthrough and token validation via async `KeyService` |
+| gRPC status code mapping | Phase 2: gRPC handlers | Test that invalid token returns `Code::Unauthenticated`, bad agent_id returns `Code::PermissionDenied`, not `Code::Internal` |
+| Proto field optionality | Phase 1: proto design | Every `agent_id`, `session_id` field uses `optional`; prost-generated structs show `Option<String>` |
+| Missing enforce_scope in gRPC handlers | Phase 2: gRPC handlers | Test: scoped key + wrong agent_id → `Code::PermissionDenied` for every gRPC method |
+| Logging raw token | Phase 2: gRPC auth layer | Code review grep for `tracing` calls in auth layer; confirm no token value is logged |
+| gRPC port not in health | Phase 3: integration | `GET /health` response JSON contains `grpc_port` when server starts with gRPC enabled |
 
 ---
 
 ## Sources
 
-- [Rust async-trait crate documentation](https://docs.rs/async-trait/0.1.83/async_trait/index.html)
-- [Rust Blog: Announcing async fn and RPIT in traits (1.75)](https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits/)
-- [sqlite-vec KNN query documentation](https://alexgarcia.xyz/sqlite-vec/features/knn.html)
-- [sqlite-vec API reference — distance metrics](https://alexgarcia.xyz/sqlite-vec/api-reference.html)
-- [pgvector GitHub issue: cosine distance vs cosine similarity](https://github.com/pgvector/pgvector/issues/72)
-- [Supabase issue: `<=>` is cosine distance, not cosine similarity](https://github.com/supabase/supabase/issues/12244)
-- [Qdrant distance metrics documentation](https://qdrant.tech/course/essentials/day-1/distance-metrics/)
-- [Qdrant vector search filtering guide](https://qdrant.tech/articles/vector-search-filtering/)
-- [Rust Forum: sharing database transactions across trait methods](https://users.rust-lang.org/t/how-do-i-share-a-database-transaction-across-trait-methods/101606)
-- [Rust Forum: async trait dyn object safety](https://users.rust-lang.org/t/resolving-not-object-safe-error-with-trait-having-async-methods/105175)
-- Direct codebase inspection: `src/service.rs`, `src/compaction.rs`, `src/auth.rs`, `src/db.rs`, `src/embedding.rs`
+- tonic GitHub issue [#1964](https://github.com/hyperium/tonic/issues/1964) — `tonic-web` + axum body type mismatch, open as of September 2025
+- axum pull request [#2825](https://github.com/tokio-rs/axum/pull/2825) — gRPC multiplex example fix using `tower::steer` and `tonic::Routes::into_axum_router()`
+- tonic GitHub issue [#2239](https://github.com/hyperium/tonic/issues/2239) — always-dirty builds from incorrect `rerun-if-changed` path emission
+- [tonic-build docs](https://docs.rs/tonic-build/latest/tonic_build/) — OUT_DIR behavior, protoc system dependency, build script configuration
+- [prost-build docs](https://docs.rs/prost-build/latest/prost_build/) — protoc requirement since v0.11; `PROTOC_NO_VENDOR` env var
+- [qdrant-client 1.16+ Cargo.toml](https://docs.rs/crate/qdrant-client/latest) — `tonic ^0.12.3`, `prost ^0.13.3` constraints
+- [tonic Interceptor docs](https://docs.rs/tonic/latest/tonic/service/interceptor/index.html) — sync-only, metadata-only design
+- [Announcing Tonic 0.5](https://tokio.rs/blog/2021-07-tonic-0-5) — Tower-based interceptor API; interceptors are sync, Tower layers are async
+- [tonic-middleware crate](https://crates.io/crates/tonic-middleware) — async interceptor alternative
+- prost issue [#520](https://github.com/tokio-rs/prost/issues/520) — proto3 scalar fields not `Option<T>` by default; `optional` keyword required
+- [GitHub Actions protoc Discussion #160036](https://github.com/orgs/community/discussions/160036) — protoc not found in CI despite installation
+- [tonic::Status docs](https://docs.rs/tonic/latest/tonic/struct.Status.html) — `from_error()` instability note; correct code constructors
+- Direct codebase inspection: `src/auth.rs`, `src/server.rs`, `src/storage/mod.rs`, `.github/workflows/release.yml`, `Cargo.toml`
 
 ---
-*Pitfalls research for: v1.4 Pluggable Storage Backends — Mnemonic*
-*Researched: 2026-03-21*
+*Pitfalls research for: Adding gRPC (tonic) to existing axum/Rust server — Mnemonic v1.5*
+*Researched: 2026-03-22*

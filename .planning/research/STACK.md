@@ -1,119 +1,184 @@
 # Stack Research
 
-**Domain:** Pluggable storage backends for Rust vector memory server (Qdrant, Postgres)
-**Researched:** 2026-03-21 (v1.4 update)
-**Confidence:** HIGH for library choices; MEDIUM for feature flag patterns (verified via official docs + crates.io, no Context7 coverage)
+**Domain:** gRPC interface addition to existing Rust memory server (v1.5)
+**Researched:** 2026-03-22
+**Confidence:** HIGH — versions verified via crates.io API and tonic GitHub source; architecture confirmed via official docs
+
+## Context
+
+This is a **subsequent milestone** stack. The existing validated stack (axum 0.8, tokio 1, sqlx 0.8, prost-types 0.13, qdrant-client 1, etc.) is unchanged. This document covers only the **new dependencies required for v1.5 gRPC**.
 
 ---
 
-## Context: What Already Exists (LOCKED)
-
-The following stack is validated across v1.0–v1.3 and must not change:
-
-| Component | Crate | Version |
-|-----------|-------|---------|
-| HTTP server | axum | 0.8 |
-| Async runtime | tokio | 1 (full) |
-| SQLite | rusqlite (bundled) + sqlite-vec | 0.37 + 0.1.7 |
-| Async SQLite | tokio-rusqlite | 0.7 |
-| Embeddings | candle-core/nn/transformers | 0.9 |
-| Async trait dispatch | async-trait | 0.1 |
-| HTTP client | reqwest | 0.13 |
-| Serialization | serde + serde_json | 1 |
-| Error handling | thiserror + anyhow | 2 + 1 |
-| Config | figment | 0.10 |
-| UUIDs | uuid | 1 (v7) |
-| Logging | tracing + tracing-subscriber | 0.1 / 0.3 |
-| CLI | clap | 4 |
-
-The project already uses `#[async_trait]` on `EmbeddingEngine`. The storage trait must follow the exact same pattern.
-
----
-
-## New Dependencies Required for v1.4
-
-### Core Additions
+## New Core Technologies
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| qdrant-client | 1.17.0 | Qdrant vector DB client | Official SDK from Qdrant team; gRPC via tonic; builder-pattern API; tokio 1.40+ compatible; only maintained client for Qdrant in Rust |
-| sqlx | 0.8.6 | Async PostgreSQL client | Pure Rust, async-native, built-in PgPool connection pooling; works with pgvector crate; compile-time query checking optional but available |
-| pgvector | 0.4.1 | Rust types for pgvector Postgres extension | Official pgvector Rust support; feature flags for sqlx and tokio-postgres; exports `Vector` type for f32 arrays |
+| `tonic` | `0.14` | gRPC server runtime | Current stable (0.14.5, released 2026-02-19). Internally uses axum 0.8, hyper 1, tower 0.5 — exactly what mnemonic already uses. The standard gRPC framework for Rust with first-class async/await support. |
+| `tonic-prost` | `0.14` | Prost codec for tonic messages | Tonic 0.14 extracted prost integration into its own crate (`tonic-prost`). This is the runtime codec for encoding/decoding protobuf messages in tonic services. Previously bundled in tonic core — now a separate dep. |
+| `tonic-reflection` | `0.14` | gRPC server reflection | Implements the `grpc.reflection.v1` protocol. Lets `grpcurl`, Evans, and other tooling discover services without needing the `.proto` file. Same version family as tonic. Use the `server` feature. |
+| `prost` | `0.14` | Protobuf message types at runtime | Tonic 0.13 used prost 0.13; tonic 0.14 requires prost 0.14. These are incompatible across minor versions. The existing Cargo.toml has `prost-types = "0.13"` gated behind `backend-qdrant` — must bump to `0.14`. |
+| `prost-types` | `0.14` | Protobuf well-known types | Used by `tonic-reflection`. Must match the `prost` version in use. Existing `prost-types = "0.13"` (optional, backend-qdrant) conflicts — bump to `0.14`. |
 
-### No Additional Supporting Libraries Needed
+---
 
-`async-trait`, `uuid`, `serde`, `thiserror`, `anyhow`, and `tokio` are already present and cover all supporting needs for the new backends.
+## New Supporting Libraries
+
+| Library | Version | Purpose | When to Use |
+|---------|---------|---------|-------------|
+| `tonic-prost-build` | `0.14` | Proto file → Rust codegen | `[build-dependencies]` only. Replaces old `tonic-build` starting in tonic 0.14. Wraps `prost-build` and generates both message structs and gRPC service traits from `.proto` files. Always needed. |
+| `prost-build` | `0.14` | Underlying protoc wrapper | Transitive dep of `tonic-prost-build`; no need to add directly. Requires `protoc` binary on build machine — not bundled. |
+| `tonic-health` | `0.14` | Standard gRPC health check service | Optional. Provides `grpc.health.v1.Health` service per gRPC spec. Add if the grpc `health` endpoint is in scope for v1.5. Skip if using a custom health unary RPC in the mnemonic proto. |
+
+---
+
+## Development Tools
+
+| Tool | Purpose | Notes |
+|------|---------|-------|
+| `protoc` (system) | Compiles `.proto` files during `cargo build` | Required by `prost-build`. Not bundled. Install via `brew install protobuf` (macOS) or `apt install protobuf-compiler` (Linux). Version 3.x or 4.x both work. |
+| `arduino/setup-protoc@v3` | GitHub Actions step to install protoc in CI | Add before `cargo build` in release workflow. Avoids hardcoding protoc binaries in the repo. |
+| `grpcurl` | CLI for testing gRPC endpoints | Install locally. Works with `tonic-reflection` to discover services without `.proto` file. |
 
 ---
 
 ## Cargo.toml Changes
 
 ```toml
-# Add to [dependencies] — all optional, guarded by feature flags
-qdrant-client = { version = "1.17", optional = true }
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "uuid"], optional = true }
-pgvector = { version = "0.4", features = ["sqlx"], optional = true }
+[dependencies]
+# --- NEW for v1.5 gRPC ---
+tonic            = { version = "0.14", features = ["transport"] }
+tonic-prost      = "0.14"
+tonic-reflection = { version = "0.14", features = ["server"] }
+prost            = "0.14"
 
-# Add [features] section
-[features]
-default = []
-backend-qdrant = ["dep:qdrant-client"]
-backend-postgres = ["dep:sqlx", "dep:pgvector"]
+# UPDATED: was "0.13" in backend-qdrant feature — must bump to match tonic 0.14
+prost-types      = { version = "0.14", optional = true }
+
+[build-dependencies]
+# --- NEW for v1.5 gRPC ---
+tonic-prost-build = "0.14"
 ```
 
-**Why `dep:` prefix:** Rust 1.60+ syntax that prevents implicit feature exposure for optional dependencies. Users enabling `backend-postgres` do not accidentally expose `sqlx` as a feature name on mnemonic.
-
-**Why `native-tls` for sqlx:** The existing `reqwest 0.13` already pulls in native-tls. Using `rustls` would introduce a second TLS stack. Match what the project already uses to minimize binary size and dependency surface.
-
-**Why `uuid` feature in sqlx:** Enables `sqlx::types::Uuid` mapping, consistent with the existing `uuid` crate already in the project.
-
-**Build note:** `qdrant-client` pulls in `tonic 0.12.3` and `prost 0.13.3` transitively. Do NOT add `tonic` directly — let `qdrant-client` own it to avoid version conflicts.
+Note on `prost-types` version bump: The `backend-qdrant` feature currently pins `prost-types = "0.13"`. Bumping to `0.14` may conflict with `qdrant-client 1.x`, which transitively brings in its own prost version. Run `cargo tree -d` before starting to surface any duplicate version conflicts. Cargo can in principle resolve both `prost 0.13` and `prost 0.14` as separate crates as long as mnemonic's API layer does not pass prost types across the boundary — which it does not.
 
 ---
 
-## The Storage Trait Pattern
+## System Requirement: protoc
 
-Follow the existing `EmbeddingEngine` pattern in `src/embedding.rs` exactly — same crate, same attribute macro, same object-safety strategy.
+`prost-build` (used by `tonic-prost-build`) requires `protoc` (Protocol Buffers compiler) present during build. It does NOT bundle protoc as of prost-build 0.11+.
 
+**Local development:**
+```bash
+brew install protobuf          # macOS
+apt install protobuf-compiler  # Ubuntu/Debian
+```
+
+**CI / GitHub Actions** — add before `cargo build` in the release workflow:
+```yaml
+- name: Install protoc
+  uses: arduino/setup-protoc@v3
+  with:
+    repo-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Alternative:** Use `protoc-bin-vendored = "3.2.0"` in `[build-dependencies]` to vendor a protoc binary alongside the project. Avoids CI setup at the cost of ~5MB binaries per platform checked into dev tooling.
+
+---
+
+## Proto File Layout
+
+```
+mnemonic/
+  proto/
+    mnemonic/v1/
+      mnemonic.proto      # service definition: Store, Search, List, Delete, Health
+  build.rs                # calls tonic_prost_build::compile_protos(...)
+```
+
+`build.rs` pattern:
 ```rust
-// src/storage/mod.rs
-use async_trait::async_trait;
-use crate::error::StorageError;
-use crate::service::{Memory, CreateMemoryRequest, SearchParams, ListParams};
-
-#[async_trait]
-pub trait StorageBackend: Send + Sync {
-    async fn create_memory(&self, req: &CreateMemoryRequest, embedding: Vec<f32>) -> Result<Memory, StorageError>;
-    async fn list_memories(&self, params: &ListParams) -> Result<Vec<Memory>, StorageError>;
-    async fn get_memory(&self, id: &str) -> Result<Option<Memory>, StorageError>;
-    async fn search_memories(&self, embedding: Vec<f32>, params: &SearchParams) -> Result<Vec<Memory>, StorageError>;
-    async fn delete_memory(&self, id: &str) -> Result<bool, StorageError>;
-    async fn list_for_compaction(&self, agent_id: &str, limit: usize) -> Result<Vec<Memory>, StorageError>;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tonic_prost_build::configure()
+        .file_descriptor_set_path(
+            std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap())
+                .join("mnemonic_descriptor.bin"),
+        )
+        .compile_protos(&["proto/mnemonic/v1/mnemonic.proto"], &["proto"])?;
+    Ok(())
 }
 ```
 
-`MemoryService` becomes backend-agnostic:
+The `.bin` file is consumed by `tonic-reflection` at runtime:
 ```rust
-pub struct MemoryService {
-    pub storage: Arc<dyn StorageBackend>,
-    pub embedding: Arc<dyn EmbeddingEngine>,
-    pub embedding_model: String,
+let descriptor = include_bytes!(concat!(env!("OUT_DIR"), "/mnemonic_descriptor.bin"));
+```
+
+---
+
+## Architecture: Dual-Port Server Pattern
+
+PROJECT.md specifies gRPC runs on a **separate port** from REST. The correct pattern is `tokio::join!` across two independently-bound listeners — no multiplexing crate needed:
+
+```rust
+// In serve subcommand (simplified pseudocode)
+let rest_future = axum::serve(rest_listener, rest_router);
+
+let grpc_future = tonic::transport::Server::builder()
+    .add_service(
+        tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(MNEMONIC_DESCRIPTOR)
+            .build_v1()?
+    )
+    .add_service(MnemonicServer::with_interceptor(svc, grpc_auth_interceptor))
+    .serve_with_incoming(grpc_listener_stream);
+
+tokio::join!(rest_future, grpc_future);
+```
+
+Both servers share the same `AppState` (same `Arc<dyn StorageBackend>`, same embedding engine) via `Arc` clones — no duplication of resources.
+
+---
+
+## Auth Pattern: Tonic Interceptor
+
+The existing auth validates `Authorization: Bearer mnk_...` HTTP headers. For gRPC, the equivalent is gRPC metadata under the `authorization` key (lowercase, per gRPC metadata conventions). Tonic interceptors access metadata via `request.metadata()`.
+
+**Recommended: synchronous tonic interceptor** applied per-service with `with_interceptor()`:
+
+```rust
+fn grpc_auth_interceptor(
+    req: tonic::Request<()>,
+) -> Result<tonic::Request<()>, tonic::Status> {
+    match req.metadata().get("authorization") {
+        Some(token) => {
+            // Reuse existing validate_api_key() from the auth module
+            // Return Err(Status::unauthenticated("...")) on failure
+            Ok(req)
+        }
+        None if auth_is_enabled() => {
+            Err(tonic::Status::unauthenticated("missing authorization metadata"))
+        }
+        None => Ok(req), // open mode — no keys configured
+    }
 }
 ```
 
-**Why `#[async_trait]` instead of native async fn in traits:** Native `async fn` in traits (stabilized Rust 1.75) does NOT support `dyn Trait` — the trait would not be object-safe. `async-trait` transforms methods to `Pin<Box<dyn Future>>`, which enables `Arc<dyn StorageBackend>`. This is the correct and required approach as of March 2026; native dyn async trait support is still in active development (rust-lang/impl-trait-utils#34, baby steps blog March 2025).
+Applied as: `MnemonicServer::with_interceptor(svc, grpc_auth_interceptor)`
+
+This mirrors the existing axum `route_layer()` auth middleware — the interceptor bridges gRPC metadata to the shared validation logic. No new auth crates needed.
 
 ---
 
 ## Alternatives Considered
 
-| Recommended | Alternative | Why Not |
-|-------------|-------------|---------|
-| sqlx 0.8 | tokio-postgres (direct) | tokio-postgres requires manual connection pool (bb8/deadpool); sqlx bundles PgPool and has cleaner pgvector type binding; query pipelining advantage of tokio-postgres is irrelevant for memory workloads |
-| sqlx 0.8 | diesel + diesel-async | Diesel requires schema macro codegen; diesel-async adds complexity; Mnemonic uses raw SQL idioms throughout — no benefit from ORM layer |
-| qdrant-client 1.17 | qdrant_rest_client (second-state) | Unofficial, incomplete REST-only client; official SDK has full API coverage, maintained by Qdrant team, actively versioned |
-| Cargo feature flags | Runtime config selection | Feature flags keep the binary lean — each backend only compiled when opted in; runtime selection would compile all three backends into every binary |
-| async-trait | Native RPITIT | Native async fn in traits cannot be used as `dyn Trait` as of Rust 1.85; async-trait is the only current solution for object-safe async traits |
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| `tonic 0.14` | `tonic 0.13` | Never — 0.13 is incompatible with prost 0.14 and uses an older hyper. There is no reason to use 0.13 for a new integration. |
+| `tonic-prost-build` (build-dep) | old `tonic-build` | `tonic-build` is the pre-0.14 codegen crate. Do not use — it is for tonic ≤ 0.13. |
+| Separate port (`tokio::join!`) | Single-port multiplexing (content-type routing) | Use single-port multiplexing only if TLS termination proxy requires it or if firewall rules prevent a second port. For mnemonic's use case (agent localhost/intranet), separate ports are simpler. |
+| Sync interceptor (`with_interceptor`) | `tonic-async-interceptor` or `tonic-middleware` | Use async interceptor if token validation requires a network round-trip (e.g., remote token introspection). Mnemonic's `mnk_...` tokens validate against local SQLite — sync is sufficient. |
+| `arduino/setup-protoc` in CI | `protoc-bin-vendored` | Use `protoc-bin-vendored` if the CI environment is air-gapped or if cross-compiling makes setup-protoc unreliable. |
 
 ---
 
@@ -121,85 +186,60 @@ pub struct MemoryService {
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `diesel` | Adds schema codegen + DSL overhead; incompatible with project's raw SQL pattern | `sqlx` with raw SQL |
-| `sea-orm` | ORM indirection over project that uses direct SQL; unnecessary complexity | `sqlx` |
-| `bb8` or `deadpool` | sqlx 0.8 has built-in `PgPool` — external pool crate is redundant | `sqlx::PgPool` |
-| `tokio-postgres` direct | More setup for identical result; pgvector binding cleaner through sqlx+pgvector | `sqlx` + `pgvector` |
-| `qdrant_rest_client` | Unofficial, incomplete, not maintained by Qdrant | `qdrant-client` |
-| `tonic` direct | `qdrant-client` owns tonic 0.12.3 transitively — direct add risks version conflict | Let qdrant-client manage it |
-| Bumping `rusqlite` to 0.39 | Known version conflict with `sqlite-vec 0.1.7` and `libsqlite3-sys` | Keep at 0.37 |
+| `grpc-web` / `tonic-web` | Adds CORS and envelope complexity. gRPC-Web is for browser clients. Mnemonic targets agent frameworks with native gRPC support. | Native tonic transport |
+| Streaming RPCs | Explicitly out of scope per PROJECT.md — "Unary RPCs mirroring REST behavior — no streaming." | Unary handlers only |
+| `tonic-middleware` crate | Async middleware for scenarios requiring response interception. The `mnk_...` bearer token check is synchronous and doesn't need this. Adds a dependency for no benefit. | Built-in `with_interceptor()` |
+| gRPC for compaction/keys endpoints | Explicitly out of scope per PROJECT.md — "gRPC support for compaction/keys — hot-path only in v1.5." | Keep those REST-only |
+| TLS for gRPC in v1.5 | Increases build complexity (rustls or aws-lc feature selection). Agents typically connect on localhost or private networks. Defer to a future milestone. | Plain-text `transport` feature only; TLS is opt-in via `tls-ring` feature later |
+| Direct `tonic` dep in `backend-qdrant` | `qdrant-client` already owns tonic transitively. Adding tonic directly risks version conflicts. | Let qdrant-client manage its tonic version; mnemonic's gRPC uses tonic 0.14 |
 
 ---
 
-## Stack Patterns by Backend
-
-**SQLite backend (default, zero-config):**
-- Wrap `tokio_rusqlite::Connection` in a `SqliteStorage` struct
-- Implement `StorageBackend` on `SqliteStorage`
-- Keep `register_sqlite_vec()` and all schema migrations in `src/storage/sqlite.rs`
-- No new dependencies
-
-**Qdrant backend (feature flag: `backend-qdrant`):**
-- `Qdrant::from_url(url).api_key(key).build()?` for connection
-- Uses gRPC — requires a running Qdrant server (not embedded)
-- Point IDs: use existing `uuid` crate; enable `uuid` feature on `qdrant-client`
-- Payload fields in Qdrant points carry `content`, `agent_id`, `session_id`, `tags`, `created_at`
-- Vector dimension must match 384 (all-MiniLM-L6-v2 output)
-- Implement `StorageBackend` in `src/storage/qdrant.rs` behind `#[cfg(feature = "backend-qdrant")]`
-
-**Postgres backend (feature flag: `backend-postgres`):**
-- `sqlx::PgPool::connect(url).await?` for connection pool
-- Requires pgvector extension installed on the Postgres server (`CREATE EXTENSION vector`)
-- Column type: `vector(384)` for embeddings
-- Bind vectors: `pgvector::Vector::from(vec_f32)` in sqlx queries
-- `pgvector = { version = "0.4", features = ["sqlx"] }` — required to get `Type` impl for sqlx
-- Implement `StorageBackend` in `src/storage/postgres.rs` behind `#[cfg(feature = "backend-postgres")]`
-
----
-
-## Version Compatibility Matrix
+## Version Compatibility
 
 | Package | Version | Compatible With | Notes |
 |---------|---------|-----------------|-------|
-| qdrant-client 1.17 | tonic ^0.12.3 | tokio ^1.40 | Do not add tonic directly |
-| sqlx 0.8.6 | postgres, runtime-tokio | tokio 1.x, native-tls | Match existing reqwest TLS backend |
-| pgvector 0.4.1 | sqlx ^0.8 | postgres-types ^0.2 | Must enable `sqlx` feature |
-| rusqlite 0.37 | sqlite-vec 0.1.7 | libsqlite3-sys (bundled) | Do not upgrade to 0.39 |
-| async-trait 0.1 | already present | tokio 1.x | Follow EmbeddingEngine pattern |
-| reqwest 0.13 | native-tls | tokio 1.x | Match sqlx TLS choice |
+| `tonic 0.14` | prost 0.14, axum 0.8, hyper 1, tower 0.5, tokio 1 | All already in Cargo.toml — no conflicts expected |
+| `prost 0.14` | prost-types 0.14 | Must bump existing `prost-types = "0.13"` (backend-qdrant feature) |
+| `tonic 0.14` + `qdrant-client 1` | Cargo resolves prost 0.13 and 0.14 as separate crates | Run `cargo tree -d` to confirm no link error at boundary |
+| `tonic-prost-build 0.14` | protoc >= 3.12 | protoc 3.x and 4.x (libprotobuf 21+) both work |
+| `tonic-reflection 0.14` | prost 0.14, prost-types 0.14, tonic 0.14 | Same version family — use consistently |
 
 ---
 
-## Integration Points in Existing Codebase
+## Stack Patterns by Variant
 
-| File | Change Required |
-|------|----------------|
-| `src/service.rs` | Replace `Arc<Connection>` field with `Arc<dyn StorageBackend>`; all SQL moves out |
-| `src/db.rs` | Becomes thin — keep `register_sqlite_vec()`, move SQL into `src/storage/sqlite.rs` |
-| `src/main.rs` / `src/cli.rs` | Read backend config at startup; construct appropriate backend; wrap in `Arc<dyn StorageBackend>` |
-| `src/config.rs` | Add `backend` enum (`sqlite` default, `qdrant`, `postgres`) with URL/credentials fields |
-| `src/error.rs` | Add `StorageError` enum covering all three backends |
-| `Cargo.toml` | Add optional deps + feature flags (see above) |
-| New: `src/storage/mod.rs` | `StorageBackend` trait definition |
-| New: `src/storage/sqlite.rs` | `SqliteStorage` implementing `StorageBackend` |
-| New: `src/storage/qdrant.rs` | `QdrantStorage` implementing `StorageBackend` (cfg-gated) |
-| New: `src/storage/postgres.rs` | `PostgresStorage` implementing `StorageBackend` (cfg-gated) |
+**If TLS is needed in a future milestone:**
+- Add `features = ["tls-ring"]` to the tonic dependency (uses rustls via aws-lc-rs)
+- Or `features = ["tls-native-roots"]` if matching the existing reqwest native-tls stack
+- Use `Server::builder().tls_config(tls)` before `.serve()`
+
+**If single-port multiplexing is ever desired (not v1.5):**
+- Tonic 0.14's router can be converted to axum routes via `.into_router()`
+- Route based on: `content_type.as_bytes().starts_with(b"application/grpc")`
+- Requires axum to run in HTTP/2 mode (add `hyper` direct dep with http2 feature)
+
+**If streaming is added in a future milestone:**
+- Change proto service methods to `rpc StreamSearch(SearchRequest) returns (stream SearchResult)`
+- Change handler return types to `ResponseStream = ReceiverStream<Result<SearchResult, Status>>`
+- No new crates needed — tonic's `transport` feature handles streaming
 
 ---
 
 ## Sources
 
-- [qdrant-client docs.rs 1.17](https://docs.rs/qdrant-client/latest/qdrant_client/index.html) — API overview, tonic 0.12.3, tokio 1.40+ confirmed (HIGH)
-- [qdrant/rust-client Cargo.toml (master)](https://raw.githubusercontent.com/qdrant/rust-client/master/Cargo.toml) — Exact deps and feature list (HIGH)
-- [qdrant/rust-client README](https://github.com/qdrant/rust-client/blob/master/README.md) — Upsert and search API examples (HIGH)
-- [pgvector 0.4.1 docs.rs](https://docs.rs/pgvector/latest/pgvector/) — Feature flags, sqlx integration, Vector types (HIGH)
-- [sqlx 0.8.6 docs.rs](https://docs.rs/sqlx/latest/sqlx/) — Runtime features, PgPool, Postgres support (HIGH)
-- [axum sqlx-postgres example](https://github.com/tokio-rs/axum/blob/main/examples/sqlx-postgres/Cargo.toml) — Confirmed sqlx 0.8 feature pattern (MEDIUM)
-- [Rust async fn in traits blog (Dec 2023)](https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits/) — Confirms native async fn not object-safe (HIGH)
-- [rust-lang/impl-trait-utils#34](https://github.com/rust-lang/impl-trait-utils/issues/34) — dyn async trait still in development (HIGH)
-- [baby steps: dyn async traits part 10 (Mar 2025)](https://smallcultfollowing.com/babysteps/blog/2025/03/24/box-box-box/) — Latest state of native dyn async (MEDIUM)
+- crates.io API (direct JSON) — tonic 0.14.5 (2026-02-19), tonic-reflection 0.14.5, tonic-prost-build 0.14.5, prost 0.14.3, prost-build 0.14.3, tonic-health 0.14.5 — versions verified (HIGH confidence)
+- [tonic v0.14.5 Cargo.toml](https://raw.githubusercontent.com/hyperium/tonic/v0.14.5/tonic/Cargo.toml) — axum 0.8, hyper 1, tower 0.5, h2 0.4 dependency versions confirmed (HIGH confidence)
+- [tonic-prost Cargo.toml v0.14.5](https://raw.githubusercontent.com/hyperium/tonic/v0.14.5/tonic-prost/Cargo.toml) — prost 0.14 requirement confirmed (HIGH confidence)
+- [tonic-reflection Cargo.toml v0.14.5](https://raw.githubusercontent.com/hyperium/tonic/v0.14.5/tonic-reflection/Cargo.toml) — prost 0.14, prost-types 0.14 confirmed (HIGH confidence)
+- [tonic v0.14.0 release notes](https://github.com/hyperium/tonic/releases/tag/v0.14.0) — prost extraction into tonic-prost / tonic-prost-build confirmed (HIGH confidence)
+- [prost-build docs.rs 0.14.3](https://docs.rs/prost-build/latest/prost_build/) — protoc system requirement (no bundled protoc) confirmed (HIGH confidence)
+- [tonic authentication example](https://github.com/hyperium/tonic/blob/master/examples/src/authentication/server.rs) — `authorization` metadata key, `with_interceptor()` pattern (HIGH confidence)
+- [tonic transport::Server docs](https://docs.rs/tonic/latest/tonic/transport/struct.Server.html) — `add_service`, `serve`, `layer` API (HIGH confidence)
+- WebSearch results — dual-port `tokio::join!` pattern confirmed by multiple community sources (MEDIUM confidence — no single canonical code snippet from tonic docs)
+- [tonic-middleware crates.io](https://crates.io/crates/tonic-middleware) — evaluated and excluded for this use case (HIGH confidence in exclusion)
 
 ---
 
-*Stack research for: Mnemonic v1.4 — Pluggable Storage Backends*
-*Researched: 2026-03-21*
+*Stack research for: Mnemonic v1.5 gRPC (tonic) additions*
+*Researched: 2026-03-22*
