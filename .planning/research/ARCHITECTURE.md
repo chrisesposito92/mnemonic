@@ -1,107 +1,313 @@
 # Architecture Research
 
-**Domain:** Rust single-binary agent memory server — v1.5 gRPC (tonic) integration
+**Domain:** Rust single-binary agent memory server — v1.6 embedded web dashboard integration
 **Researched:** 2026-03-22
-**Confidence:** HIGH (direct codebase inspection + verified against tonic docs, axum GitHub discussions, official examples)
+**Confidence:** HIGH (direct codebase inspection of v1.5 source + verified against axum-embed docs, rust-embed official examples, axum Router docs)
 
 ---
 
-## Context: What Already Exists (v1.4)
+## Context: What Already Exists (v1.5)
 
-The v1.4 binary is ~10,763 lines of Rust across 13 source files. The current server architecture is:
+The v1.5 binary is ~11,940 lines of Rust. The current server architecture is:
 
 ```
 AppState {
     service:      Arc<MemoryService>,        // holds Arc<dyn StorageBackend>
     compaction:   Arc<CompactionService>,    // holds Arc<dyn StorageBackend> + audit_db
-    key_service:  Arc<KeyService>,           // holds Arc<Connection> (SQLite-only, auth stays local)
+    key_service:  Arc<KeyService>,           // holds Arc<Connection> (SQLite-only)
     backend_name: String,                    // display string from config.storage_provider
 }
 ```
 
-`server::serve()` binds a single `TcpListener` on `config.port` (default 8080) and runs the axum `Router`.
-Auth is an axum `middleware::from_fn_with_state` applied via `route_layer` — it extracts `Authorization: Bearer mnk_...` from HTTP headers, calls `KeyService` for validation, and injects `AuthContext` into request extensions.
+`server::build_router(state)` returns a `Router` with two sub-routers merged together:
+- `protected`: `/memories*`, `/keys*` — wrapped with `route_layer(auth_middleware)`
+- `public`: `/health`
 
-**The key question for v1.5:** How does tonic attach to this process without requiring a full architectural rewrite?
+`server::serve()` binds a TCP listener on `config.port` (default 8080) and runs the axum Router.
+`grpc::serve()` binds a separate TCP listener on `config.grpc_port` (default 50051), started via `tokio::try_join!` when `interface-grpc` feature is enabled.
+
+**The key question for v1.6:** How does the dashboard attach to this router without modifying existing route behavior?
 
 ---
 
-## v1.5 System Overview
+## v1.6 System Overview
 
-The recommended approach is **dual-port, separate listeners, shared AppState**. Both servers share the same `Arc<MemoryService>` and `Arc<KeyService>` but run on independent `TcpListener` binds started concurrently with `tokio::join!`.
+The recommended approach is **same-port, nested router, /ui prefix, feature-gated**. The dashboard router merges into the existing `build_router()` function behind a `#[cfg(feature = "dashboard")]` block. No new port, no new listener, no `tokio::try_join!` change.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            Entry Point (main.rs)                             │
 │                                                                              │
-│  Build shared state (unchanged from v1.4):                                  │
-│    Arc<dyn StorageBackend>, Arc<MemoryService>, Arc<KeyService>,             │
-│    Arc<CompactionService>                                                    │
+│  AppState (unchanged struct, no new fields)                                  │
 │                                                                              │
-│  Build AppState (unchanged struct)                                           │
-│  Build GrpcState { service: Arc<MemoryService>, key_service: Arc<KeyService>}│
-│                                                                              │
-│  tokio::join!(                                                               │
-│      server::serve(&config, app_state),          // REST on config.port      │
-│      grpc::serve(&config, grpc_state),           // gRPC on config.grpc_port │
-│  )                                                                           │
+│  server::serve(&config, state)   ← single REST server, unchanged call site  │
 └─────────────────────────────────────────────────────────────────────────────┘
-         │                                    │
-         ▼                                    ▼
-┌─────────────────────┐          ┌────────────────────────────┐
-│  REST Server        │          │  gRPC Server (tonic)        │
-│  axum on :8080      │          │  tonic on :50051            │
-│                     │          │                             │
-│  auth_middleware    │          │  AuthInterceptor            │
-│  (axum layer)       │          │  (tonic interceptor)        │
-│                     │          │                             │
-│  MemoryService      │          │  MnemonicGrpcService        │
-│  CompactionService  │          │  (delegates to MemoryService│
-│  KeyService         │          │   and KeyService)           │
-└─────────────────────┘          └────────────────────────────┘
-         │                                    │
-         └──────────────┬─────────────────────┘
-                        ▼
-         ┌──────────────────────────────┐
-         │   Shared Service Layer       │
-         │                             │
-         │   Arc<MemoryService>        │ ← same instance
-         │   Arc<KeyService>           │ ← same instance
-         │   Arc<dyn StorageBackend>   │ ← same backend
-         └──────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              server::build_router(state) — MODIFIED                          │
+│                                                                              │
+│  let protected = Router::new()                                               │
+│      .route("/memories*")                                                    │
+│      .route("/keys*")                                                        │
+│      .route_layer(auth_middleware);    ← UNCHANGED                           │
+│                                                                              │
+│  let public = Router::new()                                                  │
+│      .route("/health");               ← UNCHANGED                            │
+│                                                                              │
+│  #[cfg(feature = "dashboard")]                                               │
+│  let dashboard = dashboard::build_dashboard_router();   ← NEW               │
+│                                                                              │
+│  Router::new()                                                               │
+│      .merge(protected)                                                       │
+│      .merge(public)                                                          │
+│      .merge(dashboard)              ← cfg-gated merge, /ui prefix inside    │
+│      .with_state(state)                                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+              │                    │
+              ▼                    ▼
+  /memories*, /keys*,          /ui, /ui/*
+  /health                      (static SPA assets)
+  (unchanged)                  (dashboard only)
 ```
 
 ---
 
-## Why Dual-Port (Not Single-Port Multiplexing)
+## Router Integration: Nested vs Merge vs Separate Service
 
-Single-port multiplexing via `Content-Type: application/grpc` header routing is technically possible (it is the approach used by the axum `rest-grpc-multiplex` example), but it adds meaningful complexity:
+| Approach | How It Works | Verdict |
+|----------|-------------|---------|
+| `Router::merge()` at top level with `/ui` prefix inside `build_dashboard_router()` | Dashboard router is self-contained with its own `nest_service("/ui", ...)` internally; merged into main router | **RECOMMENDED** |
+| `Router::nest("/ui", dashboard_router)` in `build_router()` | Strips `/ui` prefix before passing to nested router | Works but means assets are served without knowing their mount path |
+| Separate listener on a third port | Separate `TcpListener`, another `tokio::try_join!` arm | Over-engineered for static asset serving; breaks single-origin assumption |
+| Same router, routes added inline | Add `/ui` routes directly to `build_router()` with `#[cfg]` on each | Clutters existing function, harder to feature-gate cleanly |
 
-- The multiplexer must unify response body types (`axum::body::Body` vs tonic's `BoxBody`) into a single type. This requires either custom `HybridBody` enums or `BoxBody` everywhere.
-- The axum PR #2825 that "fixes" the multiplex example uses `tower::steer` and `tonic::transport::Server::into_router()` — `into_router()` is marked as experimental and its stability is unclear across tonic minor versions.
-- The `axum-tonic` crate (the wrapper library) is at v0.1.0, last released January 2023 — not appropriate as a production dependency.
-- The `tonic-web` layer (needed to support browser gRPC clients) introduces body type mismatches documented in tonic issue #1964, requiring additional workarounds.
-- Multiplexing produces one listener binding, which makes port-based firewall rules for gRPC impossible.
+**Use `merge()` with prefix self-contained in `dashboard::build_dashboard_router()`.**
 
-**Dual-port is simpler, more maintainable, and directly supported by tonic's primary `serve()` pattern.** The cost is one extra config field (`grpc_port`) and a `tokio::join!` in `main.rs`.
+The dashboard module builds its own `Router` that mounts assets at `/ui` using `nest_service`. This router is merged into the main router. The `build_router()` function gains a single cfg-gated `.merge(dashboard_router)` call — minimal diff to existing code.
 
-**Confidence:** MEDIUM (verified via official axum multiplex examples, tonic GitHub issues, and the fpblock.com multi-part guide; multiplexing is feasible but the ecosystem tooling is immature relative to dual-port)
+**Why not `nest()`:** `Router::nest("/ui", r)` strips the `/ui` prefix before requests reach the nested router. `ServeEmbed` / `rust-embed` handlers need to see the full path to correctly serve assets. Using `nest_service("/ui", ServeEmbed::new())` directly inside the dashboard module avoids this — the prefix stripping is handled by `nest_service` exactly where the service needs it.
 
 ---
 
-## Component Responsibilities (v1.5)
+## Asset Serving: rust-embed + axum-embed
 
-| Component | Status | Responsibility | Notes |
-|-----------|--------|---------------|-------|
-| `src/server.rs` | Modified | REST server — unchanged behavior | Add `build_router` export, no logic changes |
-| `src/grpc/mod.rs` | New | gRPC server entry point — `serve()`, service wiring | Mirrors `server::serve()` structure |
-| `src/grpc/service.rs` | New | `MnemonicGrpcService` struct implementing generated trait | Delegates to `Arc<MemoryService>` |
-| `src/grpc/interceptor.rs` | New | `AuthInterceptor` — extracts Bearer from gRPC metadata, validates via `KeyService` | Mirrors axum `auth_middleware` logic |
-| `proto/mnemonic.proto` | New | Service definition for store, search, list, delete, health | See proto design section |
-| `build.rs` | New | Invokes `tonic_build` to generate Rust from `.proto` | Standard tonic-build pattern |
-| `src/config.rs` | Modified | Add `grpc_port: u16`, `grpc_tls_cert/key: Option<String>` fields | Default `grpc_port = 50051` |
-| `src/main.rs` | Modified | `tokio::join!(server::serve(), grpc::serve())` instead of just `server::serve()` | Arc-clone state for each server |
-| `src/cli.rs` | Modified | Fix recall to route through `StorageBackend` trait (v1.4 tech debt) | Unrelated to gRPC wiring |
+### Crate Decision
+
+**Use `axum-embed` (wraps `rust-embed`) rather than implementing a custom `static_handler`.**
+
+`axum-embed` provides `ServeEmbed<T>` which is a `tower::Service` that handles:
+- ETag-based 304 responses (avoids re-serving unchanged assets on hot reload)
+- Automatic content-type from file extension
+- Brotli/gzip/deflate response compression when client supports it
+- Configurable `FallbackBehavior` for SPA index.html fallback routing
+- Directory redirect (adds trailing slash)
+
+This eliminates ~50 lines of custom handler code and handles edge cases correctly.
+
+**Confidence:** HIGH — verified against axum-embed docs.rs documentation.
+
+### Asset Embedding Pattern
+
+```rust
+// src/dashboard/mod.rs
+
+#[derive(rust_embed::Embed)]
+#[folder = "dashboard/dist/"]   // Vite build output directory
+struct DashboardAssets;
+
+pub fn build_dashboard_router() -> axum::Router {
+    use axum_embed::{FallbackBehavior, ServeEmbed};
+
+    // SPA routing: unknown paths serve index.html so Preact router handles them
+    let serve = ServeEmbed::<DashboardAssets>::with_parameters(
+        "index.html",                        // index file
+        FallbackBehavior::Ok,                // serve index.html with 200 for unknown paths
+        Some("index.html".to_string()),      // fallback file
+    );
+
+    // nest_service handles prefix stripping: /ui/assets/main.js → assets/main.js
+    axum::Router::new()
+        .nest_service("/ui", serve)
+}
+```
+
+### Why FallbackBehavior::Ok (Not 404)
+
+The Preact SPA uses client-side routing. If a user navigates to `/ui/memories/abc123` and refreshes, the server must serve `index.html` (not a 404) so the SPA JavaScript can take over and render the correct view. `FallbackBehavior::Ok` returns `index.html` with HTTP 200 for any path that does not match a real embedded file. This is the standard SPA deployment pattern.
+
+### Build Output Structure
+
+Vite builds Preact apps to `dist/` by default:
+
+```
+dashboard/
+├── dist/               ← Vite build output (embedded by rust-embed)
+│   ├── index.html
+│   └── assets/
+│       ├── index-[hash].js
+│       └── index-[hash].css
+├── src/
+│   ├── main.tsx
+│   ├── App.tsx
+│   └── components/
+├── package.json
+├── vite.config.ts
+└── tsconfig.json
+```
+
+`rust-embed` embeds everything in `dashboard/dist/` at compile time when building in release mode (or when `debug-embed` feature is set). In debug mode, it reads from disk — enabling faster iteration without recompilation.
+
+**IMPORTANT:** The `dashboard/dist/` directory must exist and contain a built output before `cargo build` succeeds with the `dashboard` feature enabled. The build pipeline must run `npm run build` inside `dashboard/` before `cargo build --features dashboard`.
+
+---
+
+## Feature Gate Pattern
+
+Mirrors the existing `interface-grpc` feature gate pattern already in use:
+
+```toml
+# Cargo.toml [features]
+dashboard = ["dep:rust-embed", "dep:axum-embed"]
+```
+
+```rust
+// src/main.rs — no change needed (build_router handles the cfg internally)
+
+// src/server.rs — build_router() modification
+#[cfg(feature = "dashboard")]
+mod dashboard;  // or in main.rs: mod dashboard;
+
+pub fn build_router(state: AppState) -> Router {
+    let protected = /* ... unchanged ... */;
+    let public = /* ... unchanged ... */;
+
+    #[cfg(feature = "dashboard")]
+    let dashboard_router = dashboard::build_dashboard_router();
+
+    let mut router = Router::new()
+        .merge(protected)
+        .merge(public);
+
+    #[cfg(feature = "dashboard")]
+    { router = router.merge(dashboard_router); }
+
+    router.with_state(state)
+}
+```
+
+**Why not a `build_router_with_dashboard()` separate function:** The `#[cfg]` block inside the existing `build_router()` is the minimal diff approach. A separate function would require `main.rs` to branch on the feature flag, spreading the dashboard logic across two files. Keeping it inside `build_router()` means the serve() call site in `main.rs` is untouched.
+
+---
+
+## Auth Flow for the Dashboard
+
+### The Problem
+
+The existing `auth_middleware` only runs on routes covered by `route_layer`. Dashboard routes (`/ui/*`) are outside the protected router — they are static files and do not need server-side auth enforcement. However, the Preact SPA makes XHR/fetch calls to the existing `/memories*` and `/keys*` REST endpoints, which DO have auth enforcement.
+
+### Solution: Token Stored in Browser, Passed as Header
+
+The dashboard is an operational tool, not a public web app. Auth design is kept simple:
+
+1. **Dashboard serves unauthenticated** (just HTML/JS/CSS). The page itself has no auth gate.
+2. **The SPA prompts for an API key** on first load if it receives a 401 from any API call.
+3. **The SPA stores the key in `localStorage`** (or `sessionStorage` for session-only) and sends it as `Authorization: Bearer mnk_...` on every fetch to `/memories`, `/keys`, etc.
+4. **The existing `auth_middleware` enforces it** — no changes needed.
+
+This means:
+- No new auth middleware needed for `/ui` routes
+- The existing protected endpoints enforce auth exactly as before
+- The dashboard is "open" at the HTML level — this is acceptable because the API endpoints are still gated
+- In "open mode" (no keys), the SPA works without any token
+
+### Why Not Cookie Auth
+
+Cookies would require:
+- A login endpoint (`POST /ui/session`) that sets a `Set-Cookie` header
+- CSRF protection (cookies on same origin are sent automatically, enabling CSRF)
+- Session management (expiry, revocation)
+
+This is significant scope expansion for what is explicitly an operational dashboard. The existing `mnk_...` bearer token model is sufficient — operators who can access the dashboard already have the API key.
+
+### Auth Flow Diagram
+
+```
+Browser (Preact SPA at /ui)
+    │
+    │  1. GET /ui  → 200 index.html (no auth check)
+    │  2. JS loads, SPA initializes
+    │  3. GET /memories?limit=10
+    │         │
+    │         ▼
+    │    auth_middleware (existing, unchanged)
+    │         │  ← checks Authorization: Bearer header
+    │         │  ← open mode (no keys): passes through
+    │         │  ← auth mode (keys exist): validates token
+    │         ▼
+    │    list_memories_handler (existing, unchanged)
+    │         │
+    │         ▼
+    │    200 {memories: [...]}
+    │
+    │  If 401 received:
+    │    ├── SPA shows "Enter API Key" prompt
+    │    ├── User enters mnk_xxx token
+    │    ├── SPA stores in localStorage
+    │    └── Retries request with Authorization header
+```
+
+---
+
+## Data Flow: UI to API
+
+The SPA communicates exclusively with the existing REST endpoints. No new API endpoints are needed for the v1.6 dashboard. All data flows through existing handlers.
+
+### Dashboard Feature → REST Endpoint Mapping
+
+| Dashboard Feature | REST Endpoint | Notes |
+|-------------------|--------------|-------|
+| Browse memories | `GET /memories?agent_id=&session_id=&limit=` | Uses existing ListParams |
+| Search memories | `GET /memories/search?q=&agent_id=` | Uses existing SearchParams |
+| Delete memory | `DELETE /memories/{id}` | Existing endpoint |
+| Agent breakdown | `GET /memories?limit=1000` + client-side group by agent_id | No dedicated endpoint needed for v1.6 |
+| Session breakdown | `GET /memories?agent_id=x` + group by session_id | Same |
+| Storage overview | `GET /health` | Returns backend name; counts from list |
+| Trigger compaction | `POST /memories/compact` | Uses existing CompactRequest |
+| Dry-run preview | `POST /memories/compact` with `dry_run: true` | Existing dry_run field |
+| View API keys | `GET /keys` | Existing endpoint |
+
+**Key insight:** The dashboard adds no new API surface. All REST endpoints already exist and are already auth-gated. The frontend is a consumer of the existing API — identical to any external API client.
+
+### SPA Request/Response Flow
+
+```
+Preact Component (e.g., MemoryList)
+    │
+    │  useEffect / fetch
+    ▼
+fetch("/memories?agent_id=my-agent&limit=50", {
+    headers: { "Authorization": "Bearer " + storedToken }
+})
+    │
+    ▼
+axum Router (port 8080)
+    │
+    ▼
+auth_middleware (route_layer on /memories*)
+    │  ← validates token (unchanged behavior)
+    ▼
+list_memories_handler (unchanged handler)
+    │
+    ▼
+Arc<MemoryService>::list_memories(params)
+    │
+    ▼
+Arc<dyn StorageBackend>::list(params)
+    │
+    ▼
+JSON response → browser → rendered by Preact component
+```
 
 ---
 
@@ -109,434 +315,234 @@ Single-port multiplexing via `Content-Type: application/grpc` header routing is 
 
 ```
 mnemonic/
-├── build.rs                      # NEW: tonic-build code generation
-├── proto/
-│   └── mnemonic.proto            # NEW: service definition
+├── dashboard/                    # NEW: Preact/Vite frontend project
+│   ├── dist/                     # NEW: Vite build output (git-ignored, embedded at compile time)
+│   │   ├── index.html
+│   │   └── assets/
+│   │       ├── index-[hash].js
+│   │       └── index-[hash].css
+│   ├── src/
+│   │   ├── main.tsx              # Preact entry point
+│   │   ├── App.tsx               # Root component with routing
+│   │   ├── api/
+│   │   │   └── client.ts         # Fetch wrapper: injects auth header, handles 401
+│   │   └── components/
+│   │       ├── MemoryList.tsx
+│   │       ├── SearchBar.tsx
+│   │       ├── AgentBreakdown.tsx
+│   │       ├── CompactionPanel.tsx
+│   │       └── KeyPrompt.tsx     # Modal: "Enter API key"
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── tsconfig.json
 └── src/
-    ├── grpc/
-    │   ├── mod.rs                # NEW: serve() function, module exports
-    │   ├── service.rs            # NEW: MnemonicGrpcService impl
-    │   └── interceptor.rs        # NEW: AuthInterceptor impl
-    ├── config.rs                 # MODIFIED: grpc_port, optional TLS fields
-    ├── main.rs                   # MODIFIED: tokio::join! dual serve
-    └── server.rs                 # UNCHANGED (or trivial export cleanup)
+    ├── dashboard/                # NEW: Rust module (cfg-gated)
+    │   └── mod.rs                # build_dashboard_router(), EmbeddedAssets struct
+    ├── server.rs                 # MODIFIED: cfg-gated merge in build_router()
+    ├── config.rs                 # UNCHANGED (no new config fields needed)
+    ├── main.rs                   # UNCHANGED (serve() call is unchanged)
+    └── ...                       # All other files UNCHANGED
 ```
 
-**Proto file placement rationale:** `proto/` at project root is the conventional location used by all tonic examples and the `tonic-build` documentation. `build.rs` references it as `"proto/mnemonic.proto"` relative to `Cargo.toml`.
-
----
-
-## Proto Design
-
-The `.proto` defines unary RPCs only (per v1.5 scope — no streaming). Operations covered: store, search, list, delete, health. Compaction and key management are REST-only.
-
-```protobuf
-syntax = "proto3";
-package mnemonic;
-
-service Mnemonic {
-  rpc StoreMemory(StoreRequest) returns (Memory);
-  rpc SearchMemories(SearchRequest) returns (SearchResponse);
-  rpc ListMemories(ListRequest) returns (ListResponse);
-  rpc DeleteMemory(DeleteRequest) returns (Memory);
-  rpc HealthCheck(HealthRequest) returns (HealthResponse);
-}
-
-message StoreRequest {
-  string content = 1;
-  string agent_id = 2;
-  string session_id = 3;
-  repeated string tags = 4;
-}
-
-message Memory {
-  string id = 1;
-  string content = 2;
-  string agent_id = 3;
-  string session_id = 4;
-  repeated string tags = 5;
-  string embedding_model = 6;
-  string created_at = 7;
-  optional float distance = 8;
-}
-
-message SearchRequest {
-  string query = 1;
-  string agent_id = 2;
-  optional string session_id = 3;
-  optional int32 limit = 4;
-}
-
-message SearchResponse {
-  repeated Memory memories = 1;
-}
-
-message ListRequest {
-  optional string agent_id = 1;
-  optional string session_id = 2;
-  optional int32 limit = 3;
-  optional int32 offset = 4;
-}
-
-message ListResponse {
-  repeated Memory memories = 1;
-  int32 total = 2;
-}
-
-message DeleteRequest {
-  string id = 1;
-}
-
-message HealthRequest {}
-
-message HealthResponse {
-  string status = 1;
-  string backend = 2;
-}
-```
-
-**Field mapping rationale:** Fields map 1:1 to existing REST request/response types (`CreateMemoryRequest`, `SearchParams`, `ListParams`, `Memory`). The `distance` field on `Memory` is `optional` because it is only populated by `SearchResponse`.
+**Structure rationale:**
+- `dashboard/` at project root keeps the frontend entirely separate from Rust source. It is a standalone Node project with its own `package.json`, `node_modules`, and build toolchain.
+- `src/dashboard/mod.rs` is the minimal Rust bridge: `#[derive(Embed)]` on the dist folder + `build_dashboard_router()` function. All Rust-side logic lives here so `server.rs` changes are a one-liner.
+- `dashboard/dist/` is git-ignored. The build pipeline produces it; it is never committed.
 
 ---
 
 ## Architectural Patterns
 
-### Pattern 1: tonic Interceptor with Shared Arc State
+### Pattern 1: Feature-Gated Router Extension via merge()
 
-Tonic interceptors implement `FnMut(Request<()>) -> Result<Request<()>, Status>` — they receive the request before the service method is called. The interceptor can hold `Arc<KeyService>` because the interceptor struct is `Clone` and `Arc` is `Clone`.
+**What:** The dashboard module exposes a single public function `build_dashboard_router() -> Router`. The caller (`server::build_router`) conditionally merges it. No axum state is passed to the dashboard router — it serves static files only.
 
-**What:** An `AuthInterceptor` struct wraps `Arc<KeyService>`, implements `tonic::service::Interceptor`, extracts `authorization` metadata from the gRPC request, and validates the token using the same `KeyService::verify()` logic that the axum middleware uses.
+**When to use:** Any feature-gated capability that extends the axum router without needing access to AppState. Static file serving is the canonical case.
 
-**When to use:** For any per-request cross-cutting concern (auth, rate limiting) that only needs to read request metadata and either allow or reject. For response-level concerns (logging, metrics), use Tower middleware layered on the tonic server builder instead.
+**Trade-offs:**
+- Pro: Minimal diff to `server.rs`. Zero risk to existing routes.
+- Pro: Feature can be removed by dropping the feature flag — no code rot.
+- Con: The dashboard module is structurally separate from the API. Any future dashboard endpoints that need AppState (e.g., a `/ui/api/` prefix) require passing state to the dashboard router.
 
-**Concrete structure:**
-
+**Example:**
 ```rust
-// src/grpc/interceptor.rs
+// src/dashboard/mod.rs
+#[cfg(feature = "dashboard")]
+#[derive(rust_embed::Embed)]
+#[folder = "dashboard/dist/"]
+struct DashboardAssets;
 
-#[derive(Clone)]
-pub struct AuthInterceptor {
-    pub key_service: Arc<KeyService>,
-}
-
-impl tonic::service::Interceptor for AuthInterceptor {
-    fn call(&mut self, mut req: Request<()>) -> Result<Request<()>, Status> {
-        // Extract "authorization" from gRPC metadata (maps to HTTP/2 header)
-        match req.metadata().get("authorization") {
-            Some(token_value) => {
-                let token_str = token_value.to_str()
-                    .map_err(|_| Status::unauthenticated("invalid authorization header"))?;
-                // Strip "Bearer " prefix — same as axum middleware
-                let raw = token_str.strip_prefix("Bearer ")
-                    .ok_or_else(|| Status::unauthenticated("authorization must be Bearer token"))?;
-                // Blocking verify — interceptors are sync; use block_in_place or
-                // pre-load auth context in a tower layer if async validation is needed
-                let auth_ctx = futures::executor::block_on(
-                    self.key_service.verify(raw)
-                ).map_err(|_| Status::unauthenticated("invalid or revoked token"))?;
-                // Inject AuthContext into request extensions for use in service methods
-                req.extensions_mut().insert(auth_ctx);
-                Ok(req)
-            }
-            None => {
-                // Open mode: check if any keys exist (same live-check as axum middleware)
-                let count = futures::executor::block_on(
-                    self.key_service.count_active_keys()
-                ).unwrap_or(0);
-                if count == 0 {
-                    Ok(req) // open mode — no keys, pass through
-                } else {
-                    Err(Status::unauthenticated("authorization required"))
-                }
-            }
-        }
-    }
+#[cfg(feature = "dashboard")]
+pub fn build_dashboard_router() -> axum::Router {
+    use axum_embed::{FallbackBehavior, ServeEmbed};
+    let serve = ServeEmbed::<DashboardAssets>::with_parameters(
+        "index.html",
+        FallbackBehavior::Ok,
+        Some("index.html".to_string()),
+    );
+    axum::Router::new().nest_service("/ui", serve)
 }
 ```
 
-**Important:** The `Interceptor::call` signature is synchronous (`fn`, not `async fn`). For async-capable interceptors, the `tonic-middleware` crate provides a `RequestInterceptor` async trait (last release 2024, actively maintained). Given that `KeyService::verify()` is a fast SQLite lookup, `block_in_place` (tokio) or `block_on` is acceptable and avoids the extra dependency. Evaluate based on profiling.
+### Pattern 2: SPA with index.html Fallback via FallbackBehavior::Ok
 
-**Confidence:** HIGH — verified against tonic official `authentication/server.rs` example and `tonic::service::Interceptor` docs.
+**What:** All requests to `/ui/*` that do not match an embedded asset file are served `index.html` with HTTP 200. The Preact router in JavaScript handles the route client-side.
 
-### Pattern 2: Tonic Service Delegating to Existing Service Layer
+**When to use:** Every SPA deployment. Without this, navigating to `/ui/memories` after a page refresh returns a 404 because the server doesn't know about client-side routes.
 
-The generated trait (`mnemonic_server::Mnemonic`) is implemented by a struct that holds `Arc<MemoryService>` and `Arc<KeyService>`. No new business logic lives here — this is a thin adapter that translates proto types to/from the existing service types.
+**Trade-offs:**
+- Pro: Standard pattern, works with all client-side routers.
+- Pro: `axum-embed`'s `FallbackBehavior` handles this correctly without custom handler code.
+- Con: Server cannot distinguish a real 404 (missing asset) from a valid SPA route — all unknown paths return 200. This is acceptable for a dashboard served at a prefix, not the root.
 
-**What:** `MnemonicGrpcService` holds the same `Arc<MemoryService>` that `AppState` holds. Both REST and gRPC call the same `MemoryService` methods — business logic is not duplicated.
+### Pattern 3: Stateless Auth via localStorage + Existing Middleware
 
-**Concrete structure:**
+**What:** The SPA reads an API key from `localStorage` and sends it as `Authorization: Bearer` on every fetch. The existing axum `auth_middleware` handles validation — no new server-side code.
 
-```rust
-// src/grpc/service.rs
+**When to use:** Operational dashboards where the audience is developers/operators who already have API keys. Not suitable for end-user-facing apps.
 
-#[derive(Clone)]
-pub struct MnemonicGrpcService {
-    pub memory_service: Arc<MemoryService>,
-    pub backend_name: String,
-}
-
-#[tonic::async_trait]
-impl mnemonic_server::Mnemonic for MnemonicGrpcService {
-    async fn store_memory(
-        &self,
-        request: Request<StoreRequest>,
-    ) -> Result<Response<Memory>, Status> {
-        let req = request.into_inner();
-        let create_req = CreateMemoryRequest {
-            content: req.content,
-            agent_id: Some(req.agent_id),
-            session_id: Some(req.session_id),
-            tags: Some(req.tags),
-        };
-        let memory = self.memory_service.create_memory(create_req)
-            .await
-            .map_err(grpc_error)?;
-        Ok(Response::new(memory_to_proto(memory)))
-    }
-
-    // ... search_memories, list_memories, delete_memory, health_check
-}
-
-// Error translation: ApiError → tonic::Status
-fn grpc_error(e: ApiError) -> Status {
-    match e {
-        ApiError::NotFound => Status::not_found("memory not found"),
-        ApiError::BadRequest(msg) => Status::invalid_argument(msg),
-        ApiError::Forbidden(msg) => Status::permission_denied(msg),
-        ApiError::Internal(_) => Status::internal("internal server error"),
-        _ => Status::internal("internal server error"),
-    }
-}
-```
-
-**Trade-off:** Proto type conversion (proto `Memory` ↔ service `Memory`) requires manual mapping functions. These are mechanical but must be kept in sync when service types change. Consider a `From` impl on the proto-generated type to centralize the mapping.
-
-### Pattern 3: Dual Server Startup with tokio::join!
-
-**What:** `main.rs` constructs shared state once, clones `Arc` handles for the gRPC server, then starts both servers concurrently. If either server fails, the `?` propagates via `tokio::try_join!`.
-
-**Concrete structure:**
-
-```rust
-// In main.rs, replace:
-server::serve(&config, state).await?;
-
-// With:
-let grpc_state = grpc::GrpcState {
-    memory_service: service.clone(),
-    key_service: key_service.clone(),
-    backend_name: config.storage_provider.clone(),
-};
-tokio::try_join!(
-    server::serve(&config, state),
-    grpc::serve(&config, grpc_state),
-)?;
-```
-
-**Why `try_join!` not `join!`:** If the REST server fails to bind (port conflict), you want the entire process to exit immediately, not continue running a half-initialized gRPC server. `try_join!` propagates the first error.
+**Trade-offs:**
+- Pro: Zero new server-side auth code. No sessions, no CSRF, no new endpoints.
+- Pro: Works identically to CLI and agent usage — operators use the same keys.
+- Pro: In open mode (no keys), the SPA works with zero configuration.
+- Con: `localStorage` tokens are accessible to JavaScript (XSS risk). Acceptable for a local/intranet operational tool; not acceptable for a public-facing app.
+- Con: No logout mechanism (token persists until cleared manually). Acceptable given the use case.
 
 ---
 
-## build.rs Configuration
+## Component Responsibilities
 
-```rust
-// build.rs (project root, adjacent to Cargo.toml)
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::configure()
-        .build_server(true)
-        .build_client(false)      // no client needed in the server binary
-        .compile_protos(
-            &["proto/mnemonic.proto"],
-            &["proto"],           // include path for imports
-        )?;
-    Ok(())
-}
-```
-
-**Generated code location:** `target/debug/build/mnemonic-{hash}/out/mnemonic.rs`. Access it in source via `include!` macro (tonic standard pattern):
-
-```rust
-// src/grpc/mod.rs
-pub mod proto {
-    tonic::include_proto!("mnemonic"); // matches package name in .proto
-}
-```
-
-**Cargo.toml additions:**
-
-```toml
-[dependencies]
-tonic = "0.12"
-prost = "0.13"
-
-[build-dependencies]
-tonic-build = "0.12"
-```
-
-**Version rationale:** tonic 0.12 is the current stable release as of early 2026, aligned with the existing `prost-types = "0.13"` already in `Cargo.toml` (used by `qdrant-client`). This avoids a version conflict.
-
-**Confidence:** HIGH — verified against tonic-build docs.rs documentation and the tonic official examples.
+| Component | Status | Responsibility | Touches |
+|-----------|--------|---------------|---------|
+| `dashboard/` (Node project) | New | Preact SPA: browse/search memories, agent breakdown, compaction trigger | Frontend only |
+| `src/dashboard/mod.rs` | New | rust-embed `#[derive(Embed)]` on `dashboard/dist/`; `build_dashboard_router()` | `axum-embed`, `rust-embed` |
+| `src/server.rs` | Modified | `#[cfg(feature="dashboard")]` merge in `build_router()` | 3-line change |
+| `Cargo.toml` | Modified | `dashboard` feature flag with `rust-embed`, `axum-embed` deps | Build config |
+| `.gitignore` | Modified | Add `dashboard/dist/`, `dashboard/node_modules/` | Build artifacts |
+| `src/main.rs` | Unchanged | `serve()` call is unchanged | None |
+| `src/config.rs` | Unchanged | No new config fields needed | None |
+| `src/auth.rs` | Unchanged | Existing auth_middleware handles dashboard API requests | None |
+| All other `src/` files | Unchanged | REST/gRPC/storage/embedding logic unaffected | None |
 
 ---
 
-## Auth Flow Comparison (REST vs gRPC)
+## Build Order
 
-| Step | REST (axum) | gRPC (tonic) |
-|------|-------------|--------------|
-| Token carrier | `Authorization: Bearer mnk_...` HTTP header | `authorization: Bearer mnk_...` gRPC metadata (lowercased) |
-| Extraction point | `auth_middleware` via `route_layer` | `AuthInterceptor` via `with_interceptor` |
-| Token validation | `KeyService::verify()` async call | Same `KeyService::verify()` call |
-| Auth context injection | `req.extensions().insert(AuthContext)` | `req.extensions_mut().insert(AuthContext)` |
-| Scope enforcement | `enforce_scope()` in each handler | Same logic in each gRPC method impl |
-| Open mode detection | `KeyService::count_active_keys()` per request | Same check in interceptor |
-| No-key pass-through | Returns `None` auth, handler allows | Interceptor calls `Ok(req)` without auth context |
-
-**Key insight:** The auth logic is identical in structure. The only difference is where the token lives (HTTP header vs gRPC metadata header — both are HTTP/2 headers under the hood, just accessed via different APIs). No auth business logic is duplicated — both call the same `KeyService`.
-
----
-
-## Data Flow (gRPC Request)
-
-```
-gRPC Client
-    │  (HTTP/2, Content-Type: application/grpc)
-    ▼
-tokio::TcpListener (config.grpc_port, default :50051)
-    │
-    ▼
-tonic::transport::Server
-    │
-    ▼
-AuthInterceptor::call()
-    │  ← extracts "authorization" metadata
-    │  ← calls KeyService::count_active_keys() OR KeyService::verify()
-    │  ← injects AuthContext into request extensions (if auth active)
-    │  ← returns Status::unauthenticated if token invalid
-    ▼
-MnemonicGrpcService::{store_memory|search_memories|list_memories|delete_memory|health_check}()
-    │  ← extracts AuthContext from extensions
-    │  ← enforces agent_id scope (same enforce_scope logic as REST)
-    │  ← translates proto types to service types
-    ▼
-Arc<MemoryService>::{create_memory|search_memories|list_memories|delete_memory}()
-    │  (same service layer as REST — no duplication)
-    ▼
-Arc<dyn StorageBackend>::{store|search|list|delete}()
-    │  (same storage backend as REST)
-    ▼
-Response<proto::Memory | proto::SearchResponse | ...>
-```
-
----
-
-## Config Changes
-
-Add to `Config` struct in `src/config.rs`:
-
-```rust
-/// Port for the gRPC server. Defaults to 50051. 0 disables gRPC.
-/// Set via MNEMONIC_GRPC_PORT env var or grpc_port in TOML config.
-pub grpc_port: u16,
-/// Path to TLS certificate file for gRPC (PEM). Optional — disables TLS if absent.
-pub grpc_tls_cert: Option<String>,
-/// Path to TLS private key file for gRPC (PEM). Optional — disables TLS if absent.
-pub grpc_tls_key: Option<String>,
-```
-
-Default: `grpc_port: 50051`. `grpc_tls_cert` and `grpc_tls_key` both `None` (plaintext by default, per v1.5 scope which lists "optional TLS").
-
-`validate_config` update: if `grpc_tls_cert` is set but `grpc_tls_key` is absent (or vice versa), bail with a clear error.
-
----
-
-## Suggested Build Order
-
-The phases below represent implementation ordering — each phase produces a working, testable increment.
+Implementation phases, each producing a testable increment:
 
 | Phase | What Gets Built | Dependencies | Testable Outcome |
 |-------|-----------------|-------------|------------------|
-| 1 | `proto/mnemonic.proto` + `build.rs` + `tonic`/`prost`/`tonic-build` deps in `Cargo.toml` | None | `cargo build` succeeds; generated code compiles |
-| 2 | `src/grpc/mod.rs` skeleton + `tonic::include_proto!` + `GrpcState` struct | Phase 1 | Module compiles; no server running yet |
-| 3 | `MnemonicGrpcService` with `health_check` only + bare `grpc::serve()` + `tokio::try_join!` in `main.rs` | Phase 2 | `mnemonic serve` starts gRPC on :50051; `grpcurl` health check passes |
-| 4 | `AuthInterceptor` + wired into `grpc::serve()` | Phase 3 | Open mode: requests pass through. Auth mode: invalid tokens rejected with `UNAUTHENTICATED` |
-| 5 | `store_memory`, `search_memories`, `list_memories`, `delete_memory` in `MnemonicGrpcService` | Phase 4 | Full hot-path gRPC API functional; integration tests passing |
-| 6 | `Config` grpc_port + grpc_tls fields + `validate_config` update + `config show` display | Phases 1-5 | Config documented; port configurable via env var |
-| 7 | Fix recall CLI to route through `StorageBackend` trait (v1.4 tech debt) | None (independent) | `mnemonic recall` works with Qdrant/Postgres backends |
-| 8 | Optional TLS for gRPC via `tonic::transport::ServerTlsConfig` | Phase 6 | `MNEMONIC_GRPC_TLS_CERT` + `MNEMONIC_GRPC_TLS_KEY` enable TLS |
+| 1 | `dashboard/` Vite+Preact+Tailwind scaffold; `vite.config.ts` with `base: "/ui"`; `dist/` as build output; `package.json` scripts | None (frontend only) | `npm run build` produces `dashboard/dist/index.html` |
+| 2 | `Cargo.toml` dashboard feature flag + `rust-embed`/`axum-embed` deps; `src/dashboard/mod.rs` with `build_dashboard_router()`; `build_router()` cfg-gated merge | Phase 1 dist exists | `cargo build --features dashboard` succeeds; `GET /ui` returns index.html |
+| 3 | `dashboard/src/api/client.ts` fetch wrapper with auth header injection + 401 handling; `KeyPrompt` component; integration with `GET /health` | Phase 2 | Dashboard loads, prompts for key in auth mode, calls `/health` successfully |
+| 4 | Memory list view: `MemoryList` component, pagination, agent/session/tag filter UI calling `GET /memories` | Phase 3 | Can browse memories from dashboard |
+| 5 | Search view: `SearchBar` + results calling `GET /memories/search` | Phase 4 | Semantic search from dashboard |
+| 6 | Agent + session breakdown views: group memory list by agent_id/session_id, show counts | Phase 4 | Activity overview visible |
+| 7 | Compaction panel: dry-run preview + trigger calling `POST /memories/compact` | Phases 4-6 | Visual compaction workflow complete |
+| 8 | CI integration: `npm run build` step before `cargo build --features dashboard` in release workflow | Phases 1-7 | GitHub Actions produces dashboard-enabled binary |
 
 **Phase ordering rationale:**
-- Phase 1 first: `build.rs` code generation is a build prerequisite for all subsequent phases. Nothing gRPC-related compiles without it.
-- Phase 3 before Phase 4: Validate the dual-listener pattern works before adding auth complexity. A bare health endpoint is the simplest possible gRPC server.
-- Phase 4 before Phase 5: Auth must gate all service methods from the start. Adding auth after full method implementation risks forgetting scope enforcement on individual methods.
-- Phase 7 independent: The recall CLI fix is v1.4 tech debt that doesn't touch the gRPC code path at all. It can be done in any order but is naturally grouped here as a cleanup phase.
-- Phase 8 last: TLS requires cert/key files to test properly. Deferring to final phase keeps earlier phases fast to iterate on.
+- Phase 1 first: `dashboard/dist/` must exist for `cargo build --features dashboard` to succeed. The Rust build fails if the embedded folder is missing.
+- Phase 2 before Phase 3: Verify the embedded serving works (index.html loads) before building any interactive components. Static serving is the riskiest integration point.
+- Phase 3 establishes the API client pattern: all subsequent phases reuse the same fetch wrapper, so it must be solid before data-fetching components are built.
+- Phases 4-7 are independent of each other in terms of Rust code — they only add Preact components. Order follows logical user flow: browse → search → analyze → act.
+- Phase 8 last: CI integration is a wrapper around the completed build process.
 
 ---
 
 ## Anti-Patterns
 
-### Anti-Pattern 1: Duplicate Business Logic in gRPC Layer
+### Anti-Pattern 1: Adding the Dashboard Router to the Protected Sub-Router
 
-**What people do:** Re-implement agent_id scope enforcement, embedding calls, or compaction logic directly in `MnemonicGrpcService` methods rather than delegating to existing services.
+**What people do:** Add `.nest_service("/ui", ...)` inside the `protected` router block in `build_router()`.
 
-**Why it's wrong:** Creates two code paths for the same operation. When the business rule changes (e.g., scope enforcement logic), both paths must be updated. This is how bugs diverge between protocols.
+**Why it's wrong:** The `protected` router is wrapped with `route_layer(auth_middleware)`. Every `/ui/*` request would then require a valid API key — including the initial page load that fetches `index.html`. This breaks the open-access model for the dashboard HTML itself.
 
-**Do this instead:** `MnemonicGrpcService` is a thin adapter. Every method body should be: extract proto fields, translate to service type, call `self.memory_service.method()`, translate result to proto type, return. No business logic in the gRPC layer.
+**Do this instead:** Add the dashboard router to the top-level router via `.merge(dashboard_router)` alongside `protected` and `public`, not inside either of them.
 
-### Anti-Pattern 2: Blocking I/O in tonic Interceptors
+### Anti-Pattern 2: Serving Dashboard from a New Binary Feature Port
 
-**What people do:** Call async functions from the synchronous `Interceptor::call()` using `block_on()` without using `tokio::task::block_in_place()`.
+**What people do:** Add a third port and a third `tokio::try_join!` arm for the dashboard.
 
-**Why it's wrong:** `block_on()` inside an async context panics if called from within a tokio runtime (which tonic runs under). `futures::executor::block_on()` has the same problem.
+**Why it's wrong:** The dashboard's only function is to consume the existing REST API. Serving its static files from a different port creates cross-origin requests (CORS), breaks same-origin cookies (if ever needed), and complicates firewall rules. Static file serving is an axum one-liner — it does not need its own listener.
 
-**Do this instead:** Use `tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(async_fn()))` for blocking within an async runtime, or switch to `tonic-middleware`'s async `RequestInterceptor` trait which accepts async interceptors natively. For the `KeyService` SQLite lookup specifically, profiling should confirm whether the added complexity is warranted — `tokio-rusqlite` offloads to a thread pool so the call is non-blocking at the tokio level, but the interceptor invocation pattern must match.
+**Do this instead:** Serve dashboard assets on the same port as the REST API via `nest_service("/ui", ...)`. The SPA makes same-origin requests to `/memories`, `/keys`, etc. — no CORS needed.
 
-### Anti-Pattern 3: Sharing a Single-Port Listener via Multiplex
+### Anti-Pattern 3: Committing dashboard/dist/ to Git
 
-**What people do:** Use `tonic::transport::Server::into_router()` to merge the tonic router into the axum router for single-port operation.
+**What people do:** Run `npm run build`, then `git add dashboard/dist/`, and commit the built output.
 
-**Why it's wrong:** `into_router()` is marked experimental in tonic. The body type unification between axum and tonic requires custom wrapper types. The `tonic-web` layer (for browser gRPC) introduces additional body type incompatibilities (tonic issue #1964). Testing becomes harder because a single listener serves both protocols.
+**Why it's wrong:** Built artifacts change on every build (content hashes in filenames). They inflate the repository, cause noisy diffs, and create merge conflicts. The dist output should be reproducible from source.
 
-**Do this instead:** Use dual listeners with `tokio::try_join!`. The operational overhead of one extra port is negligible. Firewall rules are cleaner. Each server's middleware chain is independent and type-safe.
+**Do this instead:** Add `dashboard/dist/` and `dashboard/node_modules/` to `.gitignore`. The CI pipeline runs `npm run build` before `cargo build --features dashboard`. Local development does the same. The `debug-embed` feature of `rust-embed` can be omitted so in debug mode, assets are read from disk (no recompile needed when the frontend changes).
 
-### Anti-Pattern 4: Putting Auth Keys in Proto Fields
+### Anti-Pattern 4: New Endpoints Specifically for the Dashboard
 
-**What people do:** Add an `api_key` field to each proto message so clients pass auth in the request body.
+**What people do:** Create a `/ui/api/` prefix with new, dashboard-specific API endpoints that return pre-shaped data (e.g., "agent summary" aggregate endpoint).
 
-**Why it's wrong:** gRPC has a well-defined metadata mechanism for auth — it maps directly to HTTP/2 headers and is the universally expected location. Tools like `grpcurl`, client libraries, and service meshes all expect `authorization` metadata, not message-level fields. Message-level auth also bypasses the interceptor, making it invisible to middleware.
+**Why it's wrong:** This duplicates API surface, creates two sets of endpoints to maintain, and diverges from the principle that the dashboard is "just another API client." Aggregations that are cheap enough to run in JavaScript (grouping a few hundred memories by agent_id) should be done client-side.
 
-**Do this instead:** Use `authorization: Bearer mnk_...` in gRPC call metadata. The interceptor extracts it the same way axum middleware extracts HTTP headers.
+**Do this instead:** The SPA calls the existing REST API and performs any client-side aggregation in JavaScript. If a query genuinely requires server-side aggregation for performance (e.g., COUNT by agent_id over 100K memories), add a proper endpoint to the main REST API behind its own feature discussion — not a dashboard-specific one.
+
+### Anti-Pattern 5: Vite Dev Server Proxying to Different Port
+
+**What people do:** Configure Vite's dev server proxy to point to `http://localhost:8080` and serve the SPA from `http://localhost:5173` during development. This works locally but does not test the actual embedded serving path.
+
+**Why it's wrong:** The production code path serves assets at `/ui` from the same process as the API. The dev proxy setup means assets are served from a different origin than the API — the SPA is never tested as it will run in production (same origin, `/ui` prefix, embedded in binary).
+
+**Do this instead:** For development, use `rust-embed`'s disk-read behavior (default in debug mode) so `cargo run --features dashboard` serves `dashboard/dist/` from disk without embedding. Run `npm run dev -- --base /ui` in one terminal and `cargo run --features dashboard` in another — the Rust server serves the Vite dev output. OR use the Vite proxy approach but add an integration test that exercises the embedded path.
 
 ---
 
-## Integration Points
-
-### New Components vs Modified Components
+## Integration Points: New vs Modified Components
 
 | Component | New or Modified | Touch Surface |
 |-----------|----------------|---------------|
-| `proto/mnemonic.proto` | New | Build input only — no existing code modified |
-| `build.rs` | New | Invoked by Cargo; generates code into `OUT_DIR` |
-| `src/grpc/mod.rs` | New | Imported from `main.rs` only |
-| `src/grpc/service.rs` | New | Calls `Arc<MemoryService>` methods |
-| `src/grpc/interceptor.rs` | New | Calls `Arc<KeyService>` methods |
-| `src/config.rs` | Modified | Add 3 fields: `grpc_port`, `grpc_tls_cert`, `grpc_tls_key` |
-| `src/main.rs` | Modified | Replace single `server::serve()` with `tokio::try_join!` |
-| `Cargo.toml` | Modified | Add `tonic`, `prost` to `[dependencies]`; add `tonic-build` to `[build-dependencies]` |
-| `src/server.rs` | Unchanged | REST server — no modifications needed |
-| `src/service.rs` | Unchanged | `MemoryService` — same interface, called by both protocols |
-| `src/auth.rs` | Unchanged | `KeyService` — same interface, called by both protocols |
-| `src/storage/` | Unchanged | `StorageBackend` trait and implementations — untouched |
+| `dashboard/` (Node project) | New | No Rust files touched |
+| `src/dashboard/mod.rs` | New | Only imported from `server.rs` behind `#[cfg]` |
+| `src/server.rs` | Modified | `build_router()` gains ~5 lines behind `#[cfg(feature="dashboard")]` |
+| `Cargo.toml` | Modified | New `dashboard` feature entry, 2 optional deps |
+| `.gitignore` | Modified | Add `dashboard/dist/`, `dashboard/node_modules/` |
+| `src/main.rs` | Unchanged | `serve()` call is identical |
+| `src/config.rs` | Unchanged | No config fields needed |
+| `src/auth.rs` | Unchanged | Existing `auth_middleware` handles dashboard API calls |
+| `src/server.rs` `AppState` | Unchanged | No new fields; dashboard has no AppState dependency |
+| All gRPC code | Unchanged | Dashboard is REST-only; gRPC untouched |
+| All storage backends | Unchanged | Dashboard is a consumer, not a storage layer concern |
 
 ### Internal Boundaries
 
 | Boundary | Communication | Notes |
 |----------|--------------|-------|
-| `main.rs` ↔ `grpc::serve()` | Direct function call, passes `GrpcState` by value | `GrpcState` holds `Arc` clones, not moves |
-| `grpc::interceptor` ↔ `auth::KeyService` | `Arc<KeyService>` — same instance as REST | Interceptor holds clone of the Arc, not a new KeyService |
-| `grpc::service` ↔ `service::MemoryService` | `Arc<MemoryService>` — same instance as REST | Single MemoryService instance serves both protocols |
-| `grpc::service` ↔ `auth::AuthContext` | Via `tonic::Request::extensions()` | Interceptor inserts; service methods extract |
-| `grpc::mod` ↔ generated proto types | `tonic::include_proto!("mnemonic")` | Generated at build time from `proto/mnemonic.proto` |
+| `server::build_router` ↔ `dashboard::build_dashboard_router` | Direct function call, returns `axum::Router` | No AppState passed; dashboard router is stateless |
+| Preact SPA ↔ REST API | HTTP fetch on same origin | `Authorization: Bearer` header injected by `api/client.ts` |
+| `api/client.ts` ↔ `localStorage` | Browser API | Token persisted across page loads |
+| `auth_middleware` ↔ dashboard API calls | Unchanged — SPA calls are ordinary HTTP requests | No code change needed |
+
+---
+
+## Vite Configuration Detail
+
+The SPA must be built with `base: "/ui"` so asset paths in `index.html` are prefixed correctly:
+
+```typescript
+// dashboard/vite.config.ts
+import { defineConfig } from 'vite'
+import preact from '@preact/preset-vite'
+
+export default defineConfig({
+    plugins: [preact()],
+    base: '/ui',              // CRITICAL: asset paths must match the mount point
+    build: {
+        outDir: 'dist',
+        emptyOutDir: true,
+    }
+})
+```
+
+Without `base: "/ui"`, Vite generates `<script src="/assets/index.js">` (absolute from root). When served at `/ui`, the browser requests `/assets/index.js` which hits the axum router and returns 404. With `base: "/ui"`, Vite generates `<script src="/ui/assets/index.js">` which resolves correctly.
+
+**Confidence:** HIGH — verified against Vite `base` option documentation behavior.
 
 ---
 
@@ -544,24 +550,27 @@ The phases below represent implementation ordering — each phase produces a wor
 
 | Scale | Architecture Notes |
 |-------|-------------------|
-| Single agent, SQLite | Both REST and gRPC connect to same `SqliteBackend`. SQLite WAL mode handles concurrent reads from two servers without issue. |
-| Multi-agent, Qdrant/Postgres | Both servers share `Arc<dyn StorageBackend>` which is already a pooled connection (Qdrant gRPC channel, sqlx pool). No additional connection overhead from having two servers. |
-| High-throughput agent swarms | gRPC's binary framing and multiplexing over HTTP/2 is the point — this is why v1.5 adds gRPC. The dual-port design means gRPC traffic does not share a listener backlog with REST. |
+| Single developer | Debug mode: `rust-embed` reads from disk. `npm run build` then `cargo run --features dashboard`. Fast iteration. |
+| Production deployment | Release binary with `--features dashboard`. Assets embedded at ~100-300KB total (Preact + Tailwind purged). No disk access for static files. |
+| High request volume | Dashboard is static files — axum-embed returns embedded bytes from memory with ETag caching. Zero I/O, zero database calls for asset serving. |
+| CI pipeline | `npm ci && npm run build` → `cargo build --release --features dashboard`. Both steps needed. |
 
 ---
 
 ## Sources
 
-- [tonic official authentication example (server.rs)](https://github.com/hyperium/tonic/blob/master/examples/src/authentication/server.rs) — bearer token interceptor pattern
-- [tonic::service::Interceptor trait docs](https://docs.rs/tonic/latest/tonic/service/trait.Interceptor.html) — interceptor signature, limitations vs Tower middleware
-- [tonic-build docs.rs](https://docs.rs/tonic-build/latest/tonic_build/) — build.rs configuration, out_dir, server_only
-- [axum rest-grpc-multiplex example fix PR #2825](https://github.com/tokio-rs/axum/pull/2825) — confirms into_router() approach and its limitations
-- [axum discussion #2999: integrating axum with tonic](https://github.com/tokio-rs/axum/discussions/2999) — maintainer guidance pointing to PR #2825
-- [tonic issue #1964: tonic-web multiplexing body type mismatch](https://github.com/hyperium/tonic/issues/1964) — documents single-port multiplexing limitations
-- [tonic-middleware crate](https://github.com/teimuraz/tonic-middleware) — async interceptor alternative
-- [fpblock.com: Combining Axum, Hyper, Tonic and Tower Part 4](https://academy.fpblock.com/blog/axum-hyper-tonic-tower-part4/) — HybridService body type unification pattern
-- [http-grpc-cohosting (sunsided)](https://github.com/sunsided/http-grpc-cohosting) — cohosting reference implementation
+- [rust-embed official axum example](https://docs.rs/crate/rust-embed/latest/source/examples/axum.rs) — EmbeddedAssets pattern, StaticFile handler
+- [axum-embed docs.rs](https://docs.rs/axum-embed/latest/axum_embed/) — ServeEmbed, FallbackBehavior enum, SPA configuration
+- [axum-embed crates.io](https://crates.io/crates/axum-embed) — ETag, compression, fallback features
+- [memory-serve docs.rs](https://docs.rs/memory-serve/latest/memory_serve/) — Alternative with fallback/index_file pattern (compared, not used)
+- [axum Router docs.rs](https://docs.rs/axum/latest/axum/struct.Router.html) — nest_service, merge, route_layer behavior
+- [marending.dev: How to host single-page applications with Rust](https://www.marending.dev/notes/rust-spa/) — rust-embed performance rationale (3x faster than disk)
+- [nguyenhuythanh.com: Using Rust Backend To Serve An SPA](https://nguyenhuythanh.com/posts/rust-backend-spa/) — static_handler fallback pattern for SPA routing
+- [GitHub tokio-rs/axum discussion #1309](https://github.com/tokio-rs/axum/discussions/1309) — serving SPA files and embed files in executable
+- [Vite build configuration docs](https://vite.dev/guide/build) — base option, outDir, asset path generation
+- [axum-extra CookieJar docs](https://docs.rs/axum-extra/latest/axum_extra/extract/cookie/struct.CookieJar.html) — cookie auth comparison (decided against)
+- [GitHub gist: axum auth accepts Authorization header or cookie](https://gist.github.com/ezesundayeze/c0dd6471b2aed1199feff187b485fb02) — header-or-cookie pattern (decided not needed)
 
 ---
-*Architecture research for: Mnemonic v1.5 gRPC integration*
+*Architecture research for: Mnemonic v1.6 embedded web dashboard*
 *Researched: 2026-03-22*

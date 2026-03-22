@@ -1,381 +1,460 @@
 # Pitfalls Research
 
-**Domain:** Adding gRPC (tonic) to existing axum REST server — Mnemonic v1.5
+**Domain:** Embedded web dashboard added to existing Rust binary (v1.6 milestone — Preact + Tailwind + rust-embed + axum)
 **Researched:** 2026-03-22
-**Confidence:** HIGH (tonic/axum internals verified against official docs and GitHub issues), MEDIUM (binary size, CI cross-platform specifics)
+**Confidence:** HIGH — core pitfalls verified against official axum/rust-embed docs and multiple community sources; auth and security pitfalls verified against authoritative references; Tailwind v4 behavior confirmed against tailwindlabs GitHub discussions
 
 ---
 
 ## Critical Pitfalls
 
-### Pitfall 1: Tonic and Axum Body Type Mismatch on Same Port
+### Pitfall 1: SPA Client-Side Routes Return 404 on Hard Reload
 
 **What goes wrong:**
-When multiplexing gRPC and REST on the same port, axum produces `Response<Body>` while tonic (through `GrpcWebLayer` or custom multiplexers) produces `Response<UnsyncBoxBody<Bytes, Status>>`. Routing between them fails to compile with a wall of trait errors. The pre-axum-0.7 pattern using `Router::into_router()` was deprecated, and the modern `Routes::new().into_axum_router()` combined with `GrpcWebLayer` has an open incompatibility (GitHub issue #1964, still unresolved as of September 2025).
+The browser navigates to `/ui/search` (a Preact router path). User refreshes. axum receives `GET /ui/search`, finds no file at that path, returns 404. The SPA never boots — the user sees a blank error page.
 
 **Why it happens:**
-tonic and axum both upgraded to hyper 1.x but still use different body wrapper types internally. Developers copy-paste examples from older blog posts that predate the hyper 1.0 upgrade and hit type errors. The axum multiplexing PR #2825 resolved part of the issue by using `tower::steer` and `tonic::Routes::into_axum_router()`, but these methods still fall short when `GrpcWebLayer` is involved.
+rust-embed serves static files. axum matches routes literally. Preact's router generates URL paths that only exist in JavaScript state, not on disk. Developers test by clicking links (which trigger JS navigation, never touching the server) and miss that direct URL access or hard reloads break.
 
 **How to avoid:**
-Run tonic on a **separate port** entirely — the v1.5 spec already mandates this ("gRPC server on a separate port alongside REST"). Bind tonic's own `TcpListener` via `tonic::transport::Server::builder()` and run it concurrently with the existing axum server using `tokio::join!`. Separate ports sidestep all body-type unification problems completely and no custom multiplex service is needed.
+Two patterns work. Choose one before writing any routing code.
+
+Option A — Hash routing: Use `/#/search` style URLs in the Preact router. The hash fragment is never sent to the server. axum always serves `index.html` for `/ui`. No fallback logic needed. Simpler. Slightly dated URL aesthetics — acceptable for an operational dashboard.
+
+Option B — History routing with fallback: Add a catch-all handler under the `/ui` prefix that returns `index.html` for any path that does not match a known static asset (distinguished by file extension). Rule: if the path has no extension, serve `index.html`; if it has an extension, serve the file or 404.
+
+For mnemonic's operational dashboard with no deep linking requirements, **hash routing is the right choice** — it eliminates this entire failure class at zero cost.
 
 **Warning signs:**
-- Error messages referencing `UnsyncBoxBody`, `BoxBody`, or `impl Service<axum::http::Request<Body>>` is not satisfied
-- Blog posts or examples that reference `multiplex_service.rs` — those target a pre-0.12 tonic API
-- Dependency on the `axum-tonic` crate being added to `Cargo.toml`
+- Testing only by clicking links in the running app, never hard-refreshing a page
+- No automated test that hits `/ui/some-path` directly and asserts 200 + `text/html`
+- axum router uses `route("/ui/*path", ...)` without a fallback handler returning `index.html`
 
 **Phase to address:**
-Phase 1 (server skeleton and dual-listener setup). Decide on separate ports before writing any handler code. The main() startup sequence should wire both listeners in `tokio::join!` from the beginning.
+Phase 1 (build pipeline + static asset serving scaffold). Decide hash vs. history routing before writing any Preact router code.
 
 ---
 
-### Pitfall 2: protoc System Dependency Breaks CI
+### Pitfall 2: rust-embed Debug/Release Behavioral Divergence
 
 **What goes wrong:**
-`tonic-build` (via `prost-build` v0.11+) requires a system-installed `protoc` binary. The build appears to succeed locally but then fails in CI with a cryptic `No such file or directory` error pointing into `OUT_DIR` when the proto-generated `.rs` file is included. In GitHub Actions, `which protoc` may succeed yet `cargo build` still fails because the PATH inherited by the build script environment is different.
-
-The existing release workflow (`release.yml`) has zero protoc installation steps — it only installs the Rust toolchain and calls `cargo build --release`. Adding `tonic-build` to `[build-dependencies]` without updating the workflow is silently broken until the first CI run.
+In debug builds, rust-embed reads files from the filesystem at runtime relative to the current working directory. In release builds, files are embedded at compile time. A developer runs `cargo run` from the workspace root — files resolve. CI runs the binary from a different directory — 404 on every asset. Or: assets serve fine in dev but are missing in the release binary because the frontend build (`npm run build`) was not run before `cargo build --release`.
 
 **Why it happens:**
-`prost-build` changed in v0.11 to require `protoc` rather than bundling it. When `protoc` is absent, the build script does not fail immediately — it exits silently and leaves no generated `.rs` file. The failure surfaces later as `include!(concat!(env!("OUT_DIR"), "/mnemonic.rs"))` producing "No such file or directory."
+This is intentional rust-embed design: fast iteration in dev via filesystem reads, zero overhead in release via embedding. Developers forget that the release build requires the frontend to be built first. The asset directory must exist and be populated before `cargo build --release` runs, or rust-embed embeds an empty directory.
 
 **How to avoid:**
-Update the release workflow in the same phase that adds `build.rs`. Add these steps before `cargo build`:
-- **Ubuntu:** `sudo apt-get install -y protobuf-compiler`
-- **macOS:** `brew install protobuf`
-- Explicitly set `PROTOC=$(which protoc)` as an env var in the workflow step
-
-Alternative: add the `protoc-bin-vendored` crate as a `[build-dependencies]` entry and call `prost_build::Config::new().protoc_executable(protoc_bin_vendored::protoc_bin_path().unwrap())` — this provides a pre-built protoc binary, removes the system dependency entirely, and is the lower-risk path for a project that already cross-compiles.
+- Make the frontend build a prerequisite of the Rust release build. Document this prominently in `CONTRIBUTING.md`.
+- Add a `build.rs` `println!("cargo:rerun-if-changed=ui/dist")` directive so Cargo re-embeds on any frontend change.
+- Consider using the `debug-embed` feature during CI to enforce identical behavior between debug and release during testing.
+- Add a smoke test that requests `/ui/` on the release binary and asserts a non-empty `text/html` response.
 
 **Warning signs:**
-- Build succeeds locally (where `brew install protobuf` was done at some point) but fails in CI
-- CI error: `could not find `protoc`` or `No such file or directory` in `target/debug/build/.../out/mnemonic.rs`
-- `cargo build` exits 101 during the build script phase, not the compile phase
+- Dev build works but CI build produces a binary where `/ui/` returns 404 or empty body
+- Developers never run `cargo build --release` locally before shipping
+- No integration test covers the `/ui/` endpoint against the release binary
 
 **Phase to address:**
-Phase 1 (build.rs and tonic-build setup). Update `release.yml` in the same commit that adds `build.rs`. Do not merge a `build.rs` without a corresponding workflow update.
+Phase 1 (CI build pipeline). The `cargo build --release` step in `.github/workflows/release.yml` must run `npm ci && npm run build` in the `ui/` directory before the `cargo build` step.
 
 ---
 
-### Pitfall 3: build.rs Causes Always-Dirty Incremental Builds
+### Pitfall 3: Binary Size Bloat from Unoptimized Frontend Assets
 
 **What goes wrong:**
-`tonic_build::compile_protos("proto/mnemonic.proto")` internally emits `cargo:rerun-if-changed=mnemonic.proto` (the literal filename argument) rather than the resolved path `proto/mnemonic.proto`. Cargo checks whether a file named `mnemonic.proto` exists in the workspace root — it doesn't — so it considers the build perpetually dirty. Every `cargo build` re-runs the entire build script and recompiles all generated code, adding 5-15 seconds to every build.
+The unoptimized Vite development build (no minification, no tree-shaking, source maps included) gets embedded into the release binary. The Rust binary grows by 5-10 MB beyond what the optimized build would add. Worse: uncompressed assets are served from memory with no `Content-Encoding` negotiation, inflating transfer size to the browser on every page load.
 
 **Why it happens:**
-Known tonic-build bug (issue #2239): the `rerun-if-changed` directive emits the literal path argument rather than the fully resolved path. This is especially triggered when proto files live in a subdirectory (`proto/`) but only the filename or a relative sub-path is passed to `compile_protos`.
+Developers run `npm run build` without verifying it is a production build. Vite defaults to development mode when `NODE_ENV` is not set. Source maps may be embedded by default depending on vite.config.ts. rust-embed embeds whatever is in `dist/` — it does not validate asset quality.
 
 **How to avoid:**
-Always add an explicit `println!` directive using the full relative path, and pass the full relative path to `compile_protos`. The explicit directive overrides tonic-build's incorrect implicit one:
+- `vite.config.ts` should explicitly set `build.minify: true`, `build.sourcemap: false`, `build.cssMinify: true`.
+- CI `npm run build` must set `NODE_ENV=production` (Vite respects this).
+- Use `rollup-plugin-visualizer` once to understand bundle composition; ensure Preact + all UI code stays under ~100 KB gzipped.
+- Set `build.chunkSizeWarningLimit` to a low value (e.g., 50 KB) to catch accidental heavy dependency imports early.
+- Alternatively, use `memory-serve` instead of plain rust-embed — it compresses assets with brotli at compile time and serves with proper `Content-Encoding` headers automatically.
 
-```rust
-// build.rs
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:rerun-if-changed=proto/mnemonic.proto");
-    tonic_build::compile_protos("proto/mnemonic.proto")?;
-    Ok(())
-}
+**Warning signs:**
+- Binary grows by more than 2-3 MB when enabling the `dashboard` feature
+- `dist/` directory contains `.map` files
+- Response headers from `/ui/` lack `Content-Encoding: br` or `Content-Encoding: gzip`
+- `ls -la dist/index.js` shows file size over 200 KB
+
+**Phase to address:**
+Phase 1 (build pipeline) and Phase 2 (Vite configuration). Lock down `vite.config.ts` production build settings before embedding anything.
+
+---
+
+### Pitfall 4: Dynamic Tailwind Classes Purged in Production
+
+**What goes wrong:**
+A table status column renders `text-green-500` or `text-red-500` based on a runtime condition. The class name is constructed as a string: `` `text-${isActive ? 'green' : 'red'}-500` ``. Tailwind's purger never sees these class names in a static scan of the source files. Production build strips them. The dashboard renders without color — the bug only appears after `npm run build`, not during `vite dev`.
+
+**Why it happens:**
+Tailwind's JIT/purge scanner works by extracting string literals that look like class names from source files. It does not execute code. String concatenation at runtime generates class names that do not appear literally in any source file, so they are excluded from the production CSS bundle. This applies to Tailwind v3 and v4 alike — the v4 Rust-based engine uses the same static scanning approach.
+
+**How to avoid:**
+- Never construct Tailwind class names through string interpolation or concatenation.
+- Always write full class names in source: `isActive ? 'text-green-500' : 'text-red-500'` (both literals present in the source file).
+- Add to `tailwind.config.ts` safelist for any unavoidably dynamic patterns:
+  ```ts
+  safelist: ['text-green-500', 'text-red-500', 'bg-green-100', 'bg-red-100']
+  ```
+- Run a visual smoke test of the production build before shipping: `npx serve dist` and verify all conditional color states render correctly.
+
+**Warning signs:**
+- UI looks correct in `vite dev` but colors or spacing break after `npm run build`
+- Any JSX like `` className={`${prefix}-${value}`} ``
+- The Tailwind config has no `content` globs covering all `.tsx` files in the project
+- The `@layer components` directive is used in Tailwind v4 instead of the v4-native `@utility` directive
+
+**Phase to address:**
+Phase 2 (Preact + Tailwind setup). Establish the full-literal class naming convention before writing any conditional styling.
+
+---
+
+### Pitfall 5: API Key Token Stored in localStorage — XSS Extraction Risk
+
+**What goes wrong:**
+The dashboard prompts the user to enter their `mnk_...` API key on first load. The key is saved to `localStorage`. Any injected script (XSS, browser extension with content script permissions, compromised CDN asset) can read `localStorage` and exfiltrate the key. Because the mnemonic API key is a bearer token with full read/write access to all memories, leaking it exposes all agent memory data.
+
+**Why it happens:**
+`localStorage` is the simplest persistence mechanism in the browser. Developers reach for it first without considering that it is accessible to any JavaScript running in the same origin. For localhost-only deployments the practical risk is low, but the habit is dangerous if users start running mnemonic on network-accessible ports.
+
+**How to avoid:**
+For v1.6, use one of:
+- **In-memory only (recommended):** Store the key in Preact component state or a Preact signal. The key is forgotten on page refresh — user re-enters it. Acceptable for a developer-facing operational tool where the session is intentionally short.
+- **sessionStorage:** Cleared on tab close. Marginally better than localStorage. Still accessible to any same-origin JS — not a security boundary, just a convenience boundary.
+- **Never store in localStorage** for a bearer token unless the user explicitly opts in with a visible warning.
+
+Additional mitigation: serve all `/ui/` responses with `Content-Security-Policy` headers that block inline scripts and restrict script sources to `'self'`. This prevents the class of XSS that would read localStorage or component state in the first place.
+
+**Warning signs:**
+- `localStorage.setItem('mnk_token', ...)` anywhere in the frontend source (`git grep localStorage`)
+- No CSP header on `/ui/` responses
+- API key is visible in the Application > Local Storage tab in browser devtools after a page refresh
+
+**Phase to address:**
+Phase 3 (auth flow integration). Make the storage decision explicit in the first implementation — not a "we'll revisit later" item.
+
+---
+
+### Pitfall 6: CORS Misconfiguration on the axum Router Breaks Credentialed Requests
+
+**What goes wrong:**
+The dashboard SPA is served at `http://localhost:8080/ui/`. It calls the REST API at `http://localhost:8080/memories`. This is same-origin — CORS does not apply, and there is no issue. However: a developer adds a global CORS layer to axum with `Access-Control-Allow-Origin: *` to enable external tool access. If the dashboard's fetch code uses `credentials: 'include'`, browsers reject responses that pair wildcard origin with credentials. The fetch fails silently with a CORS error.
+
+**Why it happens:**
+The CORS spec prohibits `Access-Control-Allow-Origin: *` combined with `Access-Control-Allow-Credentials: true`. Developers add a permissive CORS layer for legitimate external API access without realizing the dashboard's fetch code uses credential-mode requests. The mismatch only surfaces as a browser console error, not a Rust compile error.
+
+**How to avoid:**
+- Since the dashboard is same-origin, do not use `credentials: 'include'` in any fetch call. Use explicit `Authorization: Bearer ${token}` headers instead. Same-origin fetch sends cookies automatically without the credentials flag anyway.
+- If a CORS layer is added to the axum router, reflect the specific request origin back instead of using wildcard — or list allowed origins explicitly.
+- The `Authorization: Bearer mnk_...` header pattern is the correct and consistent auth mechanism for the dashboard. Cookies are not part of the mnemonic auth model.
+
+**Warning signs:**
+- Browser console: `CORS error: The value of the 'Access-Control-Allow-Origin' header must not be the wildcard '*' when the request's credentials mode is 'include'`
+- `credentials: 'include'` in any dashboard fetch utility
+- `tower_http::cors::CorsLayer::very_permissive()` or `allow_origin(Any)` in the axum router
+
+**Phase to address:**
+Phase 3 (API integration). Document the auth header pattern in the first fetch utility written for the dashboard.
+
+---
+
+### Pitfall 7: Cache Busting Broken for Embedded Assets After Binary Upgrade
+
+**What goes wrong:**
+A user upgrades mnemonic (new binary). Their browser still has the old `index.html` cached from the previous version. The old `index.html` references hashed asset filenames from the old build (e.g., `index.AbCd1234.js`). The new binary embeds new hashed filenames (e.g., `index.EfGh5678.js`). The old cached `index.html` references files that no longer exist in the new binary. The dashboard shows a blank page or JS errors after every upgrade.
+
+**Why it happens:**
+Vite correctly adds content hashes to JS/CSS filenames, but `index.html` itself has no hash in its filename — it is always served at `/ui/index.html`. If the browser caches `index.html` aggressively, it will keep serving the old HTML pointing to old hashed filenames that are no longer available after a binary upgrade.
+
+**How to avoid:**
+- Set `Cache-Control: no-cache` on `index.html` responses specifically. This forces re-validation on every page load.
+- Set `Cache-Control: max-age=31536000, immutable` on hashed JS/CSS assets — they are content-addressed and safe to cache forever since the filename changes when the content changes.
+- Add custom response headers in the axum embedded-asset handler:
+  - Paths ending with `.html` or `index.html` specifically → `Cache-Control: no-cache`
+  - Paths matching `*.js`, `*.css` with a content hash in the filename → `Cache-Control: max-age=31536000, immutable`
+
+**Warning signs:**
+- All embedded files served with default browser caching (no explicit `Cache-Control` header)
+- `index.html` served with `Cache-Control: max-age=3600` or any positive max-age
+- After binary upgrade, dashboard shows JS errors about missing chunk files in the browser console
+
+**Phase to address:**
+Phase 2 (Vite build config + static asset serving). Set the cache policy in the same phase as writing the embedded-asset handler.
+
+---
+
+### Pitfall 8: `dashboard` Feature Flag Creates a Non-Additive Build Dependency
+
+**What goes wrong:**
+The `dashboard` Cargo feature is added to `Cargo.toml`. It gates `rust-embed` which has a proc-macro that runs at compile time. When the `ui/dist/` directory is missing, the proc-macro panics: `thread 'main' panicked at 'rust-embed: folder 'ui/dist' does not exist'`. This breaks `cargo build --features dashboard` for every contributor who has not run the frontend build — including CI that adds the feature flag without building the frontend first.
+
+**Why it happens:**
+rust-embed's `#[derive(RustEmbed)]` macro calls `include_dir!` or equivalent at compile time. If the target directory does not exist, the macro errors at build time with a message that appears in generated code, making it confusing to diagnose.
+
+**How to avoid:**
+- Gate the embedded assets struct behind `#[cfg(feature = "dashboard")]`. The struct must not exist when the feature is disabled — no struct definition, no derive macro invocation.
+- The `ui/dist/` directory must be created and populated as a prerequisite whenever building with `--features dashboard`. Document this in `CONTRIBUTING.md`.
+- Consider a `build.rs` guard: if `CARGO_FEATURE_DASHBOARD` is set but `ui/dist/index.html` does not exist, emit `cargo:warning=...` and `compile_error!("Run npm run build before cargo build --features dashboard")`.
+- The `dashboard` feature must be additive in the Cargo sense — enabling it adds behavior, disabling it never removes existing functionality.
+
+**Warning signs:**
+- `cargo build` (default features, no `--features dashboard`) fails after a contributor has checked in dashboard-related code
+- The `#[derive(RustEmbed)]` struct is outside a `#[cfg(feature = "dashboard")]` block
+- CI fails with a rust-embed proc-macro panic on default builds
+
+**Phase to address:**
+Phase 1 (feature flag structure). Get the `#[cfg(feature = "dashboard")]` gate right before writing any embedded-assets code.
+
+---
+
+### Pitfall 9: axum Routes for Dashboard Registered Without a Feature Gate
+
+**What goes wrong:**
+The `/ui` route is registered in `main.rs` or `serve.rs` regardless of whether `--features dashboard` was compiled. In default builds (no dashboard feature), the route handler references a type that only exists under the feature flag. The build fails with a confusing type-not-found error on default `cargo build`.
+
+**Why it happens:**
+Route registration and the asset-serving handler are written together in a single refactor. The developer adds the route to the router but does not wrap it in `#[cfg(feature = "dashboard")]`. The error only appears when someone builds the non-dashboard variant — which in practice means in CI, not locally.
+
+**How to avoid:**
+- Wrap both the route definition and all referenced dashboard types in `#[cfg(feature = "dashboard")]`.
+- Extract all dashboard-specific code into `src/dashboard/mod.rs` and gate the entire module: `#[cfg(feature = "dashboard")] mod dashboard;` in `main.rs`.
+- Add a CI step that explicitly builds the release binary without `--features dashboard` and runs the existing test suite. This is the regression gate for the default binary.
+
+**Warning signs:**
+- `cargo build` (default features) fails after any dashboard-related commit
+- Dashboard route is in the main router initialization function without a `#[cfg(feature = "dashboard")]` guard
+- No CI job separately builds the default binary alongside the dashboard build
+
+**Phase to address:**
+Phase 1 (feature flag + axum router integration). The conditional compilation boundaries must be in place before any handler code is written.
+
+---
+
+### Pitfall 10: Frontend Build Pipeline Not Integrated Into the Release CI Workflow
+
+**What goes wrong:**
+The GitHub Actions release workflow builds and publishes the `mnemonic` binary for linux-x86_64, macos-x86_64, macos-aarch64. The workflow does not run `npm ci && npm run build` before `cargo build --release --features dashboard`. The released binary has an empty embedded UI directory. Users who download the release binary open `/ui/` and see a 404 or blank page. This is only discovered after the release tag is published.
+
+**Why it happens:**
+The release workflow was written for a pure Rust project. Adding a frontend build step requires modifying YAML that most contributors do not touch. The failure only manifests on release tag pushes — the CI path that triggers the release workflow — not on normal PRs.
+
+**How to avoid:**
+- Add a `setup-node` step and `npm ci && npm run build` step in the CI release matrix before the `cargo build` step. Key it to the `ui/` working directory.
+- Add a `build.rs` `println!("cargo:rerun-if-changed=ui/dist/index.html")` so incremental builds detect frontend changes.
+- Test the full release CI path using `act` or by pushing a pre-release tag before the milestone release.
+- After the release CI runs, verify binary size has grown by the expected amount (a meaningful, non-zero delta when dashboard feature is included).
+
+**Warning signs:**
+- The release workflow YAML has no `actions/setup-node` step
+- `ui/dist/` is in `.gitignore` but no CI step generates it before embedding
+- Release binary responds to `GET /ui/` with 404 or a 0-byte body
+
+**Phase to address:**
+Phase 1 (CI integration). The release workflow update belongs in the same phase as the rust-embed integration, not deferred.
+
+---
+
+### Pitfall 11: Vite Base Path Mismatch for Assets Under a Subpath
+
+**What goes wrong:**
+Vite builds the SPA with the assumption it is served at `/` (root). It generates asset references like `<script src="/assets/index.AbCd.js">`. The binary serves the SPA at `/ui/`. The browser loads `/ui/index.html` but then fetches `/assets/index.AbCd.js` (without the `/ui/` prefix) — a 404 because the binary serves assets under `/ui/assets/`. The dashboard renders as a blank page.
+
+**Why it happens:**
+Vite's default `base` configuration is `/`. Developers test with `vite dev` which serves from root, and everything works. The mismatch only appears when the built output is served from a subpath.
+
+**How to avoid:**
+Set `base: '/ui/'` in `vite.config.ts`. This makes all asset references in the Vite build output relative to `/ui/`:
+```ts
+export default defineConfig({
+  base: '/ui/',
+  // ...
+})
 ```
-
-Verify by running `cargo build && cargo build` — the second run must complete in under one second with no build script output.
+Verify by inspecting the generated `dist/index.html` — `<script src="/ui/assets/index.*.js">` should appear, not `<script src="/assets/index.*.js">`.
 
 **Warning signs:**
-- `cargo build` takes >10 seconds on the second consecutive run with no source changes
-- `cargo build -v` shows `Running build script` on every invocation
-- Build output mentions "the file `mnemonic.proto` is missing" as a dirty trigger
+- Assets load in `vite dev` but fail after embedding in the Rust binary
+- Browser network tab shows requests to `/assets/...` returning 404 when the app is served at `/ui/`
+- `dist/index.html` references absolute paths that do not include `/ui/` prefix
 
 **Phase to address:**
-Phase 1 (build.rs setup). Verify incremental behavior before declaring the phase complete — this is a pass/fail criterion, not a nice-to-have.
+Phase 1 (Vite configuration). This must be set before the first embedded build — it affects every generated asset path.
 
 ---
 
-### Pitfall 4: prost/tonic Version Conflict with qdrant-client
+### Pitfall 12: Auth Middleware Applied to Static Asset Routes
 
 **What goes wrong:**
-mnemonic already depends on `qdrant-client = "1"` (optional, `backend-qdrant` feature). `qdrant-client 1.16+` depends on `tonic ^0.12.3` and `prost ^0.13.3`. When you add your own `tonic` and `prost` to `[dependencies]` for the gRPC server, Cargo must unify these versions. If you pin to an incompatible version (e.g., `tonic = "0.11"`) the dependency resolver fails. Conversely, if you accidentally pick `tonic = "0.13"` (which does not exist as of early 2026), you get an error. The resolved versions must satisfy both constraints simultaneously.
+The existing axum `route_layer()` auth middleware is applied too broadly and intercepts requests to `/ui/` static assets. The browser requests `index.html` or `index.js` — both have no way to pass an `Authorization: Bearer` header (the browser fetches them as plain resource loads). Every request to the dashboard gets a 401. The dashboard is inaccessible even when no API keys are configured (open mode).
 
 **Why it happens:**
-Both qdrant-client and your new gRPC server need tonic and prost. Writing `tonic = "0.12"` satisfies `^0.12.3` cleanly, but writing `tonic = "0.11"` does not. This is an easy mistake when copying from tutorials that predate qdrant-client's 1.x release.
+The existing auth middleware pattern in mnemonic is applied via `route_layer()` which protects `/memories/*` and `/keys/*`. When routing is refactored for v1.6, it is easy to accidentally apply the middleware to a router that now includes `/ui/*` routes as well.
 
 **How to avoid:**
-Match what qdrant-client requires. As of early 2026:
-- `tonic = "0.12"` in `[dependencies]`
-- `prost = "0.13"` in `[dependencies]`
-- `tonic-build = "0.12"` in `[build-dependencies]`
-
-Run `cargo tree -d` immediately after adding these dependencies to check for duplicate versions. Zero duplicates of tonic or prost is the success criterion.
+- Do not apply the auth middleware to any `/ui/*` routes — static assets have no mechanism to present credentials.
+- Nest the dashboard routes in a separate router that has no auth layer applied.
+- Auth for API calls made by the dashboard JavaScript is enforced in the JS fetch layer (explicit `Authorization` header), not via Rust middleware on the asset delivery routes.
+- Add a test that requests `/ui/` with no `Authorization` header and asserts a 200 response regardless of auth mode.
 
 **Warning signs:**
-- `error: failed to select a version for 'tonic'` during `cargo build`
-- `cargo tree -d` shows two copies of `tonic` or `prost` at different versions
-- Compilation errors referencing `prost::Message` trait not being satisfied at a crate boundary
+- `GET /ui/` returns 401 when auth is enabled
+- The router setup applies `route_layer()` to a router that includes both API routes and dashboard routes
+- Dashboard is inaccessible in any auth-enabled deployment
 
 **Phase to address:**
-Phase 1 (Cargo.toml changes). Run `cargo tree -d` immediately after adding tonic/prost and before writing any code.
-
----
-
-### Pitfall 5: Tonic Interceptor Cannot Do Async Auth — Tower Layer Required
-
-**What goes wrong:**
-The natural first instinct for porting the existing `auth_middleware` to gRPC is to use `tonic::service::interceptor()`. This looks like the gRPC equivalent of an axum middleware. However, tonic interceptors are **sync-only** and see only `MetadataMap` — they cannot perform async operations, cannot call `KeyService::count_active_keys().await`, and cannot inject extensions that handlers later extract via `req.extensions()`.
-
-The existing auth pattern requires:
-1. Async SQLite query (`count_active_keys().await`) to determine open-mode vs. auth-active
-2. Async SQLite query (`validate().await`) to hash and compare the bearer token
-3. Injecting `AuthContext` into request extensions for handler-level scope enforcement
-
-None of these work inside a sync tonic interceptor closure.
-
-**Why it happens:**
-tonic interceptors are intentionally restricted: they strip the body before calling the interceptor function so it only receives metadata. This is documented behavior. Developers familiar with axum's `middleware::from_fn_with_state()` assume interceptors are the equivalent — they are not.
-
-**How to avoid:**
-Use a Tower `Layer` applied to the tonic `Server::builder()`, not `with_interceptor()`:
-
-```rust
-tonic::transport::Server::builder()
-    .layer(
-        ServiceBuilder::new()
-            .layer(GrpcAuthLayer::new(Arc::clone(&key_service)))
-    )
-    .add_service(MnemonicServiceServer::new(grpc_impl))
-    .serve(grpc_addr)
-    .await?;
-```
-
-`GrpcAuthLayer` wraps a `tower::Service` implementation that is async, has access to the full request, can call `KeyService` async methods, and injects `AuthContext` into `request.extensions_mut()`. The `tonic-middleware` crate provides a simpler async interceptor API as an alternative if full Tower layer boilerplate is undesirable.
-
-**Warning signs:**
-- Using `with_interceptor()` and adding `.await` inside the closure — the compiler rejects it with a confusing future/Send error
-- Auth that only checks for header presence (not validates it via async DB call) — a sync interceptor can do that, but the full validation logic cannot
-- The gRPC server accepts any bearer token without failing in tests
-
-**Phase to address:**
-Phase 2 (gRPC auth layer). Write the Tower auth layer before implementing any protected handler. Never ship a gRPC endpoint without auth for a server that has REST auth enabled.
-
----
-
-### Pitfall 6: gRPC Status Codes Are Not HTTP Status Codes
-
-**What goes wrong:**
-The existing `ApiError` enum maps to HTTP status codes (401, 403, 400, 404, 500) and implements `IntoResponse` for axum. When porting auth and handler logic to gRPC, trying to return `ApiError` directly from a tonic handler causes a type mismatch. If forced by wrapping, the gRPC client receives `Code::Unknown` or `Code::Internal` for every error because HTTP codes do not map directly to gRPC codes.
-
-Correct gRPC status code mapping for this project:
-- HTTP 401 → `tonic::Status::unauthenticated("...")`
-- HTTP 403 → `tonic::Status::permission_denied("...")`
-- HTTP 400 → `tonic::Status::invalid_argument("...")`
-- HTTP 404 → `tonic::Status::not_found("...")`
-- HTTP 500 → `tonic::Status::internal("...")`
-
-**Why it happens:**
-`ApiError` is axum-specific (implements `axum::response::IntoResponse`). There is no automatic conversion to `tonic::Status`. Developers try to reuse the existing error type across both protocols without a conversion layer.
-
-**How to avoid:**
-Create a `fn api_error_to_grpc_status(e: ApiError) -> tonic::Status` conversion function in a shared module (e.g., `src/grpc/error.rs`). Every tonic handler result type must be `Result<tonic::Response<T>, tonic::Status>`. Do not add `impl From<ApiError> for tonic::Status` as a blanket — make the conversion explicit at each call site so every mapping gets reviewed.
-
-Note: `tonic::Status::from_error()` is explicitly documented as having unstable downcast behavior — do not use it for mapping known error types.
-
-**Warning signs:**
-- Tonic handler functions with return type `Result<..., ApiError>` instead of `Result<..., tonic::Status>`
-- gRPC clients receiving `Code::Unknown` for auth failures
-- Error messages appearing as empty strings in gRPC responses
-
-**Phase to address:**
-Phase 2 (gRPC handler implementations). Define the `api_error_to_grpc_status` function before writing any handler body.
-
----
-
-### Pitfall 7: Proto Field Optionality Mismatch — Scalar vs. Message Types
-
-**What goes wrong:**
-In proto3, scalar fields (`string`, `int32`, `bool`) are **not** `Option<T>` in prost-generated Rust code by default — they use their zero value (`""`, `0`, `false`) when absent from the wire. Message fields are `Option<T>`. This creates asymmetry:
-
-- `string agent_id = 1;` missing from the wire becomes `""`  not `None`
-- A nested message field missing from the wire becomes `None`
-
-For mnemonic, `agent_id` being `""` looks like "no agent filter" to the client but the existing service layer receives it as an empty string. The current service behavior with `agent_id = ""` is inconsistent across search, list, and store operations. An agent that sends no `agent_id` in a gRPC request could inadvertently access the global default namespace or hit a validation error depending on how the service interprets `""`.
-
-**Why it happens:**
-proto3 removed field presence tracking for scalars to simplify the wire format. Developers coming from REST (where missing field = null) do not realize that `""` and "not present" are indistinguishable in proto3 scalars unless the `optional` keyword is explicitly used.
-
-**How to avoid:**
-Use the `optional` keyword on every scalar field where absence vs. empty string has semantic significance:
-
-```protobuf
-syntax = "proto3";
-
-message StoreRequest {
-  string content = 1;                  // Required — always present
-  optional string agent_id = 2;        // Option<String> in Rust
-  optional string session_id = 3;      // Option<String> in Rust
-  repeated string tags = 4;            // Vec<String>, empty = not provided
-}
-```
-
-`optional` on a proto3 scalar generates `pub agent_id: Option<String>` in prost-generated Rust. Review every field before finalizing the `.proto` file — changing field optionality after clients exist is a wire-breaking change.
-
-**Warning signs:**
-- prost-generated struct shows `pub agent_id: String` instead of `pub agent_id: Option<String>`
-- Service layer receiving `agent_id: ""` when the gRPC client sent no agent_id
-- Tests that pass `agent_id: ""` and observe unexpected all-namespace behavior
-
-**Phase to address:**
-Phase 1 (proto file design). Finalize all field optionality in the `.proto` file before implementing any handlers. This is a breaking change if modified after clients exist.
-
----
-
-### Pitfall 8: Missing enforce_scope() in gRPC Handlers
-
-**What goes wrong:**
-The REST handlers all call `enforce_scope(auth_ctx, body.agent_id.as_deref())` at the top of each handler to enforce key-scoped namespace isolation. This logic is easy to forget when writing gRPC handlers. A gRPC `Store` call from an agent using a key scoped to `agent-A` that supplies `agent_id: "agent-B"` in the request should be rejected with `PERMISSION_DENIED`. Without the scope check, it silently stores the memory under the wrong agent.
-
-**Why it happens:**
-gRPC handlers are written separately from REST handlers and the enforcement pattern is not part of the service layer — it lives in `server.rs` as a function called by each axum handler. When writing new tonic handler implementations, this call site is easy to miss because it is not enforced by the type system.
-
-**How to avoid:**
-Move `enforce_scope()` into a shared module that is required to be called by both REST and gRPC handlers. Or, add it to the service layer so that `MemoryService::store()` takes an `Option<&AuthContext>` and enforces scope internally — this makes the enforcement impossible to forget because it is inside the business logic, not the transport layer.
-
-For v1.5, at minimum: add a test for each gRPC handler that verifies a scoped key cannot access a different agent's data.
-
-**Warning signs:**
-- gRPC handlers that call `state.service.create_memory(body).await` directly without checking scope
-- No test that tries a scoped key with a mismatched agent_id via gRPC and asserts `PERMISSION_DENIED`
-- REST and gRPC allow different agent access patterns under the same API key
-
-**Phase to address:**
-Phase 2 (gRPC handler implementations). Add scope enforcement test before declaring any handler complete.
+Phase 1 (axum router integration). The routing structure must separate static asset delivery from API endpoints before either is implemented.
 
 ---
 
 ## Technical Debt Patterns
 
+Shortcuts that seem reasonable but create long-term problems.
+
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Skip gRPC auth entirely for v1.5 | Faster to ship | Unauthenticated gRPC port is a security hole if REST auth is active; auth retrofit is harder than auth first | Never |
-| Copy axum handler logic into tonic handlers | Fast implementation | Duplicated validation at two call sites; bug fixed in REST not fixed in gRPC | Never — share the service layer via `Arc<MemoryService>` |
-| Same-port multiplexing via content-type routing | One port is simpler | Body-type incompatibility requires a custom Tower service that fights axum/tonic version drift | Only if separate ports are a hard external constraint |
-| Commit generated proto `.rs` files to git | Avoids build.rs dependency | Generated code in git causes merge conflicts; build state in source is an anti-pattern | Acceptable during initial scaffolding only; remove before v1.5 release |
-| Use `tonic::service::interceptor` for auth | Less boilerplate | Cannot do async key validation; open-mode check impossible in sync context | Never for this project's auth model |
-| Default tonic features (includes TLS via ring/aws-lc) | Works out of the box | Pulls in large TLS crates that increase binary size and cross-compilation friction | Use `default-features = false, features = ["transport", "codegen"]` if TLS is not required for v1.5 |
-| Hardcode gRPC port as REST_PORT + 1 | Simplifies initial implementation | Port conflict if user runs two instances; not configurable | Never — add `grpc_port` to Config from the start |
+| Serving uncompressed assets from plain rust-embed | Zero extra deps, simple handler | No brotli/gzip; poor performance on slow connections; no automatic ETags | Acceptable for v1.6 MVP on localhost; add compression or switch to memory-serve before any network-exposed deployment |
+| No CSP header on `/ui/` responses | Simpler handler code | XSS can read any in-memory token state | Never acceptable — add CSP even in MVP; it is a one-line addition to the response handler |
+| In-memory token state only (no persistence) | No localStorage risk | User must re-enter API key on every page refresh | Acceptable for v1.6 developer-focused tool; reassess if users request persistence |
+| Hash routing instead of history routing | No server-side fallback needed | Slightly dated URL aesthetics | Acceptable — operational dashboard, not a consumer product |
+| Skip Tailwind production build verification in CI | Faster CI iteration | Dynamic class names silently disappear in production CSS | Never acceptable — add a `NODE_ENV=production npm run build` step in CI from day one |
+| Defer cache header configuration | Ship faster | Browser serves stale dashboard after binary upgrade | Never acceptable — the cache policy is three lines of code and prevents a class of user-visible breakage |
 
 ---
 
 ## Integration Gotchas
 
+Common mistakes when connecting the embedded dashboard to the existing mnemonic axum stack.
+
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| tonic + axum AppState | Passing `AppState` directly to the tonic service struct (wrong type) | Clone `Arc<MemoryService>`, `Arc<CompactionService>`, `Arc<KeyService>` into both the axum `AppState` and the tonic service struct independently |
-| tonic + KeyService auth | Calling async `KeyService` methods inside a sync tonic interceptor | Implement auth as a Tower `Layer` applied to `Server::builder()`; interceptors are sync-only |
-| tonic + ApiError | Returning `ApiError` from a tonic handler | Create `api_error_to_grpc_status(ApiError) -> tonic::Status` conversion; never use `ApiError` in a tonic context |
-| tonic-build + release.yml | No protoc installation step in CI workflow | Add `brew install protobuf` (macOS) and `apt-get install protobuf-compiler` (Ubuntu) before `cargo build` in the workflow |
-| tonic + qdrant-client | Version conflict on prost/tonic | Pin `tonic = "0.12"` and `prost = "0.13"` to match qdrant-client's constraints; verify with `cargo tree -d` |
-| gRPC port config | Hardcoding gRPC port | Add `grpc_port: u16` to `Config` struct with a documented default (e.g., 50051); expose via env var `GRPC_PORT` and TOML config |
-| tonic TLS features | Enabling default TLS features that pull in `ring` | Use `tonic = { version = "0.12", default-features = false, features = ["transport", "codegen"] }` for v1.5 if TLS is not in scope |
-| gRPC metadata key casing | Using `"Authorization"` (capitalized) as metadata key | gRPC metadata keys are lowercase by convention and by HTTP/2 spec; use `"authorization"` — `MetadataKey::from_static("authorization")` |
+| axum router + dashboard routes | Registering `/ui/*` as a `nest()` without fallback causes 404 on SPA sub-routes | Use hash routing (no fallback needed) OR add a fallback handler returning `index.html` for extensionless paths under `/ui/` |
+| rust-embed + `#[cfg(feature)]` | Placing the `#[derive(RustEmbed)]` struct outside the feature gate | Wrap the entire `Assets` struct in `#[cfg(feature = "dashboard")]` |
+| axum auth middleware + `/ui/` | Applying the existing `route_layer()` to a router that also includes `/ui/*` | Separate the dashboard router from the API router; never apply auth middleware to static asset routes |
+| Bearer token in fetch requests | Using `credentials: 'include'` (cookies) instead of explicit header | Use explicit `Authorization: Bearer ${token}` in every fetch call from the dashboard; cookies are not part of the mnemonic auth model |
+| Vite base path | Building Vite with default base `/` and serving from `/ui/` | Set `base: '/ui/'` in `vite.config.ts`; verify `dist/index.html` references include the prefix |
+| ETag headers | rust-embed returns identical bytes with no ETag; browsers re-download unchanged assets on every load | Add ETag headers derived from a content hash, or use `memory-serve` which does this automatically |
+| Embedding API route calling full-init path | `GET /ui/` or a dashboard fetch to `GET /health` triggers the embedding model init path | Ensure dashboard-serving code and stats API calls use the DB-only init tier, not the full embedding+LLM init tier |
 
 ---
 
 ## Performance Traps
 
+Patterns that work at small scale but degrade under usage.
+
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Per-request SQLite `count_active_keys()` on gRPC hot path | Auth adds 1 SQLite query per gRPC request; slower than REST equivalent under high concurrency | Intentional per D-04 decision; acceptable for v1.5 scale; document as a known single-file bottleneck | >10k req/s to a single SQLite file |
-| Embedding model mutex under concurrent gRPC `Store` calls | gRPC store latency spikes due to `Arc<Mutex<LocalEngineInner>>` contention | Same as REST — the existing `EmbeddingEngine` is already the bottleneck; document; no fix needed for v1.5 | >20 concurrent gRPC store calls |
-| Blocking inside a tonic async handler | Handler hangs; tokio runtime thread starved | Never call `std::thread::sleep`, `block_on()`, or synchronous I/O inside tonic handlers; all existing DB/embedding paths are already async | Any blocking call |
-| Default tonic max message size (4MB) exceeded | Silent truncation or gRPC error on large payloads | Set `.max_decoding_message_size()` on `Server::builder()` | Memory content batch exceeding 4MB; unlikely for v1.5 use cases |
+| All memories loaded client-side for display | Dashboard fetch returns thousands of rows; browser hangs rendering the list | Add server-side pagination from the first implementation; never fetch unbounded lists | Breaks visibly at ~500 memories in SQLite; earlier for Qdrant/Postgres with large payloads |
+| Auto-polling for live updates | Dashboard polls `/memories` every second to show recent activity; hammers the embedding model hot path | Never auto-poll at less than a 10-second interval; use a manual refresh button instead | Immediate — any sub-5s polling interval creates noticeable server load |
+| Dashboard triggers embedding model init | Requesting `/health` or a stats endpoint causes the full init path (embedding model load) on every page load | Route dashboard stats API calls through the DB-only init path (`init_db`); the existing `init_recall()` fast-path already exists for this purpose | Immediate — 2-3 second latency on every page load if the wrong init tier is triggered |
+| Uncompressed assets served from memory | Every page load transfers 500 KB+ of uncompressed JS/CSS | Use `memory-serve` for automatic brotli/gzip, or manually compress assets and set correct `Content-Encoding` response headers | Noticeable on any connection slower than gigabit LAN |
 
 ---
 
 ## Security Mistakes
 
+Domain-specific security issues for an embedded dashboard serving a data API.
+
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| gRPC port open without auth while REST requires auth | Agent bypasses auth by using gRPC port | gRPC auth Tower layer must be implemented in the same phase as gRPC handlers — no "auth later" deferred phase |
-| Logging raw bearer token from gRPC metadata | Token exposed in structured logs (same risk as REST — see comment in `create_key_handler`) | Extract and validate token; never `tracing::debug!` or `tracing::info!` the raw bearer value in the auth layer |
-| gRPC port bound to `0.0.0.0` without TLS | Plaintext traffic visible on network | Document in v1.5 that TLS is optional; emit a startup warning if gRPC binds to a non-loopback address without TLS configured |
-| Missing `enforce_scope()` in gRPC handlers | Cross-agent memory access via gRPC even with valid API key | Call `enforce_scope()` at the top of every gRPC handler that accepts `agent_id`; add a test for each handler to verify scope rejection |
-| MetadataKey case sensitivity | `Authorization` vs `authorization` — HTTP/2 requires lowercase; tonic's MetadataKey enforces this at runtime with a panic on invalid keys | Always use lowercase metadata key strings; use `MetadataKey::from_static("authorization")` not a string literal with mixed case |
+| No Content-Security-Policy on `/ui/` responses | XSS can read in-memory token state or inject fetch calls to exfiltrate data | Add `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'` to all `/ui/` asset responses in the axum handler |
+| Applying API auth middleware to static asset routes | Dashboard is inaccessible to any user, including when auth is disabled | Do not apply `route_layer()` auth to static asset routes; auth for API calls is enforced in the JS fetch layer, not on asset delivery |
+| Wildcard CORS + fetch credentials | `Access-Control-Allow-Origin: *` combined with any credentialed request mode causes browser rejection | Use explicit `Authorization` headers; if CORS is needed, reflect the specific request origin rather than using wildcard |
+| Dashboard accessible but API returns 401 with no UI guidance | Users with auth enabled reach `/ui/` but have no feedback about needing an API key | Handle 401 responses explicitly in all fetch calls; display a human-readable "enter your API key" prompt |
+| Bearer token exfiltrated via localStorage | Attacker reads `localStorage` on compromise of any same-origin content | Store token in component state (in-memory only); add CSP headers; never `localStorage.setItem` with the bearer token |
 
 ---
 
 ## UX Pitfalls
 
+Common user experience mistakes specific to embedded operational dashboards.
+
 | Pitfall | User Impact | Better Approach |
 |---------|-------------|-----------------|
-| gRPC port not discoverable | Agents cannot discover the gRPC port programmatically after startup | Add `"grpc_port": <n>` to the `GET /health` response body when gRPC is enabled |
-| gRPC server starts but emits no startup log | No confirmation that gRPC is accepting connections | Log `gRPC server listening on 0.0.0.0:<port>` at startup, matching the existing REST `server listening` log |
-| No reflection service | Agent developers must distribute the `.proto` file to use `grpcurl` | Add `tonic-reflection` with the compiled file descriptor set; enables `grpcurl ls` to enumerate services without distributing protos |
-| gRPC errors with empty message strings | Agent receives `Code::InvalidArgument` with no details | Every `tonic::Status` must include a human-readable message string consistent with the REST error message pattern |
-| Proto breaking change without service version | Existing agent gRPC clients silently receive wrong data after server upgrade | Treat `.proto` changes as a versioned API contract; field removals and type changes require a new service version |
+| No loading state during API fetch | Dashboard appears frozen for 200-500ms on first load | Add skeleton loaders or a spinner; never show a blank UI while data is loading |
+| Flat list of all memories without grouping | 500+ memories render as an unnavigable scrollable wall | Group by agent, then by session; add pagination or virtual scrolling from the start |
+| Compaction trigger with no confirmation | User accidentally triggers compaction, which is a destructive data mutation | Require explicit confirmation modal; show the dry-run diff before offering the commit button |
+| No error state when API key is wrong or missing | Blank dashboard with no explanation of why data is not loading | Catch 401/403 responses and display a human-readable "Enter your API key" prompt |
+| Dashboard crashes on empty database | Fresh install has zero memories; JS crashes on `undefined.map(...)` | Design and test empty states first; check for empty lists before rendering any collection |
 
 ---
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Incremental builds work:** Run `cargo build && cargo build` — the second run must complete in under 2 seconds with no `Running build script` output. Failure means the `rerun-if-changed` path is wrong.
-- [ ] **CI protoc installed:** The release workflow YAML has explicit protoc installation steps for both Ubuntu and macOS runners before `cargo build --release`.
-- [ ] **Version conflict free:** `cargo tree -d` shows zero duplicate `tonic` or `prost` entries after adding tonic to Cargo.toml.
-- [ ] **gRPC auth open-mode works:** Integration test calls a gRPC method with no API keys created and no `authorization` header; request succeeds.
-- [ ] **gRPC auth enforces tokens:** Integration test sends a bad bearer token; receives `Code::Unauthenticated`, not `Code::Unknown` or `Code::Internal`.
-- [ ] **Scope enforcement on gRPC:** Test that a scoped API key calling gRPC with wrong `agent_id` receives `Code::PermissionDenied`.
-- [ ] **Proto field optionality correct:** Every `agent_id`, `session_id`, `threshold`, `limit` field in the `.proto` uses `optional` where absence is meaningful; inspect the prost-generated structs to verify `Option<T>`.
-- [ ] **Status codes correct:** HTTP 401 → `Unauthenticated`, HTTP 403 → `PermissionDenied`, HTTP 404 → `NotFound`, HTTP 400 → `InvalidArgument` — not all collapsed to `Internal`.
-- [ ] **gRPC port in config:** `grpc_port` field exists in `Config`, has a documented default, appears in `mnemonic config show` output.
-- [ ] **Health endpoint updated:** `GET /health` JSON includes `grpc_port` when the server starts with gRPC enabled.
-- [ ] **No raw token in logs:** Grep the auth layer implementation for `tracing` calls and confirm no bearer token value is logged at any level.
-- [ ] **Separate port confirmed:** Both REST and gRPC listeners start on different ports; no content-type multiplexing code exists.
+Things that appear complete but are missing critical pieces.
+
+- [ ] **rust-embed integration:** Compiles in debug mode — verify the release binary actually serves `/ui/`: `cargo build --release --features dashboard && ./target/release/mnemonic serve`, then `curl -s http://localhost:8080/ui/ | head -5` and confirm HTML is returned
+- [ ] **Tailwind purge:** Styles look correct in dev — verify production build: `NODE_ENV=production npm run build`, then visually inspect all conditional color and state styles in the `dist/` output
+- [ ] **Feature flag isolation:** Dashboard builds — verify default binary still builds and passes tests: `cargo build` (no `--features dashboard`) and `cargo test` must both pass
+- [ ] **CI pipeline:** Build works locally — verify the release CI workflow builds and embeds the frontend by checking binary size increase and smoke-testing `/ui/` against the CI artifact
+- [ ] **Cache headers:** Assets are served — verify `Cache-Control` headers: `curl -I http://localhost:8080/ui/` should show `Cache-Control: no-cache` for `index.html`, and `Cache-Control: max-age=31536000, immutable` for hashed JS/CSS
+- [ ] **Auth flow:** API calls return data — verify 401 handling: test with no API key configured (open mode) AND with a key configured but not provided to the dashboard; both must show a usable state
+- [ ] **SPA routing:** Navigation works via link clicks — verify hard reload on a non-root route works (or confirm hash routing is in use everywhere and no history routing exists)
+- [ ] **Vite base path:** Assets load in dev — verify asset paths work when deployed at `/ui/`: inspect generated `dist/index.html` to confirm all asset references include the `/ui/` prefix
+- [ ] **Static assets not behind auth middleware:** `curl http://localhost:8080/ui/` with no `Authorization` header returns 200 even when API keys are configured
+- [ ] **No localStorage token storage:** `git grep -r "localStorage" ui/` returns no matches
 
 ---
 
 ## Recovery Strategies
 
+When pitfalls occur despite prevention, how to recover.
+
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Same-port body type mismatch discovered mid-implementation | MEDIUM | Switch to separate-port architecture; remove multiplex service; axum and tonic bind independently via `tokio::join!` |
-| CI protoc missing on first CI run | LOW | Add protoc install step to release.yml; re-run CI |
-| Always-dirty incremental builds | LOW | Add `println!("cargo:rerun-if-changed=proto/mnemonic.proto")` with the full path to `build.rs`; verify timing |
-| prost/tonic version conflict | LOW-MEDIUM | Run `cargo tree -d`; update pins to match qdrant-client constraints; may require updating other transitive dependencies |
-| sync interceptor chosen for auth instead of Tower layer | MEDIUM | Replace `with_interceptor()` with `Server::builder().layer()`; rewrite auth as a Tower service; existing `KeyService` interface is unchanged |
-| Proto field type wrong after first release | HIGH | Requires a new `.proto` service version (`MnemonicServiceV2`); all existing clients must be updated simultaneously; proto design must be reviewed and locked before first release |
-| Missing scope enforcement discovered after release | HIGH | Add `enforce_scope()` calls to all affected gRPC handlers; release a patch; audit logs for cross-agent accesses |
+| SPA 404 on reload | LOW | Switch to hash routing in the Preact router config; no Rust changes needed; rebuild frontend; re-embed |
+| Tailwind classes purged | LOW | Add missing class names to safelist in `tailwind.config.ts`; re-run production build; rebuild binary |
+| Binary bloat from unoptimized assets | LOW | Fix `vite.config.ts` production build settings; re-run `npm run build`; rebuild binary; binary size delta should drop |
+| Cache busting broken after upgrade | MEDIUM | Add `Cache-Control: no-cache` to `index.html` responses in the axum handler; re-release binary; instruct users to hard-refresh |
+| Feature flag breaks default build | MEDIUM | Move the `#[derive(RustEmbed)]` struct inside `#[cfg(feature = "dashboard")]`; audit all dashboard types for leakage outside the gate |
+| API key stored in localStorage, exposure suspected | HIGH | The `mnk_...` key is revocable — revoke via `mnemonic keys revoke <id>` and issue a new key immediately; document key rotation procedure in the dashboard UI |
+| Release binary missing UI (CI missing frontend build step) | LOW | Add `npm ci && npm run build` to the release workflow YAML; re-trigger the release; no source code changes needed |
+| Vite base path wrong after first release | MEDIUM | Fix `base` in `vite.config.ts`; rebuild frontend and binary; existing bookmarks to `/ui/` will still work since `index.html` path is unchanged |
 
 ---
 
 ## Pitfall-to-Phase Mapping
 
+How roadmap phases should address these pitfalls.
+
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| Body type mismatch (same-port) | Phase 1: Dual-server skeleton | Two listeners bind on different ports; axum and tonic start concurrently in `tokio::join!` |
-| CI protoc missing | Phase 1: build.rs + Cargo.toml changes | Release workflow runs successfully in CI with protoc install steps present |
-| Always-dirty build | Phase 1: build.rs setup | `cargo build && cargo build` — second run shows no build script output, completes under 2s |
-| prost/tonic version conflict with qdrant-client | Phase 1: Cargo.toml | `cargo tree -d` shows zero duplicate tonic or prost entries |
-| Sync interceptor for async auth | Phase 2: gRPC auth Tower layer | Auth layer compiles; integration test validates open-mode passthrough and token validation via async `KeyService` |
-| gRPC status code mapping | Phase 2: gRPC handlers | Test that invalid token returns `Code::Unauthenticated`, bad agent_id returns `Code::PermissionDenied`, not `Code::Internal` |
-| Proto field optionality | Phase 1: proto design | Every `agent_id`, `session_id` field uses `optional`; prost-generated structs show `Option<String>` |
-| Missing enforce_scope in gRPC handlers | Phase 2: gRPC handlers | Test: scoped key + wrong agent_id → `Code::PermissionDenied` for every gRPC method |
-| Logging raw token | Phase 2: gRPC auth layer | Code review grep for `tracing` calls in auth layer; confirm no token value is logged |
-| gRPC port not in health | Phase 3: integration | `GET /health` response JSON contains `grpc_port` when server starts with gRPC enabled |
+| SPA 404 on reload | Phase 1 — routing decision | Automated: `GET /ui/some-path` returns 200 with `text/html` content type |
+| rust-embed debug/release divergence | Phase 1 — CI pipeline | Automated: release CI builds and smoke-tests `GET /ui/` on the release binary |
+| Binary size bloat | Phase 1 — Vite config, Phase 2 — Preact setup | Manual: `ls -lh target/release/mnemonic` delta when adding dashboard feature is under 3 MB |
+| Tailwind class purge | Phase 2 — component development | Manual: visual check of production build conditional styles; all state-conditional colors render correctly |
+| localStorage token storage | Phase 3 — auth flow | Code review: `git grep localStorage ui/` returns zero hits |
+| CORS misconfiguration | Phase 3 — API integration | Automated: fetch calls in production-built dashboard loaded from the binary succeed without CORS errors |
+| Cache busting | Phase 2 — asset serving | Manual: `curl -I http://localhost:8080/ui/` shows `no-cache` for HTML; `immutable` for hashed assets |
+| Feature flag non-additive | Phase 1 — feature flag structure | Automated CI: `cargo build` (no feature flag) passes after every dashboard-related commit |
+| Route registered without cfg gate | Phase 1 — router integration | Automated CI: same `cargo build` default-features CI check |
+| Build pipeline not in CI | Phase 1 — CI workflow | Automated: release CI job produces a binary that serves a non-empty `/ui/` response |
+| Vite base path mismatch | Phase 1 — Vite configuration | Manual: inspect generated `dist/index.html` for `/ui/` prefixed asset paths |
+| Auth middleware on static assets | Phase 1 — router structure | Automated: `GET /ui/` with no auth header returns 200 in auth-enabled mode |
 
 ---
 
 ## Sources
 
-- tonic GitHub issue [#1964](https://github.com/hyperium/tonic/issues/1964) — `tonic-web` + axum body type mismatch, open as of September 2025
-- axum pull request [#2825](https://github.com/tokio-rs/axum/pull/2825) — gRPC multiplex example fix using `tower::steer` and `tonic::Routes::into_axum_router()`
-- tonic GitHub issue [#2239](https://github.com/hyperium/tonic/issues/2239) — always-dirty builds from incorrect `rerun-if-changed` path emission
-- [tonic-build docs](https://docs.rs/tonic-build/latest/tonic_build/) — OUT_DIR behavior, protoc system dependency, build script configuration
-- [prost-build docs](https://docs.rs/prost-build/latest/prost_build/) — protoc requirement since v0.11; `PROTOC_NO_VENDOR` env var
-- [qdrant-client 1.16+ Cargo.toml](https://docs.rs/crate/qdrant-client/latest) — `tonic ^0.12.3`, `prost ^0.13.3` constraints
-- [tonic Interceptor docs](https://docs.rs/tonic/latest/tonic/service/interceptor/index.html) — sync-only, metadata-only design
-- [Announcing Tonic 0.5](https://tokio.rs/blog/2021-07-tonic-0-5) — Tower-based interceptor API; interceptors are sync, Tower layers are async
-- [tonic-middleware crate](https://crates.io/crates/tonic-middleware) — async interceptor alternative
-- prost issue [#520](https://github.com/tokio-rs/prost/issues/520) — proto3 scalar fields not `Option<T>` by default; `optional` keyword required
-- [GitHub Actions protoc Discussion #160036](https://github.com/orgs/community/discussions/160036) — protoc not found in CI despite installation
-- [tonic::Status docs](https://docs.rs/tonic/latest/tonic/struct.Status.html) — `from_error()` instability note; correct code constructors
-- Direct codebase inspection: `src/auth.rs`, `src/server.rs`, `src/storage/mod.rs`, `.github/workflows/release.yml`, `Cargo.toml`
+- [rust-embed docs.rs — debug vs release behavior](https://docs.rs/rust-embed/latest/rust_embed/trait.RustEmbed.html) — confirmed debug reads from filesystem, release embeds at compile time (HIGH confidence)
+- [pyrossh/rust-embed GitHub issues — debug-embed feature](https://github.com/pyrossh/rust-embed/issues/50) — `debug-embed` feature forces compile-time embedding even in debug builds (MEDIUM confidence)
+- [axum discussion — SPA hosting with embedded files](https://github.com/tokio-rs/axum/discussions/1309) — ServeDir cannot load embedded files; custom handler required for SPA fallback (HIGH confidence)
+- [marending.dev — How to host SPA files in Rust](https://www.marending.dev/notes/rust-spa/) — rust-embed + axum SPA pattern; binary size warning for large sites (MEDIUM confidence)
+- [Effective Rust, Item 26 — Feature flag pitfalls](https://effective-rust.com/features.html) — feature flags must be additive; non-additive features cause downstream build failures (HIGH confidence)
+- [Cargo Book — Features](https://doc.rust-lang.org/cargo/reference/features.html) — feature unification, additive requirement, combinatorial explosion (HIGH confidence)
+- [tailwindlabs/tailwindcss GitHub discussion #7568](https://github.com/tailwindlabs/tailwindcss/discussions/7568) — dynamic class generation causes purge to strip classes; full-literal class names required; safelist pattern (HIGH confidence)
+- [tailwindlabs/tailwindcss GitHub discussion #17526](https://github.com/tailwindlabs/tailwindcss/discussions/17526) — Tailwind v4 `@layer components` vs `@utility` difference; static scanning applies in v4 as in v3 (MEDIUM confidence)
+- [memory-serve docs.rs](https://docs.rs/memory-serve) — brotli compression at compile time, automatic ETag headers, Cache-Control support; superior to plain rust-embed for production web serving (HIGH confidence)
+- [Auth0 Token Storage best practices](https://auth0.com/docs/secure/security-guidance/data-security/token-storage) — localStorage XSS risk; in-memory storage recommended for tokens (HIGH confidence)
+- [MDN CORS guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS) — wildcard origin incompatible with credentials mode; explicit origin required (HIGH confidence)
+- [Vite build docs](https://vite.dev/guide/build) — production build settings, sourcemap config, `base` path for subdirectory deployment (HIGH confidence)
+- [Vite discussion — cache busting with hashed chunks](https://github.com/vitejs/vite/issues/6773) — content-hash filenames for assets; `index.html` must not be long-cached (MEDIUM confidence)
+- [nickb.dev — Trade-offs in embedding data in Rust](https://nickb.dev/blog/a-quick-tour-of-trade-offs-embedding-data-in-rust/) — compile time impact of proc-macro-based embedding approaches (MEDIUM confidence)
+- [preactjs/preset-vite GitHub](https://github.com/preactjs/preset-vite) — official Vite preset for Preact; current recommended scaffolding (HIGH confidence)
 
 ---
-*Pitfalls research for: Adding gRPC (tonic) to existing axum/Rust server — Mnemonic v1.5*
+*Pitfalls research for: Embedded web dashboard — Rust binary (mnemonic v1.6)*
 *Researched: 2026-03-22*

@@ -1,12 +1,12 @@
 # Feature Research
 
-**Domain:** gRPC interface for agent memory server (Rust/tonic, v1.5 milestone)
+**Domain:** Embedded operational web dashboard for a developer-facing memory server binary
 **Researched:** 2026-03-22
 **Confidence:** HIGH
 
 ## Scope Note
 
-This research covers only the **new gRPC features for v1.5**. The existing REST API (9 endpoints), API key auth, CLI (7 subcommands), and pluggable storage backends (SQLite, Qdrant, Postgres) are already built and out of scope. The question is: what does a well-designed gRPC interface look like for hot-path memory operations — and what does the ecosystem expect?
+This research covers only the **new dashboard features for v1.6**. The existing REST API (9 endpoints), gRPC (4 RPCs), CLI (7 subcommands), and pluggable storage backends are already built and out of scope. The question is: what does a well-designed embedded operational dashboard look like for a developer tool like mnemonic — and what do developers expect from comparable tools (Prometheus UI, Qdrant Web UI, RedisInsight, VectorAdmin)?
 
 ---
 
@@ -14,133 +14,153 @@ This research covers only the **new gRPC features for v1.5**. The existing REST 
 
 ### Table Stakes (Users Expect These)
 
-Features users assume exist in a gRPC memory service. Missing these means agents cannot adopt the gRPC path.
+Features that any developer-facing data store UI must have. Missing these makes the dashboard feel unfinished or broken.
 
-| Feature | Why Expected | Complexity | Notes |
-|---------|--------------|------------|-------|
-| `StoreMemory` unary RPC | Every memory API needs a write path; agents call this on every turn | LOW | Mirrors POST /memories; takes content, agent_id, session_id, tags in request message |
-| `SearchMemories` unary RPC | Semantic search is the core value prop; must be gRPC-accessible | LOW | Takes query string + agent_id filter + limit; returns ranked list with scores |
-| `ListMemories` unary RPC | Agents need to enumerate memories without semantic query (session replay, pagination) | LOW | Mirrors GET /memories with optional agent_id/session_id filters |
-| `DeleteMemory` unary RPC | Cleanup is expected; sessions end and memories become stale | LOW | Takes memory_id; returns success or NOT_FOUND status |
-| `HealthCheck` via `grpc.health.v1` | Load balancers, Kubernetes probes, and agent orchestrators use the standard health proto — not a custom service | LOW | `tonic-health` crate provides the standard `grpc.health.v1.Health` service out of the box |
-| Dual-protocol server (REST + gRPC on separate ports) | Existing REST clients must not break; agents choose their protocol | MEDIUM | Separate port (e.g., 50051) is simpler than same-port multiplexing; PROJECT.md explicitly specifies separate port |
-| Auth via gRPC metadata (authorization header) | Existing API keys must work over gRPC; agents cannot re-authenticate on protocol change | MEDIUM | Bearer token in gRPC metadata key `authorization` (lowercase, per HTTP/2 header convention); validated in tonic interceptor mirroring existing axum middleware |
-| `google.protobuf.Timestamp` for time fields | Proto3 best practice; standard well-known type for `created_at`; do not use int64 epoch seconds | LOW | Requires `prost-types` crate; Qdrant uses the same convention |
-| Canonical gRPC status codes | Callers expect NOT_FOUND (5), UNAUTHENTICATED (16), INVALID_ARGUMENT (3) — not raw HTTP codes or generic errors | LOW | Map StorageBackend errors to `tonic::Status` codes in service impl |
-| Proto3 field stability guarantees | Agents build clients from the .proto file; field tag numbers must never be reused | LOW | Reserve deleted tags; use `optional` keyword for presence-tracked fields (proto3 v3.15+) |
+| Feature | Why Expected | Complexity | API Dependency |
+|---------|--------------|------------|----------------|
+| Memory list table with pagination | Every database browser shows records in a paged table; the primary interaction surface | LOW | `GET /memories` with `limit`/`offset` params |
+| Filter by `agent_id` | Multi-agent namespacing is a first-class mnemonic concept; all peers (Qdrant, RedisInsight) allow namespace/collection scoping | LOW | `GET /memories?agent_id=...` |
+| Filter by `session_id` | Session grouping is a defined field; operators need to inspect individual sessions | LOW | `GET /memories?session_id=...` |
+| Filter by `tag` | Tags are a user-defined field; a browser without tag filtering is frustrating | LOW | `GET /memories?tag=...` |
+| Memory detail view | Clicking a row should expand/show full content, metadata, timestamps — comparable to Qdrant's "point detail panel" and RedisInsight's key detail view | LOW | `GET /memories/{id}` via existing list response; no extra endpoint needed |
+| Semantic search bar | The core mnemonic value proposition is semantic search; the dashboard must expose it visually — Qdrant's console and Agent Zero's dashboard both feature search prominently | MEDIUM | `GET /memories/search?q=...&agent_id=...` |
+| Health / status indicator | Prometheus UI, Qdrant dashboard, and every embedded admin panel show server health at a glance. Expected top-of-page persistent indicator | LOW | `GET /health` — returns `{status, backend}` |
+| Active storage backend display | Users switching between SQLite/Qdrant/Postgres need to know which backend is live at a glance | LOW | `GET /health` — returns `backend` field |
+| Delete memory action | All data browsers provide a delete affordance for individual records (RedisInsight, Qdrant points panel, Agent Zero memory dashboard) | LOW | `DELETE /memories/{id}` |
+| Agent breakdown / namespace summary | VectorAdmin provides a "Database Statistics" component with per-namespace counts; Prometheus shows per-job breakdowns; operators need agent-level visibility | MEDIUM | Requires aggregation: `GET /memories?agent_id=X` with count strategy; no dedicated stats endpoint exists yet |
+| Total memory count | The "number of records" is the first thing any database UI shows — Qdrant shows collection point count, Prometheus shows active series count | LOW | Count derived from `GET /memories` response; can be the total field from list response |
+| Compaction trigger (dry-run + execute) | Compaction is an operational action; making it accessible from the UI reduces CLI dependency — Qdrant's UI has snapshot management as an in-browser action | MEDIUM | `POST /memories/compact` with `dry_run=true` then `dry_run=false` |
+| Auth-aware behavior | If API keys are active, the dashboard must pass the key as `Authorization: Bearer mnk_...` or display a login prompt. All peer tools respect auth (Qdrant, Prometheus). Missing this = dashboard is broken when auth is on | MEDIUM | All existing protected endpoints; key entered once in UI session |
+| Responsive to existing REST API | Dashboard must be a consumer of the existing API, not a parallel path. No new Rust backend logic for the happy path | LOW | All 9 existing REST endpoints — no new endpoints needed for core features |
 
 ### Differentiators (Competitive Advantage)
 
-Features beyond baseline that give Mnemonic's gRPC interface an edge.
+Features that peers don't have or implement poorly, which align with mnemonic's "zero-config, agent-first" positioning.
 
-| Feature | Value Proposition | Complexity | Notes |
-|---------|-------------------|------------|-------|
-| `agent_id` and `session_id` in request messages (not metadata) | Namespacing is a first-class Mnemonic concept; putting routing fields in the proto body makes clients statically typed and explicit — metadata is stringly typed and easy to forget | LOW | Industry norm (Qdrant, Weaviate) puts collection/namespace in the request body, not metadata; same approach here |
-| `score` in `SearchMemoriesResponse` per result | Agents need to threshold results; returning a float distance per result enables quality filtering client-side without round-trips | LOW | Already computed in storage layer (`lower_is_better` contract); just expose it in the proto message |
-| `tonic-reflection` for service discoverability | gRPC reflection lets `grpcurl` and Postman introspect services without the .proto file — reduces agent developer friction considerably | LOW | Add `tonic-reflection` crate; can be behind a config flag to allow disabling in production |
-| Optional TLS via rustls (config-driven) | Production deployments need encryption; dev mode should work without certs | MEDIUM | Tonic supports rustls natively (tls-ring or tls-aws-lc feature); expose `grpc_tls_cert_path` and `grpc_tls_key_path` in Config; if not set, server starts without TLS |
-| `tags` repeated field on `StoreMemoryRequest` | Mirrors REST behavior exactly; agents can tag memories at write time with zero additional calls | LOW | Repeated string field in proto; no complexity |
-| `storage_backend` in `HealthCheckResponse` | Operators want to know which backend is active — already reported in REST /health; gRPC health response should match | LOW | Return the backend name string alongside ServingStatus via extended `HealthCheckResponse` or a separate custom health RPC |
+| Feature | Value Proposition | Complexity | API Dependency |
+|---------|-------------------|------------|----------------|
+| Agent activity timeline / "last seen" | Show each agent's most recent memory timestamp. RedisInsight does not show per-namespace last-active. This directly answers "which agents are using my mnemonic instance?" | MEDIUM | Derived from `GET /memories?agent_id=X&limit=1&sort=created_at` or summary endpoint |
+| Compaction dry-run diff view | Show a before/after preview (N memories → M compacted) before committing. POST /memories/compact with dry_run=true returns the mapping. No peer tool surfaces this visually | MEDIUM | `POST /memories/compact` with `dry_run=true`; response includes `old_ids`, `new_id` mapping |
+| Copy memory ID / content to clipboard | One-click copy for memory IDs and content. Reduces friction for pasting into agent code, curl commands, or issue reports. Simple feature with outsized DX value | LOW | No API dependency — client-side clipboard |
+| Zero-config UI access | Dashboard served at `/ui` with no separate installation, no npm, no Docker. Peers (Qdrant, RedisInsight) require separate deployment or Electron app. This is a genuine differentiator for the single-binary story | LOW | Rust-embed + axum serve at `/ui` — no API dependency |
+| Memory content preview in table | Show first 80 characters of content in the list row. Avoids the click-to-expand round-trip for quick scanning. Qdrant shows payload previews; Agent Zero's table shows content previews | LOW | Embedded in list response — no extra call |
+| Tag display in list table | Show tags as colored badges in the table row. Makes filtered browsing faster. Qdrant shows payload fields inline | LOW | Embedded in list response |
+| Backend badge in header | Persistent pill showing "sqlite" / "qdrant" / "postgres" in the header. Makes the active backend unambiguous at all times without navigating to a settings page | LOW | `GET /health` |
+| Feature-gated — zero binary impact when off | When built without the `dashboard` feature flag, the binary is unchanged in size and behavior. Comparable to Qdrant and Prometheus which have optional UI modes | MEDIUM | Build-time feature gate via Cargo.toml; rust-embed only included when `dashboard` feature is active |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| gRPC streaming for search results | Looks like a natural fit for paginated result delivery | Streaming adds connection-lifecycle complexity; agents use small result sets (k=10-20 typical); unary is simpler to implement, debug, and test; PROJECT.md explicitly scopes v1.5 to unary only | Unary RPC with `limit` field; callers paginate via subsequent calls with offset if needed |
-| Same-port HTTP/REST + gRPC multiplexing | Simplifies firewall rules (one port exposed) | Requires a `HybridService` tower wrapper that inspects `Content-Type: application/grpc` on every request; adds complexity and latency; debugging split-protocol traffic is harder; community guidance favors separate ports | Separate port (e.g., 50051 for gRPC, existing for REST); cleaner separation, consistent with Qdrant (6333 REST, 6334 gRPC) and standard production practice |
-| gRPC for compaction and key management | "Everything should be gRPC" | Hot-path only was the explicit v1.5 scope decision in PROJECT.md; compaction is admin-tier (infrequent, latency-tolerant); key management is auth-tier (CLI-driven); expanding scope balloons the proto surface area and implementation cost | Keep compaction and key management REST-only; document this explicitly in proto file comments |
-| Bidirectional streaming for live memory updates | Agents could subscribe to memory changes in real time | Complex server-side state management; no existing event/pub-sub system in Mnemonic; agent-memory access patterns are pull-based (request-response), not push-based | Polling via `ListMemories` is sufficient for current agent patterns; streaming is a v2+ consideration if event infrastructure is added |
-| gRPC-Web support | Browser clients using gRPC | Requires `tonic-web` crate and CORS configuration; Mnemonic targets server-side agents, not browsers; REST API already covers browser use cases | REST API handles any browser or non-gRPC client |
-| Client-side load balancing / name resolution | Enterprise multi-instance patterns | Tonic supports DNS SRV, but it requires infrastructure most Mnemonic users don't have; adds complexity disproportionate to target user (single-server deployments) | Single-server deployment; agents connect to one configured endpoint; load balancing at the infrastructure layer (nginx, AWS ALB) if needed |
+| Write/edit memory from dashboard | Operators want to correct a stored memory | Modifying agent-written memories creates hidden state inconsistency; agents re-read memories and may behave unexpectedly if edited out-of-band; adds form complexity and validation logic | Use the REST API or CLI directly for edits; dashboard is read-and-observe, not write |
+| Real-time auto-refresh (polling) | "Live" dashboard feels modern | Polling on short intervals hammers the server and embedding model if search is triggered; mnemonic is not an event-driven system; polling adds complexity for uncertain user value | Manual refresh button (used by Prometheus UI for time-range scrubbing); optional user-controlled refresh interval if requested |
+| Memory graph / vector visualization | 2D vector projection like Qdrant's Visualize tab looks impressive | Requires UMAP/t-SNE dimensionality reduction; this is a compute-intensive operation that is not in the mnemonic codebase; adds a heavyweight JS dependency (d3, plotly); primary users are developers not researchers | Out of scope for v1.6; defer to v2+ if users request it |
+| API key management UI (create/revoke) | "Everything should be in the dashboard" | Key creation must emit the raw key exactly once; doing this securely in a browser UI requires careful UX to prevent accidental disclosure; the CLI (`mnemonic keys create`) is already excellent for this | CLI handles key management; dashboard shows auth status (keys active / open mode) only |
+| Dark/light theme toggle | Modern design | Adds CSS complexity; tailwind dark: classes require a theme toggle implementation; the dashboard is a developer ops tool, not a consumer product; default dark or default light is sufficient for v1.6 | Ship a single carefully-chosen default theme; theme toggle is a P3 enhancement |
+| Bulk delete / bulk operations | "Select all + delete" | Dangerous without undo; bulk delete on wrong filter could destroy an agent's entire memory namespace; adds confirmation UX complexity | Individual delete with confirmation dialog; compaction as the safe "reduce" operation |
+| Memory creation from dashboard | "Complete CRUD in the UI" | The dashboard is an operational visibility tool, not a memory authoring tool; agents write memories, operators observe them; a create form adds auth complexity and blurs the tool's purpose | CLI `mnemonic remember` and REST API are the write paths |
+| Custom theme / branding | White-labeling for teams | Scope creep without clear user demand; the user base is developers who value utility over aesthetics | Plain Tailwind utility classes; clean and functional is sufficient |
 
 ---
 
 ## Feature Dependencies
 
 ```
-[gRPC server process]
-    └──requires──> [tokio runtime] (already present — shared with REST server)
-    └──requires──> [tonic crate + tonic-build codegen in build.rs]
-    └──requires──> [prost + prost-types for proto3 messages and google.protobuf.Timestamp]
-    └──requires──> [.proto file defining MnemonicService]
+[Dashboard served at /ui]
+    └──requires──> [rust-embed crate embedding compiled frontend assets]
+    └──requires──> [axum route at /ui/* serving embedded files]
+    └──requires──> [dashboard Cargo feature flag activating the route and embed]
+    └──requires──> [frontend build step (Preact + Tailwind + Vite) producing dist/]
+    └──requires──> [dist/ committed to repo OR generated in CI before rust compile]
 
-[StoreMemory RPC]
-    └──requires──> [MemoryService via Arc<dyn StorageBackend>] (present since v1.4)
-    └──requires──> [EmbeddingEngine for vector generation] (present since v1.0)
-    └──shares──> [Arc<Mutex<LocalEngineInner>>] (must NOT instantiate a second embedding model)
+[Memory list table]
+    └──requires──> [GET /memories with limit/offset — already built]
+    └──enhances──> [filter bar (agent_id, session_id, tag)]
 
-[SearchMemories RPC]
-    └──requires──> [EmbeddingEngine] (present since v1.0)
-    └──requires──> [StorageBackend.search()] (present since v1.4)
+[Filter bar]
+    └──requires──> [GET /memories?agent_id=&session_id=&tag=]
+    └──enhances──> [memory list table]
+    └──enhances──> [agent breakdown]
 
-[ListMemories RPC]
-    └──requires──> [StorageBackend.list()] (present since v1.4)
-    └──BLOCKED BY──> [v1.4 tech debt: recall CLI bypasses StorageBackend trait]
-    └──prerequisite: recall routing fix must land before ListMemories RPC]
+[Semantic search]
+    └──requires──> [GET /memories/search?q=&agent_id=&limit= — already built]
+    └──enhances──> [memory list table] (results replace list when query is active)
 
-[DeleteMemory RPC]
-    └──requires──> [StorageBackend.delete()] (present since v1.4)
+[Memory detail view]
+    └──requires──> [memory object from list response — no extra endpoint]
+    └──enhances──> [memory list table]
 
-[HealthCheck via grpc.health.v1]
-    └──requires──> [tonic-health crate]
-    └──enhances──> [existing GET /health REST endpoint] (parallel, not replacing)
+[Delete action]
+    └──requires──> [DELETE /memories/{id} — already built]
+    └──requires──> [memory list table] (triggers refresh after delete)
 
-[Auth interceptor for gRPC]
-    └──requires──> [KeyService on Arc<Connection>] (present since v1.2, stays SQLite-only)
-    └──mirrors──> [axum auth middleware] (same validation logic, different entry point)
-    └──convention: reads gRPC metadata key "authorization" value "Bearer mnk_..."]
+[Compaction panel]
+    └──requires──> [POST /memories/compact — already built]
+    └──requires──> [agent_id filter] (scope compaction to selected agent)
+    └──enhances──> [compaction dry-run diff view]
 
-[gRPC server configuration]
-    └──requires──> [Config struct extension: grpc_port, grpc_tls_cert_path, grpc_tls_key_path]
-    └──requires──> [separate tokio::spawn task for gRPC server alongside REST server]
+[Agent breakdown view]
+    └──requires──> [GET /memories (aggregate by agent_id on client, or new summary endpoint)]
+    └──requires──> [memory list table]
+    └──note: no dedicated aggregate endpoint exists; client can group list results]
 
-[Optional TLS]
-    └──requires──> [rustls feature flag in tonic dependency]
-    └──requires──> [grpc_tls_cert_path / grpc_tls_key_path config fields]
-    └──enhances──> [gRPC server startup]
+[Auth-aware behavior]
+    └──requires──> [localStorage or session key storage for API key]
+    └──requires──> [Authorization: Bearer header on all API calls]
+    └──requires──> [GET /health to detect open vs auth mode]
+    └──conflicts──> [key management UI] (key creation is CLI-only per anti-features)
 
-[tonic-reflection]
-    └──enhances──> [gRPC server] (optional discoverability, not required for operation)
-    └──conflicts with──> [minimizing binary size] (adds generated descriptor bytes — minor, worth flagging)
+[Health indicator]
+    └──requires──> [GET /health — already built, returns {status, backend}]
+    └──no other dependencies]
+
+[Feature gate (dashboard flag)]
+    └──requires──> [rust-embed inclusion behind #[cfg(feature = "dashboard")]]
+    └──requires──> [axum /ui route registration behind the same feature flag]
+    └──conflicts──> [default binary size] (resolved by feature gating — zero cost when off)
 ```
 
 ### Dependency Notes
 
-- **ListMemories is blocked by a tech debt prerequisite.** The v1.3 recall CLI bypasses the StorageBackend trait, accessing SQLite directly. Before exposing ListMemories via gRPC, the underlying list call must be normalized through the trait so it works across all three backends. PROJECT.md explicitly names this as a v1.5 prerequisite.
-- **Embedding model must be shared, not duplicated.** The gRPC server and REST server must share the same `Arc<Mutex<LocalEngineInner>>`. If the gRPC server initializes its own embedding engine, cold start doubles (two 2-3s model loads) and memory doubles. AppState must be extended to pass the shared engine to both servers.
-- **Auth interceptor mirrors axum middleware.** Both validate the same `mnk_...` bearer tokens from the same SQLite key store. The gRPC interceptor reads the `authorization` metadata key (lowercase, per gRPC HTTP/2 header conventions). The validation logic should be extracted into a shared function callable from both the axum middleware and the tonic interceptor.
-- **tonic v0.14.5 is the stable production release.** The GitHub master branch is preparing breaking changes as of March 2026; pin to `0.14.x` in Cargo.toml.
+- **Agent breakdown has no dedicated API endpoint.** The existing `GET /memories` with `?agent_id=X` can be called per known agent, but there is no `GET /agents` or `GET /stats/agents` endpoint. The dashboard must either: (a) call `GET /memories?limit=1000` and group client-side, or (b) a new lightweight `GET /stats` endpoint returning per-agent counts is built as part of v1.6. Option (b) is strongly preferred because grouping 10,000 records client-side is wasteful.
+- **Frontend build output must be available at Rust compile time.** rust-embed embeds the files from a directory path at compile time. This means `npm run build` (or equivalent Vite build) must run before `cargo build`. CI and local dev workflows need a documented build order. The `build.rs` script is the correct place to encode this dependency.
+- **Auth detection via `GET /health` is insufficient alone.** The health endpoint does not indicate whether auth is currently active. A 401 response from `GET /memories` is the correct signal that auth is required. The dashboard should attempt `GET /memories` on load and prompt for an API key only if it receives 401.
+- **Compaction requires agent_id scope.** The compaction endpoint supports per-agent scoping. The dashboard UI should require the user to select an agent before triggering compaction, preventing accidental cross-namespace compaction.
 
 ---
 
 ## MVP Definition
 
-### Launch With (v1.5)
+### Launch With (v1.6)
 
-The five RPCs specified in PROJECT.md as the v1.5 target, plus their prerequisites.
+Minimum feature set for the dashboard to be useful as an operational visibility tool.
 
-- [ ] StorageBackend routing fix for `list` (v1.4 tech debt — prerequisite for ListMemories)
-- [ ] `.proto` file defining `MnemonicService` with all five operations
-- [ ] `tonic-build` codegen in `build.rs`
-- [ ] `StoreMemory` unary RPC — core write path; agents cannot use gRPC without it
-- [ ] `SearchMemories` unary RPC — core semantic read path; primary hot-path operation
-- [ ] `ListMemories` unary RPC — list/filter without semantic query; session recall
-- [ ] `DeleteMemory` unary RPC — cleanup path; completes CRUD
-- [ ] `HealthCheck` via `grpc.health.v1` — required for load balancers and orchestrators
-- [ ] Auth via gRPC metadata interceptor — security parity with REST
-- [ ] gRPC server on separate port with config (`grpc_port`, optional TLS config fields)
-- [ ] Shared embedding engine between REST and gRPC servers (no second model load)
+- [ ] Memory list table with content preview, agent_id, session_id, tags, created_at — **core value**
+- [ ] Filter bar: agent_id, session_id, tag — **drives 80% of actual usage**
+- [ ] Semantic search bar (query + agent_id scope) — **showcase mnemonic's core capability**
+- [ ] Memory detail view (expand row or side panel) — **required for full content inspection**
+- [ ] Delete memory action with confirmation — **needed to clean up test data**
+- [ ] Health indicator + backend badge in header — **operational awareness at a glance**
+- [ ] Agent breakdown table (per-agent count + last-active) — **requires new `GET /stats` endpoint or client-side grouping**
+- [ ] Compaction panel with dry-run preview then execute — **the only write-side operational action that belongs in a dashboard**
+- [ ] Auth-aware: detect open vs keyed mode, prompt for API key if 401, persist in sessionStorage — **required for any deployment with auth enabled**
+- [ ] Feature-gated behind `dashboard` Cargo feature — **zero binary impact when off**
 
-### Add After Validation (v1.5.x)
+### Add After Validation (v1.6.x)
 
-- [ ] `tonic-reflection` for grpcurl discoverability — add when agent developer adoption is measured; currently adds binary size for marginal benefit at launch
-- [ ] Optional TLS (rustls) — add when any production user requests it; current users are localhost or VPN-connected
+Features to add once the core dashboard is in use by real users.
+
+- [ ] Manual refresh button — add when users report the table feeling stale
+- [ ] Configurable page size (10 / 25 / 50) — add when users report scrolling pain on large datasets
+- [ ] Copy-to-clipboard for memory ID and content — trivial to add, queue for first patch
+- [ ] Timestamp display toggle (relative "2 hours ago" vs absolute ISO) — small DX win
 
 ### Future Consideration (v2+)
 
-- [ ] Server-streaming `SearchMemoriesStream` — defer until agents demonstrably need >50 results per call
-- [ ] Bidirectional streaming for memory subscriptions — defer until event system exists
-- [ ] gRPC for compaction — defer; admin operations don't need low-latency binary protocol
+- [ ] Vector visualization (2D projection via UMAP) — requires embedding endpoint and heavy JS; defer until users explicitly request it
+- [ ] Dark/light theme toggle — nice-to-have, not operational
+- [ ] Session timeline view — useful but requires chronological ordering by session which the current list API supports; defer for user-validated demand
+- [ ] Memory edit form — only if users consistently request it; high risk of data corruption
 
 ---
 
@@ -148,156 +168,95 @@ The five RPCs specified in PROJECT.md as the v1.5 target, plus their prerequisit
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| StorageBackend routing fix (tech debt) | HIGH | LOW | P1 — blocks ListMemories |
-| `.proto` file + `tonic-build` codegen | HIGH | LOW | P1 — foundation for all RPCs |
-| `StoreMemory` RPC | HIGH | LOW | P1 |
-| `SearchMemories` RPC | HIGH | LOW | P1 |
-| `ListMemories` RPC | HIGH | LOW | P1 |
-| `DeleteMemory` RPC | MEDIUM | LOW | P1 |
-| `HealthCheck` (grpc.health.v1) | HIGH | LOW | P1 |
-| Auth interceptor | HIGH | MEDIUM | P1 |
-| gRPC port + config | HIGH | LOW | P1 |
-| Shared embedding engine across servers | HIGH | LOW | P1 — correctness, not optional |
-| `score` in SearchResponse | MEDIUM | LOW | P1 — already in storage layer |
-| `google.protobuf.Timestamp` fields | MEDIUM | LOW | P1 — proto best practice |
-| Canonical status codes | MEDIUM | LOW | P1 |
-| Optional TLS (rustls) | MEDIUM | MEDIUM | P2 |
-| `tonic-reflection` | LOW | LOW | P2 |
-| Streaming RPCs | LOW | HIGH | P3 |
-| Same-port multiplexing | LOW | HIGH | P3 |
+| Memory list table + pagination | HIGH | LOW | P1 |
+| Filter bar (agent/session/tag) | HIGH | LOW | P1 |
+| Health indicator + backend badge | HIGH | LOW | P1 |
+| Auth-aware (detect 401, prompt for key) | HIGH | MEDIUM | P1 |
+| Semantic search bar | HIGH | LOW | P1 |
+| Memory detail view (expand) | HIGH | LOW | P1 |
+| Delete memory action | MEDIUM | LOW | P1 |
+| Agent breakdown table | HIGH | MEDIUM | P1 (requires new `/stats` endpoint or grouping strategy) |
+| Compaction panel (dry-run + execute) | HIGH | MEDIUM | P1 |
+| Feature gate (`dashboard` Cargo flag) | HIGH | LOW | P1 — architectural requirement |
+| rust-embed build integration | HIGH | LOW | P1 — foundational |
+| Copy-to-clipboard (ID, content) | MEDIUM | LOW | P2 |
+| Manual refresh button | LOW | LOW | P2 |
+| Configurable page size | LOW | LOW | P2 |
+| Relative timestamp display | LOW | LOW | P2 |
+| Dark/light theme toggle | LOW | MEDIUM | P3 |
+| Vector visualization | LOW | HIGH | P3 |
+| Memory edit form | LOW | HIGH | P3 |
 
 **Priority key:**
-- P1: Must have for v1.5 launch
+- P1: Must have for v1.6 launch
 - P2: Should have, add when possible
 - P3: Nice to have, future consideration
 
 ---
 
-## Proto Message Shape Reference
+## Competitor Feature Analysis
 
-Based on ecosystem research (Qdrant gRPC proto, Weaviate proto patterns, Mnemosyne MemoryService, and proto3 best practices), here are the recommended message shapes for the Mnemonic proto file.
+Analysis of comparable embedded operational dashboards: Prometheus web UI, Qdrant Web UI, RedisInsight, VectorAdmin, and Agent Zero's Memory Dashboard.
 
-### Service Definition Sketch
-
-```proto
-syntax = "proto3";
-package mnemonic.v1;
-
-import "google/protobuf/timestamp.proto";
-
-service MnemonicService {
-  rpc StoreMemory(StoreMemoryRequest) returns (StoreMemoryResponse);
-  rpc SearchMemories(SearchMemoriesRequest) returns (SearchMemoriesResponse);
-  rpc ListMemories(ListMemoriesRequest) returns (ListMemoriesResponse);
-  rpc DeleteMemory(DeleteMemoryRequest) returns (DeleteMemoryResponse);
-}
-// Health: use the standard grpc.health.v1.Health service (tonic-health crate)
-// Compaction and key management: REST only, not exposed via gRPC
-```
-
-### Key Message Shapes
-
-```proto
-message StoreMemoryRequest {
-  string content = 1;              // required — validate non-empty before embedding
-  string agent_id = 2;             // required — namespace isolation
-  optional string session_id = 3;  // optional presence-tracked (proto3 optional keyword)
-  repeated string tags = 4;        // optional tagging, zero or more values
-}
-
-message StoreMemoryResponse {
-  string id = 1;                   // UUID of stored memory
-}
-
-message SearchMemoriesRequest {
-  string query = 1;                // required — semantic search text
-  string agent_id = 2;             // required — namespace filter
-  optional string session_id = 3;  // optional narrowing filter
-  uint32 limit = 4;                // 0 = use server default (e.g., 10)
-}
-
-message MemoryResult {
-  string id = 1;
-  string content = 2;
-  string agent_id = 3;
-  optional string session_id = 4;
-  repeated string tags = 5;
-  float score = 6;                 // lower = more similar (normalized cosine distance)
-  google.protobuf.Timestamp created_at = 7;
-}
-
-message SearchMemoriesResponse {
-  repeated MemoryResult memories = 1;
-}
-
-message ListMemoriesRequest {
-  optional string agent_id = 1;   // filter by agent_id; if absent, returns all (admin use)
-  optional string session_id = 2;
-  uint32 limit = 3;               // 0 = use server default
-  uint32 offset = 4;              // for pagination
-}
-
-message ListMemoriesResponse {
-  repeated MemoryResult memories = 1;
-}
-
-message DeleteMemoryRequest {
-  string id = 1;                  // memory UUID
-}
-
-message DeleteMemoryResponse {
-  bool deleted = 1;               // true if deleted, false if not found (or return NOT_FOUND status)
-}
-```
-
-### Auth Convention
-
-Token passed as gRPC metadata key `authorization` with value `Bearer mnk_...` (lowercase key, matching HTTP/2 header conventions that gRPC is built on). Server-side tonic interceptor reads `request.metadata().get("authorization")`. Status `UNAUTHENTICATED` (16) returned when token is missing or malformed; `PERMISSION_DENIED` (7) returned when token is valid but the token's authorized `agent_id` does not match the request's `agent_id` field.
-
-### Status Code Mapping
-
-| Condition | gRPC Status Code |
-|-----------|-----------------|
-| Memory not found by ID | NOT_FOUND (5) |
-| Missing or invalid auth token | UNAUTHENTICATED (16) |
-| Token valid but wrong agent namespace | PERMISSION_DENIED (7) |
-| Empty content or query string | INVALID_ARGUMENT (3) |
-| Storage backend error | INTERNAL (13) |
-| Embedding model overloaded | RESOURCE_EXHAUSTED (8) |
+| Feature | Prometheus UI | Qdrant Web UI | RedisInsight | VectorAdmin | Our Approach |
+|---------|---------------|---------------|--------------|-------------|--------------|
+| Record browser | Targets table, not record rows | Points tab with search/filter | Key browser with type/TTL columns | Per-database point list | Memory table: content, agent_id, session_id, tags, created_at |
+| Namespace/collection filter | Per-job filter in targets | Per-collection scoping | Per-DB instance | Per-database scoping | Per-agent_id filter (mnemonic's namespace primitive) |
+| Semantic search | PromQL expression input | Semantic vector search panel | No semantic search (key-value) | Vector similarity search | Semantic search bar wired to `GET /memories/search` |
+| Stats / breakdown | Metrics explorer, series counts | Collection point count, segments | DB memory usage, key count | Per-database statistics component | Agent breakdown: per-agent count + last-active timestamp |
+| Operational actions | No in-UI actions | Snapshot create/restore | Bulk delete, SlowLog | Snapshot management | Compaction trigger: dry-run preview + execute |
+| Health indicator | Always-on server status badge | Collection status indicator | DB connection status | Server status | Header pill: `{status, backend}` from `GET /health` |
+| Auth | Basic auth or none | API key in request header | DB password modal | API key config | Detect 401 → prompt for `mnk_...` key → sessionStorage |
+| Embedded vs separate deploy | Embedded in Prometheus binary | Embedded in Qdrant binary | Separate Electron/web app | Separate Node.js server | Embedded in mnemonic binary via rust-embed, `/ui` route |
+| Feature gating | UI always on | UI always on | Always separate | Always separate | Cargo feature flag — zero binary cost when off |
+| Delete | Not applicable | Point delete in panel | Individual + bulk delete | Not documented | Individual delete with confirmation modal |
 
 ---
 
-## Competitor / Reference Analysis
+## New API Endpoint Required
 
-| Feature | Qdrant gRPC | Weaviate gRPC | Mnemosyne gRPC | Mnemonic v1.5 Approach |
-|---------|-------------|---------------|----------------|------------------------|
-| Protocol | proto3, port 6334 | proto3, stable v1.23.7 | proto3 | proto3, configurable port (default 50051) |
-| Health check | Custom service | Not documented | Dedicated HealthService | Standard `grpc.health.v1` via tonic-health |
-| Auth | API key in metadata | API key in metadata | Not documented | Bearer `mnk_...` in `authorization` metadata |
-| Namespace isolation | Collection name in request body | Class name in request body | Not documented | `agent_id` field in every request message |
-| Timestamps | google.protobuf.Timestamp | google.protobuf.Timestamp | Not documented | google.protobuf.Timestamp |
-| Streaming | Batch upsert streaming | Batch search streaming | RecallStream, ListMemoriesStream | None (unary only for v1.5) |
-| Reflection | Available | Not documented | Not documented | Optional via tonic-reflection (P2) |
-| TLS | Supported | Supported | Not documented | Optional via rustls config (P2) |
-| Separate vs shared port | Separate (6333/6334) | Separate | Separate | Separate port (simpler, consistent with ecosystem) |
+The agent breakdown view (per-agent memory count + last-active timestamp) cannot be efficiently served by the existing `GET /memories` endpoint without either:
+
+1. Fetching all records and grouping client-side (unacceptable at >1K memories)
+2. Making N `GET /memories?agent_id=X&limit=1` calls (one per agent — no agent enumeration endpoint exists)
+
+**Recommendation:** Add a lightweight `GET /stats` endpoint as part of v1.6 that returns:
+
+```json
+{
+  "total_memories": 1247,
+  "agents": [
+    { "agent_id": "claude-agent", "count": 892, "last_active": "2026-03-22T14:30:00Z" },
+    { "agent_id": "gpt-pilot", "count": 355, "last_active": "2026-03-21T09:15:00Z" }
+  ],
+  "backend": "sqlite"
+}
+```
+
+This endpoint:
+- Requires a single DB query (`SELECT agent_id, COUNT(*), MAX(created_at) FROM memories GROUP BY agent_id`)
+- Returns no memory content (no privacy/auth concern beyond existing list auth)
+- Should be behind auth middleware like all other `/memories*` routes
+- Enables the agent breakdown view without N+1 queries
+
+This is the only new REST endpoint needed for v1.6. All other dashboard features use existing endpoints.
 
 ---
 
 ## Sources
 
-- [gRPC official docs — metadata](https://grpc.io/docs/guides/metadata/) — metadata conventions, authorization header patterns. HIGH confidence.
-- [gRPC official docs — authentication](https://grpc.io/docs/guides/auth/) — bearer token passing, interceptor-based validation. HIGH confidence.
-- [gRPC official docs — status codes](https://grpc.io/docs/guides/status-codes/) — canonical status code definitions and when to use each. HIGH confidence.
-- [gRPC official docs — health checking](https://grpc.io/docs/guides/health-checking/) — standard grpc.health.v1 protocol, Check vs Watch RPCs. HIGH confidence.
-- [tonic GitHub (v0.14.5, Feb 2026)](https://github.com/hyperium/tonic) — current stable version, rustls TLS, tonic-health, tonic-reflection. HIGH confidence.
-- [tonic-health crate docs](https://docs.rs/tonic-health) — standard grpc.health.v1 implementation for tonic. HIGH confidence.
-- [Proto3 best practices (protobuf.dev)](https://protobuf.dev/best-practices/dos-donts/) — never reuse tag numbers, reserve deleted fields, use google.protobuf.Timestamp, make all fields optional. HIGH confidence.
-- [Qdrant gRPC API services (DeepWiki)](https://deepwiki.com/qdrant/qdrant/9.2-grpc-api-services) — UpsertPoints, SearchPoints, GetPoints, DeletePoints message shapes. MEDIUM confidence.
-- [Weaviate gRPC API docs](https://docs.weaviate.io/weaviate/api/grpc) — proto file organization, batch.proto, search_get.proto, base.proto pattern. MEDIUM confidence.
-- [Axum + Tonic hybrid service pattern](https://academy.fpblock.com/blog/axum-hyper-tonic-tower-part4/) — Content-Type inspection for same-port routing; confirms separate port is simpler. MEDIUM confidence.
-- [Mnemosyne gRPC memory service](https://rand.github.io/mnemosyne/) — MemoryService with 13 methods including streaming; HealthService pattern. MEDIUM confidence.
-- [gRPC basics for Rust developers (DockYard, 2025)](https://dockyard.com/blog/2025/04/08/grpc-basics-for-rust-developers) — tonic setup, build.rs codegen, async/await patterns. MEDIUM confidence.
+- [Qdrant Web UI documentation](https://qdrant.tech/documentation/web-ui/) — points tab, collections browser, search panel, snapshot management. MEDIUM confidence.
+- [PromLabs — Prometheus 3.0 UI overview](https://promlabs.com/blog/2024/09/11/a-look-at-the-new-prometheus-3-0-ui/) — metrics explorer, tree view, dark mode, embedded React (Mantine) frontend. HIGH confidence.
+- [Agent Zero Memory Dashboard (DeepWiki)](https://deepwiki.com/agent0ai/agent-zero/5.6-memory-dashboard) — semantic search, area filters, detail panel, CRUD actions, read-only dashboard pattern. MEDIUM confidence.
+- [VectorAdmin GitHub](https://github.com/Mintplex-Labs/vector-admin) — per-namespace statistics component, point counts, activity graphs, multi-backend management. MEDIUM confidence.
+- [RedisInsight documentation](https://redis.io/docs/latest/develop/tools/insight/) — key browser with bulk delete, SlowLog, Workbench, real-time metrics. HIGH confidence.
+- [rust-embed crates.io](https://crates.io/crates/rust-embed) — compile-time file embedding with feature-gate support, compression (brotli/gzip). HIGH confidence.
+- [axum-embed crates.io](https://crates.io/crates/axum-embed) — axum service for rust-embed, SPA fallback routing to index.html. HIGH confidence.
+- [Preact vs React bundle size comparison (2025)](https://medium.com/@marketing_96787/preact-vs-react-in-2025-which-javascript-framework-delivers-the-best-performance-f2ded55808a4) — Preact ~3KB gzipped vs React ~40KB; Preact Signals for reactive state. MEDIUM confidence.
+- [Axum + rust-embed SPA pattern](https://github.com/tokio-rs/axum/discussions/1309) — serving embedded SPA with fallback to index.html; confirmed pattern for axum 0.7+. MEDIUM confidence.
+- [Dashboard UX patterns — Pencil & Paper](https://www.pencilandpaper.io/articles/ux-pattern-analysis-data-dashboards) — operational dashboard design: status-first layout, filter-then-paginate, real-time vs manual refresh tradeoffs. MEDIUM confidence.
+- [Data table UX patterns — Pencil & Paper](https://www.pencilandpaper.io/articles/ux-pattern-analysis-enterprise-data-tables) — 25-row default pages, top-level search + filter combination, row expand for detail. MEDIUM confidence.
 
 ---
-*Feature research for: Mnemonic v1.5 gRPC Interface*
+*Feature research for: Mnemonic v1.6 Embedded Web Dashboard*
 *Researched: 2026-03-22*
