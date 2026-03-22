@@ -113,7 +113,12 @@ Plans:
   3. User can expand a memory row to read its full content and all metadata fields
   4. User can view a per-agent breakdown table (memory count, last-active timestamp) populated from the new `GET /stats` endpoint
   5. Dashboard header shows a live health indicator and active storage backend name from `GET /health`; when API keys are active, the dashboard prompts for an `mnk_...` bearer token stored only in component state (never localStorage), and all `/ui/` responses include a Content-Security-Policy header
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 31-01-PLAN.md — Backend: GET /stats endpoint + CSP header + integration tests
+- [ ] 31-02-PLAN.md — App shell: auth gate, hash router, header, tab bar, login screen
+- [ ] 31-03-PLAN.md — Memories tab: paginated table, filters, expandable rows
+- [ ] 31-04-PLAN.md — Search tab + Agents tab: semantic search with distance bars, agent breakdown
 **UI hint**: yes
 
 ### Phase 32: Operational Actions
@@ -162,5 +167,5 @@ Plans:
 | 28. Core RPC Handlers, Health, and Discoverability | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 29. StorageBackend Routing Fix | v1.5 | 1/1 | Complete | 2026-03-22 |
 | 30. Dashboard Foundation | v1.6 | 2/2 | Complete    | 2026-03-22 |
-| 31. Core UI | v1.6 | 0/TBD | Not started | - |
+| 31. Core UI | v1.6 | 0/4 | Not started | - |
 | 32. Operational Actions | v1.6 | 0/TBD | Not started | - |
