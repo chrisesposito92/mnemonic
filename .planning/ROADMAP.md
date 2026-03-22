@@ -85,7 +85,10 @@
   3. CI release workflow passes with protoc installed — no cryptic missing-file errors on any build target
   4. `cargo tree -d | grep -E "tonic|prost"` shows zero duplicate entries, and the chosen tonic/prost version is documented in a comment in Cargo.toml
   5. All gRPC dependencies (tonic, prost, tonic-build, tonic-health, tonic-reflection) are behind the `interface-grpc` feature flag — default binary carries no new dependencies
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 26-01-PLAN.md — Proto file, feature-gated Cargo.toml dependencies, and conditional build.rs codegen
+- [ ] 26-02-PLAN.md — CI release workflow protoc installation
 
 ### Phase 27: Dual-Server Skeleton and Auth Layer
 **Goal**: `mnemonic serve` starts both REST and gRPC on separate ports simultaneously, the async Tower auth layer rejects invalid tokens and passes open-mode traffic, and grpc_port is configurable
@@ -150,7 +153,7 @@
 | 23. Qdrant Backend | v1.4 | 2/2 | Complete | 2026-03-21 |
 | 24. Postgres Backend | v1.4 | 2/2 | Complete | 2026-03-21 |
 | 25. Config Redaction Fix & Tech Debt Cleanup | v1.4 | 1/1 | Complete | 2026-03-22 |
-| 26. Proto Foundation | v1.5 | 0/? | Not started | - |
+| 26. Proto Foundation | v1.5 | 0/2 | Not started | - |
 | 27. Dual-Server Skeleton and Auth Layer | v1.5 | 0/? | Not started | - |
 | 28. Core RPC Handlers, Health, and Discoverability | v1.5 | 0/? | Not started | - |
 | 29. StorageBackend Routing Fix | v1.5 | 0/? | Not started | - |
