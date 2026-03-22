@@ -15,6 +15,7 @@ Mnemonic is a single binary that gives any AI agent durable, semantically search
   - [Key Management](#key-management-endpoints)
 - [Storage Backends](#storage-backends)
 - [gRPC Interface](#grpc-interface)
+- [Dashboard](#dashboard)
 - [CLI](#cli) (serve, remember, recall, search, compact, keys, config)
 - [Usage Examples](#usage-examples)
 - [How It Works](#how-it-works)
@@ -632,6 +633,38 @@ Or in `mnemonic.toml`:
 ```toml
 grpc_port = 50051
 ```
+
+---
+
+## Dashboard
+
+Mnemonic offers an optional embedded web dashboard for visual memory exploration and server monitoring. It is compiled into the binary via the `dashboard` Cargo feature — no separate frontend process needed.
+
+### Prebuilt Binary
+
+Download the `-dashboard` variant from the [releases page](https://github.com/chrisesposito92/mnemonic/releases):
+
+- `mnemonic-linux-x86_64-dashboard.tar.gz`
+- `mnemonic-macos-x86_64-dashboard.tar.gz`
+- `mnemonic-macos-aarch64-dashboard.tar.gz`
+
+Start the server and visit `http://localhost:8080/ui/`.
+
+### Building from Source
+
+The dashboard requires a Node.js build step before the Rust build:
+
+```bash
+# 1. Build frontend assets (requires Node.js 22+)
+cd dashboard && npm ci && npm run build && cd ..
+
+# 2. Build Rust binary with dashboard embedded
+cargo build --features dashboard
+```
+
+**Important:** `cargo build --features dashboard` will fail with a compile-time error if `dashboard/dist/index.html` does not exist. You must run the npm build first.
+
+The default `cargo build` (without `--features dashboard`) is unaffected — it produces the same slim binary as before with zero dashboard dependencies.
 
 ---
 

@@ -63,10 +63,17 @@ pub fn build_router(state: AppState) -> Router {
     let public = Router::new()
         .route("/health", get(health_handler));
 
-    Router::new()
+    let mut router = Router::new()
         .merge(protected)
         .merge(public)
-        .with_state(state)
+        .with_state(state);
+
+    #[cfg(feature = "dashboard")]
+    {
+        router = router.merge(crate::dashboard::router());
+    }
+
+    router
 }
 
 /// Centralized scope enforcement for all memory/compaction handlers.
