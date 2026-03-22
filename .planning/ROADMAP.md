@@ -77,7 +77,7 @@
 
 </details>
 
-### 🚧 v1.6 Web UI/Dashboard (In Progress)
+### v1.6 Web UI/Dashboard (In Progress)
 
 **Milestone Goal:** Embed a lightweight operational dashboard into the mnemonic binary for visual memory exploration, agent/session monitoring, and compaction triggering — served at `/ui`, feature-gated behind `dashboard`, zero impact on default binary.
 
@@ -97,7 +97,10 @@
   3. CI release workflow runs `npm ci && npm run build` in `dashboard/` before `cargo build --release --features dashboard`, producing a release artifact with an embedded UI
   4. A separate CI job runs `cargo build` (default features) + `cargo test` as a regression gate — failure blocks the release
   5. Build fails with a clear compile-time error if `--features dashboard` is set but `dashboard/dist/index.html` is missing
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 30-01-PLAN.md — Frontend scaffold + Rust feature gate wiring
+- [ ] 30-02-PLAN.md — Integration tests + CI release workflow
 **UI hint**: yes
 
 ### Phase 31: Core UI
@@ -158,6 +161,6 @@
 | 27. Dual-Server Skeleton and Auth Layer | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 28. Core RPC Handlers, Health, and Discoverability | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 29. StorageBackend Routing Fix | v1.5 | 1/1 | Complete | 2026-03-22 |
-| 30. Dashboard Foundation | v1.6 | 0/TBD | Not started | - |
+| 30. Dashboard Foundation | v1.6 | 0/2 | Planning | - |
 | 31. Core UI | v1.6 | 0/TBD | Not started | - |
 | 32. Operational Actions | v1.6 | 0/TBD | Not started | - |
