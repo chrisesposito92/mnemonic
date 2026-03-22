@@ -161,6 +161,6 @@ Plans:
 | 27. Dual-Server Skeleton and Auth Layer | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 28. Core RPC Handlers, Health, and Discoverability | v1.5 | 2/2 | Complete | 2026-03-22 |
 | 29. StorageBackend Routing Fix | v1.5 | 1/1 | Complete | 2026-03-22 |
-| 30. Dashboard Foundation | v1.6 | 2/2 | Complete   | 2026-03-22 |
+| 30. Dashboard Foundation | v1.6 | 2/2 | Complete    | 2026-03-22 |
 | 31. Core UI | v1.6 | 0/TBD | Not started | - |
 | 32. Operational Actions | v1.6 | 0/TBD | Not started | - |
