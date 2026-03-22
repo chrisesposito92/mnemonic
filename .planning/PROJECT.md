@@ -71,13 +71,24 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-(No active milestone — v1.5 shipped. Run `/gsd:new-milestone` to define next.)
+## Current Milestone: v1.6 Web UI/Dashboard
+
+**Goal:** Embed a lightweight operational dashboard into the mnemonic binary for visual memory exploration, agent/session monitoring, and compaction triggering.
+
+**Target features:**
+- Browse and search stored memories with filtering (agent, session, tags)
+- Agent and session breakdown views (counts, activity)
+- Storage usage and recent activity overview
+- Visual compaction trigger (with dry-run preview)
+- Embedded Preact + Tailwind frontend served at `/ui`, compiled into binary via rust-embed/include_dir
+- Feature-gated behind `dashboard` flag (default binary unchanged)
+- Respects existing API key auth when keys are active
 
 ### Out of Scope
 
 - Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
-- Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
+- Web UI / dashboard — ~~adds frontend build pipeline, violates single-binary simplicity~~ → Moved to v1.6 scope: embedded at compile time via rust-embed, feature-gated behind `dashboard` flag
 - gRPC support for compaction/keys — hot-path only; compaction and key management stay REST-only to limit interface surface
 - Memory decay / TTL — surprising behavior that silently loses data
 - Multi-node / distributed mode — SQLite not designed for multi-writer distributed use
@@ -95,7 +106,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ## Context
 
-v1.5 shipped with 29 phases (52 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4 + 7 v1.5).
+v1.5 shipped with 29 phases (52 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4 + 7 v1.5). v1.6 adds an embedded web dashboard (Preact + Tailwind) served from the binary at /ui, feature-gated behind `dashboard`.
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional), tonic + prost (optional, interface-grpc).
 ~11,940 lines of Rust. 286 tests passing, 1 ignored, zero compiler warnings. MIT licensed.
 Dual-protocol server: REST (axum) on configurable port (default 8080) + gRPC (tonic) on configurable grpc_port (default 50051), started simultaneously via tokio::try_join!.
@@ -182,4 +193,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-22 after v1.5 milestone*
+*Last updated: 2026-03-22 after v1.6 milestone start*

@@ -1,15 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.5
-milestone_name: gRPC
-status: Archived
-stopped_at: Milestone v1.5 archived
-last_updated: "2026-03-22T19:00:00.000Z"
+milestone: v1.6
+milestone_name: Web UI/Dashboard
+status: Active
+stopped_at: Defining requirements
+last_updated: "2026-03-22T20:00:00.000Z"
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 7
-  completed_plans: 7
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # Project State
@@ -19,11 +19,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** v1.5 shipped — planning next milestone
+**Current focus:** v1.6 Web UI/Dashboard — defining requirements
 
 ## Current Position
 
-Milestone v1.5 archived. No active milestone.
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-22 — Milestone v1.6 started
 
 ## Performance Metrics
 
@@ -60,5 +63,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-22
-Stopped at: Milestone v1.5 archived
+Stopped at: Milestone v1.6 started — defining requirements
 Resume file: None
