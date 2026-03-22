@@ -69,6 +69,10 @@ Any AI agent can store and semantically search memories out of the box with zero
 - CI release workflow updated with protoc installation for all build targets — v1.5
 - Recall CLI routed through StorageBackend trait (all backends) instead of raw SQLite — v1.5
 
+- Dashboard Cargo feature gate with rust-embed + axum-embed serving embedded SPA at /ui — v1.6
+- Preact + TypeScript + Tailwind v4 + Vite frontend compiled to single-file dist/index.html — v1.6
+- CI release workflow produces dual artifacts (slim + dashboard) with regression gate — v1.6
+
 ### Active
 
 ## Current Milestone: v1.6 Web UI/Dashboard
@@ -108,7 +112,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 v1.5 shipped with 29 phases (52 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4 + 7 v1.5). v1.6 adds an embedded web dashboard (Preact + Tailwind) served from the binary at /ui, feature-gated behind `dashboard`.
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional), tonic + prost (optional, interface-grpc).
-~11,940 lines of Rust. 286 tests passing, 1 ignored, zero compiler warnings. MIT licensed.
+~12,200 lines of Rust. 292+ tests passing (54 lib + integration), 1 ignored, zero compiler warnings. MIT licensed. Phase 30 complete — dashboard foundation shipped.
 Dual-protocol server: REST (axum) on configurable port (default 8080) + gRPC (tonic) on configurable grpc_port (default 50051), started simultaneously via tokio::try_join!.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
 4 gRPC RPCs: StoreMemory, SearchMemories, ListMemories, DeleteMemory — same semantics as REST, with tonic-health and tonic-reflection for discoverability.
@@ -174,6 +178,10 @@ Single-binary distribution — no Python, no Docker, no external services requir
 | Duplicate enforce_scope in grpc/mod.rs | Avoids importing axum-specific types into gRPC module; isolated concern | Good — v1.5 |
 | init_recall() fast-path (no validate_config, no embedding) | Recall only needs DB + backend for list/get_by_id; keeps ~50ms startup | Good — v1.5 |
 | postgres_url treated as secret (redacted in config show) | Credentials may be embedded in connection string; consistent with other secrets | Good — v1.4 |
+| rust-embed 8.11 + axum-embed 0.1 for dashboard | Compile-time asset embedding; both optional deps behind dashboard feature | Good — v1.6 |
+| vite-plugin-singlefile for single index.html | All JS+CSS inlined; base:/ui/ fallback if singlefile fails | Good — v1.6 |
+| Hash routing (#/path) over history routing | Avoids SPA hard-reload 404s at zero cost | Good — v1.6 |
+| Dashboard router merged at top level (not inside protected) | Prevents auth middleware from blocking asset loads | Good — v1.6 |
 
 ## Evolution
 
@@ -193,4 +201,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-22 after v1.6 milestone start*
+*Last updated: 2026-03-22 after Phase 30 (Dashboard Foundation) completion*
