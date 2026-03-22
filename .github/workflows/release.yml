@@ -29,6 +29,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: dashboard/.node-version
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Build dashboard
+        run: |
+          cd dashboard
+          npm ci
+          npm run build
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,24 +52,50 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build binary
+      - name: Build slim binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Stage binary
+      - name: Build dashboard binary
+        run: cargo build --release --target ${{ matrix.target }} --features dashboard
+
+      - name: Stage artifacts
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/mnemonic dist/${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/mnemonic dist/${{ matrix.artifact }}-dashboard
           tar -czf dist/${{ matrix.artifact }}.tar.gz -C dist ${{ matrix.artifact }}
+          tar -czf dist/${{ matrix.artifact }}-dashboard.tar.gz -C dist ${{ matrix.artifact }}-dashboard
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.tar.gz
+          path: dist/*.tar.gz
+
+  regression:
+    name: Default Binary Regression
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build default binary
+        run: cargo build
+
+      - name: Run tests
+        run: cargo test
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, regression]
     runs-on: ubuntu-latest
     permissions:
       contents: write
