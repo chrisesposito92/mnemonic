@@ -13,6 +13,9 @@ mod service;
 mod storage;
 mod summarization;
 
+#[cfg(feature = "interface-grpc")]
+mod grpc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI args FIRST — before any I/O or initialization (per D-04)
@@ -35,8 +38,8 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Some(cli::Commands::Recall(recall_args)) => {
-            let (conn_arc, _config) = cli::init_db(db_override).await?;
-            cli::run_recall(recall_args, conn_arc, json).await;
+            let (backend, _config) = cli::init_recall(db_override).await?;
+            cli::run_recall(recall_args, backend, json).await;
             return Ok(());
         }
         Some(cli::Commands::Remember(mut args)) => {
@@ -237,14 +240,42 @@ async fn main() -> Result<()> {
         )
     );
 
-    // 7. Start axum server
+    // 7. Start server(s)
     let state = server::AppState {
-        service,
-        compaction,
-        key_service,
-        backend_name: config.storage_provider.clone(),  // per D-24
+        service: service.clone(),
+        compaction: compaction.clone(),
+        key_service: key_service.clone(),
+        backend_name: config.storage_provider.clone(),
     };
-    server::serve(&config, state).await?;
+
+    #[cfg(feature = "interface-grpc")]
+    {
+        // Build gRPC service struct sharing the same Arc instances (per D-12)
+        let grpc_svc = grpc::MnemonicGrpcService {
+            memory_service: service,
+            key_service,
+            compaction_service: compaction,
+            backend_name: config.storage_provider.clone(),
+        };
+
+        tracing::info!(
+            rest_port = config.port,
+            grpc_port = config.grpc_port,
+            "REST listening on 0.0.0.0:{}, gRPC listening on 0.0.0.0:{}",
+            config.port,
+            config.grpc_port
+        );
+
+        // Dual-port startup: first error propagates, both shut down (per D-04, D-06)
+        let rest_fut = server::serve(&config, state);
+        let grpc_fut = grpc::serve_grpc(&config, grpc_svc);
+        tokio::try_join!(rest_fut, grpc_fut)?;
+    }
+
+    #[cfg(not(feature = "interface-grpc"))]
+    {
+        server::serve(&config, state).await?;
+    }
 
     Ok(())
 }

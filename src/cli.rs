@@ -186,6 +186,7 @@ pub fn run_config_show(json_mode: bool) {
         // JSON output with redaction (per D-20)
         let obj = serde_json::json!({
             "port": config.port,
+            "grpc_port": config.grpc_port,
             "db_path": config.db_path,
             "storage_provider": config.storage_provider,
             "embedding_provider": config.embedding_provider,
@@ -203,6 +204,7 @@ pub fn run_config_show(json_mode: bool) {
         // Human-readable output grouped logically (per D-18)
         println!("Server:");
         println!("  port             {}", config.port);
+        println!("  grpc_port          {}", config.grpc_port);
         println!("  db_path          {}", config.db_path);
         println!();
         println!("Storage:");
@@ -261,6 +263,17 @@ pub async fn init_db(db_override: Option<String>)
         .map_err(|e| anyhow::anyhow!(e))?;
     let conn_arc = std::sync::Arc::new(conn);
     Ok((conn_arc, config))
+}
+
+/// Fast-path init for `mnemonic recall` -- DB + backend, no embedding.
+/// Returns Arc<dyn StorageBackend> for trait-based list/get_by_id.
+pub async fn init_recall(
+    db_override: Option<String>,
+) -> anyhow::Result<(std::sync::Arc<dyn crate::storage::StorageBackend>, crate::config::Config)> {
+    let (conn_arc, config) = init_db(db_override).await?;
+    let backend = crate::storage::create_backend(&config, conn_arc).await
+        .map_err(|e| anyhow::anyhow!("backend creation failed: {}", e))?;
+    Ok((backend, config))
 }
 
 /// Medium-init: DB + embedding engine for commands that need to embed content.
@@ -452,16 +465,16 @@ pub async fn run_compact(args: CompactArgs, compaction: crate::compaction::Compa
 }
 
 /// Entry point for `mnemonic recall` — dispatches to list or get-by-id.
-pub async fn run_recall(args: RecallArgs, conn: std::sync::Arc<tokio_rusqlite::Connection>, json: bool) {
+pub async fn run_recall(args: RecallArgs, backend: std::sync::Arc<dyn crate::storage::StorageBackend>, json: bool) {
     if let Some(id) = args.id {
         // Runtime mutual exclusivity check: --id cannot be combined with filter flags
         if args.agent_id.is_some() || args.session_id.is_some() || args.limit != 20 {
             eprintln!("error: --id cannot be combined with --agent-id, --session-id, or --limit");
             std::process::exit(1);
         }
-        cmd_get_memory(conn, id, json).await;
+        cmd_get_memory(backend.clone(), id, json).await;
     } else {
-        cmd_list_memories(conn, args.agent_id, args.session_id, args.limit, json).await;
+        cmd_list_memories(backend, args.agent_id, args.session_id, args.limit, json).await;
     }
 }
 
@@ -565,67 +578,29 @@ pub async fn run_search(query: String, args: SearchArgs, service: crate::service
 
 /// Handler for `mnemonic recall` (no --id) — lists memories in table format.
 async fn cmd_list_memories(
-    conn: std::sync::Arc<tokio_rusqlite::Connection>,
+    backend: std::sync::Arc<dyn crate::storage::StorageBackend>,
     agent_id: Option<String>,
     session_id: Option<String>,
     limit: u32,
     json: bool,
 ) {
-    let limit_i64 = limit as i64;
-    let agent_id_c = agent_id.clone();
-    let session_id_c = session_id.clone();
-
-    let result = conn.call(move |c| -> Result<(Vec<crate::service::Memory>, u64), rusqlite::Error> {
-        let filter_clause = "WHERE (?1 IS NULL OR agent_id = ?1)
-              AND (?2 IS NULL OR session_id = ?2)";
-
-        // Count query for footer
-        let count_sql = format!("SELECT COUNT(*) FROM memories {}", filter_clause);
-        let total: u64 = c.query_row(
-            &count_sql,
-            rusqlite::params![agent_id_c, session_id_c],
-            |row| row.get(0),
-        )?;
-
-        // Results query
-        let results_sql = format!(
-            "SELECT id, content, agent_id, session_id, tags, embedding_model, created_at, updated_at
-             FROM memories {}
-             ORDER BY created_at DESC
-             LIMIT ?3",
-            filter_clause
-        );
-
-        let mut stmt = c.prepare(&results_sql)?;
-        let rows = stmt.query_map(
-            rusqlite::params![agent_id, session_id, limit_i64],
-            |row| {
-                let tags_str: String = row.get(4)?;
-                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-                Ok(crate::service::Memory {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    agent_id: row.get(2)?,
-                    session_id: row.get(3)?,
-                    tags,
-                    embedding_model: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
-                })
-            },
-        )?;
-
-        let memories = rows.collect::<Result<Vec<_>, _>>()?;
-        Ok((memories, total))
-    }).await;
+    let params = crate::service::ListParams {
+        agent_id,
+        session_id,
+        limit: Some(limit),
+        tag: None,
+        after: None,
+        before: None,
+        offset: None,
+    };
+    let result = backend.list(params).await;
 
     match result {
-        Ok((memories, total)) => {
+        Ok(resp) => {
             if json {
-                let list_resp = crate::service::ListResponse { memories, total };
-                println!("{}", serde_json::to_string_pretty(&list_resp).unwrap());
+                println!("{}", serde_json::to_string_pretty(&resp).unwrap());
             } else {
-                if memories.is_empty() {
+                if resp.memories.is_empty() {
                     println!("No memories found.");
                     return;
                 }
@@ -635,7 +610,7 @@ async fn cmd_list_memories(
                 println!("{}", header);
                 println!("{}", "-".repeat(header.len()));
 
-                for mem in &memories {
+                for mem in &resp.memories {
                     let id_short = if mem.id.len() >= 8 { &mem.id[..8] } else { &mem.id };
                     let content = truncate(&mem.content, 60);
                     let agent = if mem.agent_id.is_empty() {
@@ -652,7 +627,7 @@ async fn cmd_list_memories(
                 }
 
                 // Footer
-                println!("Showing {} of {} memories", memories.len(), total);
+                println!("Showing {} of {} memories", resp.memories.len(), resp.total);
             }
         }
         Err(e) => {
@@ -663,30 +638,8 @@ async fn cmd_list_memories(
 }
 
 /// Handler for `mnemonic recall --id <uuid>` — displays full memory detail.
-async fn cmd_get_memory(conn: std::sync::Arc<tokio_rusqlite::Connection>, id: String, json: bool) {
-    let id_clone = id.clone();
-
-    let result = conn.call(move |c| -> Result<Option<crate::service::Memory>, rusqlite::Error> {
-        use rusqlite::OptionalExtension;
-        let mut stmt = c.prepare(
-            "SELECT id, content, agent_id, session_id, tags, embedding_model, created_at, updated_at
-             FROM memories WHERE id = ?1"
-        )?;
-        stmt.query_row(rusqlite::params![id_clone], |row| {
-            let tags_str: String = row.get(4)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            Ok(crate::service::Memory {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                agent_id: row.get(2)?,
-                session_id: row.get(3)?,
-                tags,
-                embedding_model: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        }).optional()
-    }).await;
+async fn cmd_get_memory(backend: std::sync::Arc<dyn crate::storage::StorageBackend>, id: String, json: bool) {
+    let result = backend.get_by_id(&id).await;
 
     match result {
         Ok(Some(mem)) => {
@@ -929,6 +882,80 @@ mod tests {
         };
         let conn = crate::db::open(&config).await.unwrap();
         crate::auth::KeyService::new(std::sync::Arc::new(conn))
+    }
+
+    async fn test_backend() -> std::sync::Arc<dyn crate::storage::StorageBackend> {
+        crate::db::register_sqlite_vec();
+        let config = crate::config::Config {
+            port: 0,
+            db_path: ":memory:".to_string(),
+            ..crate::config::Config::default()
+        };
+        let conn = crate::db::open(&config).await.unwrap();
+        let conn_arc = std::sync::Arc::new(conn);
+        crate::storage::create_backend(&config, conn_arc).await.unwrap()
+    }
+
+    // ---- recall delegation tests ----
+
+    #[tokio::test]
+    async fn test_recall_list_delegates_to_backend() {
+        let backend = test_backend().await;
+        // Seed a memory via the trait (not raw SQL)
+        let store_req = crate::storage::StoreRequest {
+            id: uuid::Uuid::now_v7().to_string(),
+            content: "test memory content".to_string(),
+            agent_id: "agent-1".to_string(),
+            session_id: "sess-1".to_string(),
+            tags: vec![],
+            embedding: vec![0.0; 384],
+            embedding_model: "test".to_string(),
+        };
+        backend.store(store_req).await.unwrap();
+
+        // Verify backend.list() returns the seeded memory
+        let params = crate::service::ListParams {
+            agent_id: Some("agent-1".to_string()),
+            session_id: None,
+            tag: None,
+            after: None,
+            before: None,
+            limit: Some(20),
+            offset: None,
+        };
+        let resp = backend.list(params).await.unwrap();
+        assert_eq!(resp.memories.len(), 1);
+        assert_eq!(resp.memories[0].content, "test memory content");
+        assert_eq!(resp.total, 1);
+
+        // Call cmd_list_memories with the backend -- verifies it compiles and runs
+        // against Arc<dyn StorageBackend> (not raw Connection)
+        cmd_list_memories(backend, Some("agent-1".to_string()), None, 20, false).await;
+    }
+
+    #[tokio::test]
+    async fn test_recall_get_by_id_delegates_to_backend() {
+        let backend = test_backend().await;
+        // Seed a memory
+        let id = uuid::Uuid::now_v7().to_string();
+        let store_req = crate::storage::StoreRequest {
+            id: id.clone(),
+            content: "specific memory".to_string(),
+            agent_id: "agent-2".to_string(),
+            session_id: "".to_string(),
+            tags: vec![],
+            embedding: vec![0.0; 384],
+            embedding_model: "test".to_string(),
+        };
+        let stored = backend.store(store_req).await.unwrap();
+
+        // Verify backend.get_by_id() returns the memory
+        let fetched = backend.get_by_id(&stored.id).await.unwrap();
+        assert!(fetched.is_some());
+        assert_eq!(fetched.unwrap().content, "specific memory");
+
+        // Call cmd_get_memory with the backend -- verifies trait delegation
+        cmd_get_memory(backend, stored.id, false).await;
     }
 
     // ---- cmd_create ----

@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A single Rust binary that gives any AI agent persistent memory via a simple REST API and full CLI — including agent-triggered memory compaction with optional LLM summarization, API key authentication, pluggable storage backends (SQLite, Qdrant, Postgres), and terminal-native subcommands for every operation. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
+A single Rust binary that gives any AI agent persistent memory via REST API and gRPC — including agent-triggered memory compaction with optional LLM summarization, API key authentication, pluggable storage backends (SQLite, Qdrant, Postgres), and terminal-native subcommands for every operation. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
 
 ## Core Value
 
@@ -61,26 +61,24 @@ Any AI agent can store and semantically search memories out of the box with zero
 - pgvector cosine distance via `<=>` operator with HNSW index for search — v1.4
 - Postgres transactions for atomic compaction (BEGIN/INSERT/DELETE/COMMIT) — v1.4
 - Multi-agent namespace isolation via SQL WHERE agent_id filtering — v1.4
+- MnemonicService proto contract (4 RPCs) with feature-gated tonic 0.13 / prost 0.13 build pipeline — v1.5
+- Dual-port REST+gRPC startup via tokio::try_join! with configurable grpc_port (default 50051) — v1.5
+- Async Tower auth layer for gRPC with open-mode bypass, bearer token validation, scope enforcement — v1.5
+- StoreMemory, SearchMemories, ListMemories, DeleteMemory gRPC handlers with status code mapping — v1.5
+- tonic-health standard health service and tonic-reflection for grpcurl discoverability — v1.5
+- CI release workflow updated with protoc installation for all build targets — v1.5
+- Recall CLI routed through StorageBackend trait (all backends) instead of raw SQLite — v1.5
 
 ### Active
 
-#### Current Milestone: v1.5 gRPC
-
-**Goal:** Add a gRPC interface for high-throughput agent-to-server communication alongside the existing REST API.
-
-**Target features:**
-- gRPC service definition (.proto) for hot-path operations (store, search, recall/list, delete, health)
-- Tonic-based gRPC server on a separate port alongside REST (dual protocol)
-- Unary RPCs mirroring REST behavior — no streaming
-- gRPC configuration (port, optional TLS)
-- Fix recall CLI to route through StorageBackend trait (v1.4 tech debt)
+(No active milestone — v1.5 shipped. Run `/gsd:new-milestone` to define next.)
 
 ### Out of Scope
 
 - Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
 - Web UI / dashboard — adds frontend build pipeline, violates single-binary simplicity
-- gRPC support for compaction/keys — hot-path only in v1.5; compaction and key management stay REST-only to limit interface surface
+- gRPC support for compaction/keys — hot-path only; compaction and key management stay REST-only to limit interface surface
 - Memory decay / TTL — surprising behavior that silently loses data
 - Multi-node / distributed mode — SQLite not designed for multi-writer distributed use
 - Session-scoped compaction — agent_id scoping sufficient; session_id adds complexity
@@ -97,15 +95,17 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ## Context
 
-v1.4 shipped with 25 phases (45 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4). Storage layer is now pluggable via StorageBackend trait — SQLite remains the zero-config default, with Qdrant and Postgres as opt-in alternatives behind feature flags.
-v1.5 adds a gRPC interface (tonic) for high-throughput agent-to-server communication, running alongside REST on a separate port.
-Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional).
-~10,763 lines of Rust. 286 tests passing, 1 ignored, zero compiler warnings. MIT licensed.
+v1.5 shipped with 29 phases (52 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4 + 7 v1.5).
+Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional), tonic + prost (optional, interface-grpc).
+~11,940 lines of Rust. 286 tests passing, 1 ignored, zero compiler warnings. MIT licensed.
+Dual-protocol server: REST (axum) on configurable port (default 8080) + gRPC (tonic) on configurable grpc_port (default 50051), started simultaneously via tokio::try_join!.
 9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
+4 gRPC RPCs: StoreMemory, SearchMemories, ListMemories, DeleteMemory — same semantics as REST, with tonic-health and tonic-reflection for discoverability.
 CLI: 7 subcommands — `serve`, `remember`, `recall`, `search`, `compact`, `keys`, `config` — all with `--json` flag, consistent exit codes, stdout/stderr separation.
+Pluggable storage via StorageBackend trait — SQLite (default), Qdrant, Postgres+pgvector. All backends behind feature flags.
 Init tiers: DB-only (~50ms) for keys/recall/config, medium (DB+embedding, ~2-3s) for remember/search, full (DB+embedding+LLM) for compact.
 Target users: AI agent developers who need persistent memory across sessions.
-Single-binary distribution — no Python, no Docker, no external services required (SQLite default). Optional Qdrant or Postgres backends for teams wanting scalable infrastructure.
+Single-binary distribution — no Python, no Docker, no external services required (SQLite default).
 
 ## Constraints
 
@@ -155,6 +155,13 @@ Single-binary distribution — no Python, no Docker, no external services requir
 | Per-cluster write_compaction_result() atomicity | Replaces all-clusters-in-one-transaction; necessary for backend abstraction | Good — v1.4 |
 | Feature gate errors at create_backend() not validate_config() | Keeps config portable across builds with different feature sets | Good — v1.4 |
 | sqlx default-features=false | Prevents libsqlite3-sys version conflict between sqlx-sqlite and rusqlite 0.37 | Good — v1.4 |
+| tonic 0.13 / prost 0.13 for interface-grpc | Compatible with qdrant-client prost ^0.13.3 anchor; tonic 0.14 would cause prost version conflict | Good — v1.5 |
+| tonic-build non-optional in [build-dependencies] | Build scripts compile as standalone binaries; optional = true causes unresolved module errors on default builds; CARGO_FEATURE env var provides runtime gate | Good — v1.5 |
+| arduino/setup-protoc@v3 unconditional in CI | Free in CI time cost; prevents cryptic missing-file errors when interface-grpc is enabled | Good — v1.5 |
+| Dual-port via tokio::try_join! (not same-port multiplexing) | Documented body-type mismatch bugs (tonic #1964, axum #2825) make same-port unreliable | Good — v1.5 |
+| Async Tower Layer for gRPC auth (not sync interceptor) | KeyService is async; block_on() inside tokio runtime panics | Good — v1.5 |
+| Duplicate enforce_scope in grpc/mod.rs | Avoids importing axum-specific types into gRPC module; isolated concern | Good — v1.5 |
+| init_recall() fast-path (no validate_config, no embedding) | Recall only needs DB + backend for list/get_by_id; keeps ~50ms startup | Good — v1.5 |
 | postgres_url treated as secret (redacted in config show) | Credentials may be embedded in connection string; consistent with other secrets | Good — v1.4 |
 
 ## Evolution
@@ -175,4 +182,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-22 after v1.5 milestone start*
+*Last updated: 2026-03-22 after v1.5 milestone*

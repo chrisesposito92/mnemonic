@@ -1,5 +1,35 @@
 # Milestones
 
+## v1.5 gRPC (Shipped: 2026-03-22)
+
+**Phases completed:** 4 phases, 7 plans, 13 tasks
+
+**Key accomplishments:**
+
+- MnemonicService proto contract locked with tonic 0.13 / prost 0.13, feature-gated build pipeline verified — default binary unchanged, feature build generates Rust types in 10s, incremental build clean at 0.15s
+- Dual-port REST+gRPC startup via tokio::try_join! with configurable grpc_port, tonic-health for health checks
+- Async Tower auth middleware for gRPC — reuses KeyService for open-mode bypass, bearer token validation, and AuthContext injection
+- All 4 gRPC handlers (StoreMemory, SearchMemories, ListMemories, DeleteMemory) with scope enforcement, error mapping, and tonic-reflection for grpcurl discoverability
+- 14 gRPC integration tests covering happy paths, input validation, per-handler scope enforcement, and health/reflection
+- Recall CLI routed through StorageBackend trait — v1.4 tech debt (DEBT-01) resolved
+
+**Delivered:** gRPC interface for high-throughput agent-to-server communication — 4 unary RPCs mirroring REST behavior, async Tower auth layer, tonic-health and tonic-reflection, dual-port serving alongside REST, all behind the `interface-grpc` feature flag.
+
+**Stats:**
+
+- Lines of Rust: 11,940 (total)
+- Lines changed: +1,477 / -90
+- Files modified: 11
+- Feature commits: 14
+- Timeline: 2026-03-22 (1 day)
+- Tests: 286 passing (91 lib + 54 integration + 14 gRPC integration), 1 ignored
+- Requirements: 18/18 satisfied
+- Nyquist: COMPLIANT (all 4 phases)
+- Audit: TECH_DEBT (8 non-critical items, no blockers)
+- Git range: feat(26-01) → feat(29-01)
+
+---
+
 ## v1.4 Pluggable Storage Backends (Shipped: 2026-03-22)
 
 **Phases completed:** 5 phases, 9 plans

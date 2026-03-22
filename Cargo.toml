@@ -15,6 +15,10 @@ categories = ["web-programming::http-server", "database"]
 backend-qdrant = ["dep:qdrant-client", "dep:prost-types"]
 # Postgres backend (implemented in Phase 24)
 backend-postgres = ["dep:sqlx", "dep:pgvector"]
+# gRPC interface (Phase 26). tonic 0.13 / prost 0.13 — pinned to match
+# qdrant-client's prost ^0.13.3 anchor. DO NOT upgrade to tonic 0.14
+# without verifying qdrant-client also moves to prost 0.14.
+interface-grpc = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-health", "dep:tonic-reflection", "dep:tower"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -43,9 +47,20 @@ prost-types = { version = "0.13", optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 pgvector = { version = "0.4", features = ["sqlx"], optional = true }
 reqwest = { version = "0.13", features = ["json"] }
+http = "1"
 zerocopy = { version = "0.8", features = ["derive"] }
 blake3 = "1.8"
 rand = { version = "0.9", features = ["std", "std_rng", "os_rng"] }
+tonic = { version = "0.13", optional = true }
+prost = { version = "0.13", optional = true }
+tonic-health = { version = "0.13", optional = true }
+tonic-reflection = { version = "0.13", optional = true }
+tower = { version = "0.5", optional = true }
+
+[build-dependencies]
+# tonic-build is always present as a build dependency so build.rs compiles correctly.
+# The CARGO_FEATURE_INTERFACE_GRPC env var check in build.rs gates actual proto codegen.
+tonic-build = "0.13"
 
 [dev-dependencies]
 figment = { version = "0.10", features = ["toml", "env", "test"] }

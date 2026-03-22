@@ -9,3 +9,6 @@ pub mod server;
 pub mod service;
 pub mod storage;
 pub mod summarization;
+
+#[cfg(feature = "interface-grpc")]
+pub mod grpc;

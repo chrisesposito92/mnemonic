@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub port: u16,
+    /// Port for the gRPC server. Defaults to 50051. Set via MNEMONIC_GRPC_PORT env var or grpc_port in TOML.
+    pub grpc_port: u16,
     pub db_path: String,
     pub embedding_provider: String,
     pub openai_api_key: Option<String>,
@@ -33,6 +35,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             port: 8080,
+            grpc_port: 50051,
             db_path: "./mnemonic.db".to_string(),
             embedding_provider: "local".to_string(),
             openai_api_key: None,
@@ -146,6 +149,7 @@ mod tests {
         figment::Jail::expect_with(|_jail: &mut figment::Jail| {
             let config = load_config().unwrap();
             assert_eq!(config.port, 8080);
+            assert_eq!(config.grpc_port, 50051);
             assert_eq!(config.db_path, "./mnemonic.db");
             assert_eq!(config.embedding_provider, "local");
             assert!(config.openai_api_key.is_none());
@@ -167,6 +171,16 @@ mod tests {
             jail.set_env("MNEMONIC_PORT", "9090");
             let config = load_config().unwrap();
             assert_eq!(config.port, 9090);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_grpc_port_env_override() {
+        figment::Jail::expect_with(|jail: &mut figment::Jail| {
+            jail.set_env("MNEMONIC_GRPC_PORT", "50052");
+            let config = load_config().unwrap();
+            assert_eq!(config.grpc_port, 50052);
             Ok(())
         });
     }

@@ -1,8 +1,8 @@
 # Mnemonic
 
-Framework-agnostic agent memory server — persistent semantic memory via a simple REST API.
+Framework-agnostic agent memory server — persistent semantic memory via REST API and gRPC.
 
-Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. Optionally protect your instance with API key authentication — scoped to individual agents for enforced namespace isolation. Choose your storage backend — SQLite (zero-config default), Qdrant, or Postgres+pgvector — depending on your scale needs. No external services, no configuration required — it works out of the box with a bundled embedding model.
+Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST or gRPC call, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. Optionally protect your instance with API key authentication — scoped to individual agents for enforced namespace isolation. Choose your storage backend — SQLite (zero-config default), Qdrant, or Postgres+pgvector — depending on your scale needs. For high-throughput agent communication, enable the gRPC interface alongside REST. No external services, no configuration required — it works out of the box with a bundled embedding model.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ Mnemonic is a single binary that gives any AI agent durable, semantically search
   - [POST /memories/compact](#post-memoriescompact)
   - [Key Management](#key-management-endpoints)
 - [Storage Backends](#storage-backends)
+- [gRPC Interface](#grpc-interface)
 - [CLI](#cli) (serve, remember, recall, search, compact, keys, config)
 - [Usage Examples](#usage-examples)
 - [How It Works](#how-it-works)
@@ -47,6 +48,9 @@ curl -s -X POST http://localhost:8080/memories \
 
 ```bash
 cargo install --git https://github.com/chrisesposito92/mnemonic
+
+# With gRPC support
+cargo install --git https://github.com/chrisesposito92/mnemonic --features interface-grpc
 ```
 
 > Note: `cargo install mnemonic` will work after the first crates.io publish.
@@ -73,7 +77,8 @@ All configuration is optional. Mnemonic works with zero configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MNEMONIC_PORT` | `8080` | TCP port to listen on |
+| `MNEMONIC_PORT` | `8080` | REST API TCP port |
+| `MNEMONIC_GRPC_PORT` | `50051` | gRPC TCP port (requires `interface-grpc` feature) |
 | `MNEMONIC_DB_PATH` | `./mnemonic.db` | Path to SQLite database file |
 | `MNEMONIC_EMBEDDING_PROVIDER` | `local` | Embedding provider: `local` or `openai` |
 | `MNEMONIC_OPENAI_API_KEY` | — | OpenAI API key (required when `MNEMONIC_EMBEDDING_PROVIDER=openai`) |
@@ -93,6 +98,7 @@ All configuration is optional. Mnemonic works with zero configuration.
 
 ```toml
 port = 9090
+grpc_port = 50051
 db_path = "/data/mnemonic.db"
 embedding_provider = "local"
 # openai_api_key = "sk-..."
@@ -552,6 +558,83 @@ Mnemonic auto-creates the `vector` extension, table, and HNSW index on first sta
 
 ---
 
+## gRPC Interface
+
+Mnemonic supports an optional gRPC interface for high-throughput agent-to-server communication. The gRPC server runs alongside REST on a separate port. Build with the `interface-grpc` feature flag to enable it.
+
+```bash
+# Build with gRPC support
+cargo build --features interface-grpc
+
+# Start — both REST (port 8080) and gRPC (port 50051) start simultaneously
+./mnemonic
+```
+
+### Proto Definition
+
+The service is defined in `proto/mnemonic.proto` with four unary RPCs:
+
+| RPC | Description |
+|-----|-------------|
+| `StoreMemory` | Store a new memory (content, agent_id, session_id, tags) |
+| `SearchMemories` | Semantic search with ranked results and distance scores |
+| `ListMemories` | List memories with filters and pagination |
+| `DeleteMemory` | Delete a memory by ID |
+
+All RPCs mirror REST behavior — same semantics, same auth, same scope enforcement.
+
+### grpcurl Examples
+
+```bash
+# Health check
+grpcurl -plaintext localhost:50051 grpc.health.v1.Health/Check
+
+# List available services (via reflection)
+grpcurl -plaintext localhost:50051 list
+
+# Store a memory
+grpcurl -plaintext -d '{"content": "The user prefers dark mode", "agent_id": "my-agent"}' \
+  localhost:50051 mnemonic.v1.MnemonicService/StoreMemory
+
+# Search memories
+grpcurl -plaintext -d '{"query": "user preferences", "agent_id": "my-agent", "limit": 5}' \
+  localhost:50051 mnemonic.v1.MnemonicService/SearchMemories
+
+# List memories
+grpcurl -plaintext -d '{"agent_id": "my-agent", "limit": 10}' \
+  localhost:50051 mnemonic.v1.MnemonicService/ListMemories
+
+# Delete a memory
+grpcurl -plaintext -d '{"id": "019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f"}' \
+  localhost:50051 mnemonic.v1.MnemonicService/DeleteMemory
+```
+
+### gRPC Authentication
+
+When API keys exist, gRPC requests require a Bearer token in the `authorization` metadata key:
+
+```bash
+grpcurl -plaintext -H "authorization: Bearer mnk_abc123..." \
+  -d '{"query": "preferences", "agent_id": "my-agent"}' \
+  localhost:50051 mnemonic.v1.MnemonicService/SearchMemories
+```
+
+Scoped keys enforce agent_id isolation — a key scoped to `agent-A` cannot access `agent-B`'s memories (returns `PERMISSION_DENIED`). Health checks and reflection are always public.
+
+### gRPC Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MNEMONIC_GRPC_PORT` | `50051` | gRPC listen port |
+
+Or in `mnemonic.toml`:
+
+```toml
+grpc_port = 50051
+```
+
+---
+
 ## CLI
 
 Mnemonic includes a full CLI with subcommands for every operation. CLI commands operate directly on the database — the server does not need to be running. All subcommands support `--json` for machine-readable output.
@@ -803,6 +886,8 @@ def handle_tool_call(tool_name, args, agent_id):
 ## How It Works
 
 Mnemonic stores memories in a pluggable storage backend accessed through an async `StorageBackend` trait. By default, it uses a single SQLite file with [sqlite-vec](https://github.com/asg017/sqlite-vec) for vector similarity search — zero configuration, everything in one file. Alternatively, you can use [Qdrant](https://qdrant.tech/) (via gRPC) or [Postgres + pgvector](https://github.com/pgvector/pgvector) for teams that need scalable infrastructure. Qdrant and Postgres backends are opt-in via Cargo feature flags — the default binary carries no extra dependencies.
+
+**Dual-protocol serving** is available when built with `--features interface-grpc`. The REST server (axum) and gRPC server (tonic) start simultaneously on separate ports via `tokio::try_join!`. Both share the same `MemoryService`, `KeyService`, and `EmbeddingEngine` instances — no data duplication. The gRPC interface exposes the four hot-path operations (store, search, list, delete) as unary RPCs with identical semantics to REST, plus standard health checking (tonic-health) and service reflection (tonic-reflection) for grpcurl discoverability. An async Tower auth layer provides Bearer token authentication with the same open-mode bypass behavior as REST.
 
 When you POST a memory, Mnemonic embeds the content using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) (~22 MB), a compact but high-quality sentence embedding model, running locally via [candle](https://github.com/huggingface/candle) — a pure-Rust ML framework with no native library dependencies. The model is downloaded from HuggingFace Hub on first run and cached at `~/.cache/huggingface/`. When you search, your query is embedded with the same model and the storage backend finds the closest memories by vector distance. Optionally, you can switch to OpenAI `text-embedding-3-small` by setting `MNEMONIC_OPENAI_API_KEY` — no other configuration needed.
 

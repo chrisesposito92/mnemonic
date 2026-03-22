@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package mnemonic.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service MnemonicService {
+  rpc StoreMemory(StoreMemoryRequest) returns (StoreMemoryResponse);
+  rpc SearchMemories(SearchMemoriesRequest) returns (SearchMemoriesResponse);
+  rpc ListMemories(ListMemoriesRequest) returns (ListMemoriesResponse);
+  rpc DeleteMemory(DeleteMemoryRequest) returns (DeleteMemoryResponse);
+}
+
+// Shared memory type mirroring the REST JSON Memory object (D-05).
+// session_id and tags use proto3 defaults (empty string / empty list) rather
+// than optional wrappers — avoids prost::Option<String> complexity in
+// generated Rust types. Handlers check is_empty() to distinguish "not provided"
+// from "explicitly empty" (matches existing REST behavior).
+message Memory {
+  string id = 1;
+  string content = 2;
+  string agent_id = 3;
+  string session_id = 4;
+  repeated string tags = 5;
+  google.protobuf.Timestamp created_at = 6;
+  string embedding_model = 7;
+}
+
+// StoreMemory — store a new memory
+message StoreMemoryRequest {
+  string content = 1;
+  string agent_id = 2;
+  string session_id = 3;
+  repeated string tags = 4;
+}
+message StoreMemoryResponse {
+  Memory memory = 1;
+}
+
+// SearchMemories — semantic similarity search
+message SearchMemoriesRequest {
+  string query = 1;
+  string agent_id = 2;
+  string session_id = 3;
+  repeated string tags = 4;
+  int32 limit = 5;
+}
+message SearchMemoriesResponse {
+  repeated SearchResult results = 1;
+}
+message SearchResult {
+  Memory memory = 1;
+  float distance = 2;
+}
+
+// ListMemories — list memories with optional filters and pagination
+message ListMemoriesRequest {
+  string agent_id = 1;
+  string session_id = 2;
+  repeated string tags = 3;
+  int32 limit = 4;
+  int32 offset = 5;
+}
+message ListMemoriesResponse {
+  repeated Memory memories = 1;
+  int32 total = 2;
+}
+
+// DeleteMemory — delete a memory by id, returns the deleted memory
+message DeleteMemoryRequest {
+  string id = 1;
+}
+message DeleteMemoryResponse {
+  Memory memory = 1;
+}

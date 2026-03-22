@@ -214,6 +214,53 @@
 
 ---
 
+## Milestone: v1.5 — gRPC
+
+**Shipped:** 2026-03-22
+**Phases:** 4 | **Plans:** 7
+
+### What Was Built
+- MnemonicService proto contract (4 RPCs) with feature-gated tonic 0.13 / prost 0.13 build pipeline
+- Dual-port REST+gRPC startup via tokio::try_join! with configurable grpc_port
+- Async Tower auth layer (GrpcAuthLayer/GrpcAuthService) with open-mode bypass and health/reflection bypass
+- All 4 gRPC handlers (StoreMemory, SearchMemories, ListMemories, DeleteMemory) with scope enforcement and status code mapping
+- tonic-reflection for grpcurl discoverability and tonic-health for health checks
+- 14 gRPC integration tests covering happy paths, input validation, per-handler scope enforcement
+- Recall CLI routed through StorageBackend trait — v1.4 tech debt (DEBT-01) resolved
+
+### What Worked
+- Research phases identified critical constraints upfront: tonic 0.13 needed for prost compatibility with qdrant-client, async Tower Layer required (sync interceptor panics in tokio), dual-port mandatory (same-port multiplexing has known bugs)
+- Feature-gating pattern from v1.4 (backend-qdrant, backend-postgres) applied cleanly to interface-grpc — default binary unchanged
+- Phase 29 (tech debt fix) ran in parallel with Phases 27-28 thanks to independent dependency graph — efficient use of worktrees
+- Milestone audit (18/18 requirements, 17/18 integration links, 5/6 E2E flows) confirmed coverage; the one broken flow (CI release binary REST-only) is by-design
+- MockEmbeddingEngine pattern from v1.0 reused in gRPC integration tests — no model download, fast test suite
+
+### What Was Inefficient
+- SUMMARY.md one-liner extraction still unreliable — 3 of 7 summaries returned malformed one-liners during milestone complete (fixed manually in MILESTONES.md)
+- tonic-build must be non-optional in [build-dependencies] (build scripts always compile) — plan assumed optional=true would work; caught and fixed during Phase 26 execution
+- 4 auto-fix deviations in Phase 27 Plan 02 (http crate as direct dep, tower as optional dep, lib.rs mod for test discovery, BoxCloneService in tests) — plan didn't account for Rust's transitive crate visibility rules
+
+### Patterns Established
+- CARGO_FEATURE_INTERFACE_GRPC env var check in build.rs for conditional build-time codegen
+- Tower Layer+Service pattern for async gRPC auth (clone+swap in Service::call)
+- Duplicate enforce_scope between REST (server.rs) and gRPC (grpc/mod.rs) to avoid axum import coupling
+- api_error_to_status() mapping all ApiError variants to tonic::Status codes
+- cfg-gated dual-port startup in main.rs — falls through to REST-only without feature
+
+### Key Lessons
+1. Build-dependency optionality doesn't work as expected in Rust — build scripts always compile regardless of features; use env var gates instead
+2. Transitive crate dependencies (http via axum, tower via dev-deps) are not usable in library code — always declare direct dependencies for crates you import
+3. Proto-first design with explicit rerun-if-changed prevents always-dirty incremental build bug (tonic-build #2239)
+4. Tower auth layer is strictly required when auth logic is async — sync interceptors panic inside tokio runtime
+5. Two tonic versions in the tree (0.12 from qdrant-client, 0.13 from our server) work fine when they share prost — version duplication is acceptable when types don't cross boundaries
+
+### Cost Observations
+- Model mix: balanced profile throughout
+- Notable: entire v1.5 delivered in 1 day (2026-03-22) — 4 phases, 7 plans, 14 feature commits
+- Test suite: 286 passing (91 lib + 54 integration + 14 gRPC integration), 1 ignored
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -225,6 +272,7 @@
 | v1.2 | 5 | 8 | Layered auth (schema->service->middleware->HTTP->CLI); per-request mode detection |
 | v1.3 | 6 | 11 | Tiered init helpers for CLI UX; zero new dependencies; global --json consistency |
 | v1.4 | 5 | 9 | Trait-first abstraction; feature-gated optional backends; research phases upfront |
+| v1.5 | 4 | 7 | Dual-protocol serving; Tower auth layer; feature-gated interface; parallel phase execution |
 
 ### Cumulative Quality
 
@@ -235,6 +283,7 @@
 | v1.2 | 194 (57 unit + 53 integration) | Yes | COMPLIANT |
 | v1.3 | 239 (63 unit + 55+54 integration) | Yes | COMPLIANT |
 | v1.4 | 286 (across default + feature sets) | Yes | COMPLIANT |
+| v1.5 | 286 (91 lib + 54 int + 14 gRPC int) | Yes | COMPLIANT |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -244,3 +293,5 @@
 4. Init tier design is load-bearing for CLI UX — users feel the difference between 50ms and 3s (v1.3)
 5. Zero new dependencies for an entire milestone is achievable when the foundation is well-designed (v1.3)
 6. Trait-first abstraction design (define contract before implementation) makes subsequent implementations template-driven with near-zero rework (v1.4)
+7. Build-dependency optionality in Rust doesn't work as expected — use env var gates for conditional build-time codegen (v1.5)
+8. Feature-gating pattern (v1.4 backends) transfers cleanly to new domains (v1.5 interface-grpc) — consistent opt-in architecture
