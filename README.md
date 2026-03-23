@@ -2,7 +2,7 @@
 
 Framework-agnostic agent memory server — persistent semantic memory via REST API and gRPC.
 
-Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST or gRPC call, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. Optionally protect your instance with API key authentication — scoped to individual agents for enforced namespace isolation. Choose your storage backend — SQLite (zero-config default), Qdrant, or Postgres+pgvector — depending on your scale needs. For high-throughput agent communication, enable the gRPC interface alongside REST. No external services, no configuration required — it works out of the box with a bundled embedding model.
+Mnemonic is a single binary that gives any AI agent durable, semantically searchable memory. Run it alongside your agent, store memories with a single POST or gRPC call, and retrieve the most relevant ones with a semantic search query. When memories accumulate, trigger compaction to deduplicate similar memories — with optional LLM-powered summarization. Optionally protect your instance with API key authentication — scoped to individual agents for enforced namespace isolation. Choose your storage backend — SQLite (zero-config default), Qdrant, or Postgres+pgvector — depending on your scale needs. For high-throughput agent communication, enable the gRPC interface alongside REST. For visual exploration, enable the embedded web dashboard at `/ui` — browse memories, search, monitor agents, and trigger compaction from the browser. No external services, no configuration required — it works out of the box with a bundled embedding model.
 
 ## Table of Contents
 
@@ -13,6 +13,7 @@ Mnemonic is a single binary that gives any AI agent durable, semantically search
 - [API Reference](#api-reference)
   - [POST /memories/compact](#post-memoriescompact)
   - [Key Management](#key-management-endpoints)
+  - [GET /stats](#get-stats)
 - [Storage Backends](#storage-backends)
 - [gRPC Interface](#grpc-interface)
 - [Dashboard](#dashboard)
@@ -172,7 +173,7 @@ Check server readiness.
 
 **Response 200:**
 ```json
-{"status": "ok", "backend": "sqlite"}
+{"status": "ok", "backend": "sqlite", "auth_enabled": false}
 ```
 
 **curl:**
@@ -532,6 +533,37 @@ Revoke an API key by UUID. The key is immediately invalidated.
 ```bash
 curl -s -X DELETE http://localhost:8080/keys/019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f \
   -H "Authorization: Bearer mnk_admin_key..."
+```
+
+---
+
+### GET /stats
+
+Per-agent memory statistics. Returns memory counts and last-active timestamps for each agent.
+
+**Response 200:**
+```json
+{
+  "agents": [
+    {
+      "agent_id": "research-bot",
+      "memory_count": 42,
+      "last_active": "2026-03-23 01:00:00"
+    },
+    {
+      "agent_id": "summarizer",
+      "memory_count": 15,
+      "last_active": "2026-03-22 18:30:00"
+    }
+  ]
+}
+```
+
+When using a scoped API key, only the scoped agent's stats are returned.
+
+**curl:**
+```bash
+curl -s http://localhost:8080/stats
 ```
 
 ---
