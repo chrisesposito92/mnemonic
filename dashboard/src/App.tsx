@@ -4,6 +4,8 @@ import Header from './components/Header'
 import TabBar, { type Tab } from './components/TabBar'
 import LoginScreen from './components/LoginScreen'
 import SkeletonRows from './components/SkeletonRows'
+import SearchTab from './components/SearchTab'
+import AgentsTab from './components/AgentsTab'
 
 // ── Hash Router (D-04) ──────────────────────────────────────────────
 
@@ -125,14 +127,10 @@ export default function App() {
           </div>
         )}
         {activeTab === 'agents' && (
-          <div style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>
-            Agents tab -- implemented in Plan 04
-          </div>
+          <AgentsTab token={token} onUnauthorized={handleUnauthorized} />
         )}
         {activeTab === 'search' && (
-          <div style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>
-            Search tab -- implemented in Plan 04
-          </div>
+          <SearchTab token={token} onUnauthorized={handleUnauthorized} />
         )}
       </div>
     </div>
