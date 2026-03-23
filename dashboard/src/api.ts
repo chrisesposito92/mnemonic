@@ -215,8 +215,8 @@ export async function compactMemories(
  * NOTE: This function uses apiFetch which throws UnauthorizedError on 401/403.
  * When used for cluster preview fetches in CompactTab, callers should catch
  * errors per-fetch and degrade gracefully (show memory ID instead of content)
- * rather than triggering re-auth. See Plan 02 CompactTab handleDryRun for
- * the Promise.allSettled pattern that handles this.
+ * rather than triggering re-auth. See CompactTab handleDryRun for the
+ * Promise.allSettled pattern that handles this.
  */
 export async function fetchMemoryById(
   token: string | null,

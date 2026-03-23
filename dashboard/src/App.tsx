@@ -7,6 +7,7 @@ import SkeletonRows from './components/SkeletonRows'
 import MemoriesTab from './components/MemoriesTab'
 import SearchTab from './components/SearchTab'
 import AgentsTab from './components/AgentsTab'
+import CompactTab from './components/CompactTab'
 
 // -- Hash Router (D-04) ----------------------------------------------------------
 
@@ -14,6 +15,7 @@ function parseHash(): Tab {
   const hash = window.location.hash
   if (hash === '#/agents') return 'agents'
   if (hash === '#/search') return 'search'
+  if (hash === '#/compact') return 'compact'
   return 'memories' // default
 }
 
@@ -119,6 +121,9 @@ export default function App() {
         )}
         {activeTab === 'search' && (
           <SearchTab token={token} onUnauthorized={handleUnauthorized} />
+        )}
+        {activeTab === 'compact' && (
+          <CompactTab token={token} onUnauthorized={handleUnauthorized} />
         )}
       </div>
     </div>
