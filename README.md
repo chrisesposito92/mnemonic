@@ -324,6 +324,43 @@ curl -s "http://localhost:8080/memories?agent_id=research-bot&limit=10"
 
 ---
 
+### GET /memories/:id
+
+Fetch a single memory by ID. Returns the full memory object.
+
+**Path parameter:** `id` — UUID string of the memory to fetch.
+
+**Response 200:** Full Memory object.
+```json
+{
+  "id": "019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f",
+  "content": "The Eiffel Tower is 330 meters tall",
+  "agent_id": "research-bot",
+  "session_id": "session-42",
+  "tags": ["landmarks", "paris"],
+  "embedding_model": "all-MiniLM-L6-v2",
+  "created_at": "2026-03-19 12:34:56",
+  "updated_at": null
+}
+```
+
+**Error 404:**
+```json
+{"error": "not found"}
+```
+
+**Error 403** (scoped key accessing another agent's memory):
+```json
+{"error": "forbidden", "message": "key scoped to agent-A cannot access agent-B"}
+```
+
+**curl:**
+```bash
+curl -s http://localhost:8080/memories/019506d2-1c3b-7a2e-8b4f-0a1b2c3d4e5f
+```
+
+---
+
 ### DELETE /memories/:id
 
 Delete a memory by ID. Returns the deleted memory object.
@@ -638,7 +675,13 @@ grpc_port = 50051
 
 ## Dashboard
 
-Mnemonic offers an optional embedded web dashboard for visual memory exploration and server monitoring. It is compiled into the binary via the `dashboard` Cargo feature — no separate frontend process needed.
+Mnemonic offers an optional embedded web dashboard for visual memory exploration, server monitoring, and compaction management. It is compiled into the binary via the `dashboard` Cargo feature — no separate frontend process needed.
+
+**Tabs:**
+- **Memories** — Paginated memory table with agent/session/tag filters, expandable rows
+- **Agents** — Per-agent breakdown with memory counts and last-active timestamps
+- **Search** — Semantic search with distance bars and ranked results
+- **Compact** — Two-step dry-run compaction flow: select agent, set threshold, preview cluster trees, then confirm or discard
 
 ### Prebuilt Binary
 
