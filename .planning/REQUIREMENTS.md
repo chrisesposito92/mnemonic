@@ -24,7 +24,7 @@ Requirements for the embedded web dashboard milestone. Each maps to roadmap phas
 ### Operations
 
 - [x] **OPS-01**: Dashboard header shows health indicator with active storage backend name from `GET /health`
-- [ ] **OPS-02**: User can trigger compaction with dry-run preview showing before/after memory mapping, then confirm to execute
+- [x] **OPS-02**: User can trigger compaction with dry-run preview showing before/after memory mapping, then confirm to execute
 
 ### Auth & Security
 
@@ -66,7 +66,7 @@ Deferred to future release. Tracked but not in current roadmap.
 | BROWSE-04 | Phase 31 | Complete |
 | BROWSE-05 | Phase 31 | Complete |
 | OPS-01 | Phase 31 | Complete |
-| OPS-02 | Phase 32 | Pending |
+| OPS-02 | Phase 32 | Complete |
 | AUTH-01 | Phase 31 | Complete |
 | AUTH-02 | Phase 31 | Complete |
 
