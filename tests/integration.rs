@@ -1917,6 +1917,164 @@ async fn test_scoped_delete_own_memory_ok() {
     assert_eq!(json["id"], memory_a.id);
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// GET /memories/{id} tests (OPS-02)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// OPS-02: GET /memories/{id} returns 200 with the created memory.
+#[tokio::test]
+async fn get_memory_by_id_returns_created_memory() {
+    let (state, _) = build_test_state().await;
+    let app = build_router(state.clone());
+
+    // Create a memory first
+    let create_resp = app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "content": "test memory for get by id",
+                        "agent_id": "agent-get-test"
+                    }).to_string()
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+    let created = response_json(create_resp).await;
+    let memory_id = created["id"].as_str().expect("created memory must have id");
+
+    // GET /memories/{id}
+    let app = build_router(state);
+    let get_resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/memories/{}", memory_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(get_resp.status(), StatusCode::OK, "GET /memories/{{id}} must return 200");
+
+    let memory = response_json(get_resp).await;
+    assert_eq!(memory["id"].as_str().unwrap(), memory_id);
+    assert_eq!(memory["content"].as_str().unwrap(), "test memory for get by id");
+    assert_eq!(memory["agent_id"].as_str().unwrap(), "agent-get-test");
+    assert!(memory["created_at"].is_string(), "memory must have created_at");
+}
+
+/// OPS-02: GET /memories/{id} returns 404 for non-existent ID.
+#[tokio::test]
+async fn get_memory_by_id_returns_404_for_missing() {
+    let (state, _) = build_test_state().await;
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/memories/00000000-0000-0000-0000-000000000000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "GET /memories/{{id}} for non-existent ID must return 404"
+    );
+}
+
+/// OPS-02 + AUTH-04: Scoped key for agent-A + GET memory owned by agent-B -> 403.
+/// Mirrors test_scoped_delete_wrong_owner_403 pattern for the GET endpoint.
+#[tokio::test]
+async fn get_memory_by_id_scoped_key_wrong_owner_403() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, _) = build_test_state().await;
+
+    // Create a memory owned by agent-B directly via service (bypassing auth)
+    let memory_b = state.service.create_memory(CreateMemoryRequest {
+        content: "agent-B private memory for get test".to_string(),
+        agent_id: Some("agent-B".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // Create a scoped key for agent-A
+    let (_key, token_a) = state
+        .key_service
+        .create("scoped-get-403".to_string(), Some("agent-A".to_string()))
+        .await
+        .unwrap();
+
+    // Attempt GET as agent-A on agent-B's memory -> should get 403
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/memories/{}", memory_b.id))
+                .header("authorization", format!("Bearer {}", token_a))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let json = response_json(response).await;
+    assert_eq!(json["error"], "forbidden");
+}
+
+/// OPS-02 + AUTH-04: Scoped key for agent-A + GET memory owned by agent-A -> 200.
+/// Mirrors test_scoped_delete_own_memory_ok pattern for the GET endpoint.
+#[tokio::test]
+async fn get_memory_by_id_scoped_key_own_memory_200() {
+    use mnemonic::service::CreateMemoryRequest;
+
+    let (state, _) = build_test_state().await;
+
+    // Create a scoped key for agent-A
+    let (_key, token_a) = state
+        .key_service
+        .create("scoped-get-200".to_string(), Some("agent-A".to_string()))
+        .await
+        .unwrap();
+
+    // Create a memory owned by agent-A directly via service
+    let memory_a = state.service.create_memory(CreateMemoryRequest {
+        content: "agent-A memory for get test".to_string(),
+        agent_id: Some("agent-A".to_string()),
+        session_id: None,
+        tags: None,
+    }).await.unwrap();
+
+    // GET as agent-A on own memory -> should succeed with 200
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/memories/{}", memory_a.id))
+                .header("authorization", format!("Bearer {}", token_a))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    assert_eq!(json["id"].as_str().unwrap(), memory_a.id);
+    assert_eq!(json["agent_id"].as_str().unwrap(), "agent-A");
+    assert_eq!(json["content"].as_str().unwrap(), "agent-A memory for get test");
+}
+
 /// KEY-endpoint-a: POST /keys in open mode returns 201 with raw_token and key metadata.
 #[tokio::test]
 async fn test_post_keys_creates_key() {

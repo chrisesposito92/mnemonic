@@ -152,6 +152,12 @@ impl MemoryService {
         Ok(memory.map(|m| m.agent_id))
     }
 
+    /// Fetches a single memory by ID.
+    /// Returns Ok(memory) or Err(ApiError::NotFound).
+    pub async fn get_memory(&self, id: &str) -> Result<Memory, ApiError> {
+        self.backend.get_by_id(id).await?.ok_or(ApiError::NotFound)
+    }
+
     pub async fn delete_memory(&self, id: String) -> Result<Memory, ApiError> {
         self.backend.delete(&id).await
     }

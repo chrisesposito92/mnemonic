@@ -49,7 +49,7 @@ pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/memories", post(create_memory_handler).get(list_memories_handler))
         .route("/memories/search", get(search_memories_handler))
-        .route("/memories/{id}", delete(delete_memory_handler))
+        .route("/memories/{id}", get(get_memory_handler).delete(delete_memory_handler))
         .route("/memories/compact", post(compact_memories_handler))
         // Key management endpoints (D-18, D-19)
         .route("/keys", post(create_key_handler).get(list_keys_handler))
@@ -206,6 +206,30 @@ async fn delete_memory_handler(
     }
     // Open mode (auth = None): no scope check needed
     let memory = state.service.delete_memory(id).await?;
+    Ok(Json(serde_json::to_value(memory).unwrap()))
+}
+
+/// GET /memories/:id -- returns a single memory by ID.
+async fn get_memory_handler(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Scope enforcement for scoped keys (same pattern as delete_memory_handler)
+    if let Some(Extension(ref ctx)) = auth {
+        if let Some(ref allowed_id) = ctx.allowed_agent_id {
+            match state.service.get_memory_agent_id(&id).await? {
+                None => return Err(ApiError::NotFound),
+                Some(ref mem_agent_id) if mem_agent_id != allowed_id => {
+                    return Err(ApiError::Forbidden(format!(
+                        "key scoped to {} cannot access {}", allowed_id, mem_agent_id
+                    )));
+                }
+                Some(_) => {} // Ownership matches, proceed
+            }
+        }
+    }
+    let memory = state.service.get_memory(&id).await?;
     Ok(Json(serde_json::to_value(memory).unwrap()))
 }
 
