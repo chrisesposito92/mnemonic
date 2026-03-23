@@ -45,6 +45,26 @@ export interface StatsResponse {
   agents: AgentStats[]
 }
 
+export interface CompactParams {
+  agent_id: string
+  threshold?: number
+  dry_run?: boolean
+}
+
+export interface ClusterMapping {
+  source_ids: string[]
+  new_id: string | null
+}
+
+export interface CompactResponse {
+  run_id: string
+  clusters_found: number
+  memories_merged: number
+  memories_created: number
+  id_mapping: ClusterMapping[]
+  truncated: boolean
+}
+
 // -- Error types -----------------------------------------------------------------
 
 export class ApiError extends Error {
@@ -172,5 +192,37 @@ export async function searchMemories(
   if (params.limit != null) qs.set('limit', String(params.limit))
 
   const resp = await apiFetch(`/memories/search?${qs.toString()}`, token, signal)
+  return resp.json()
+}
+
+/** POST /memories/compact -- trigger compaction with optional dry_run */
+export async function compactMemories(
+  token: string | null,
+  params: CompactParams,
+  signal?: AbortSignal | null,
+): Promise<CompactResponse> {
+  const resp = await apiFetch('/memories/compact', token, signal, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  return resp.json()
+}
+
+/**
+ * GET /memories/{id} -- fetch a single memory by ID.
+ *
+ * NOTE: This function uses apiFetch which throws UnauthorizedError on 401/403.
+ * When used for cluster preview fetches in CompactTab, callers should catch
+ * errors per-fetch and degrade gracefully (show memory ID instead of content)
+ * rather than triggering re-auth. See CompactTab handleDryRun for the
+ * Promise.allSettled pattern that handles this.
+ */
+export async function fetchMemoryById(
+  token: string | null,
+  id: string,
+  signal?: AbortSignal | null,
+): Promise<Memory> {
+  const resp = await apiFetch(`/memories/${id}`, token, signal)
   return resp.json()
 }
