@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A single Rust binary that gives any AI agent persistent memory via REST API and gRPC — including agent-triggered memory compaction with optional LLM summarization, API key authentication, pluggable storage backends (SQLite, Qdrant, Postgres), and terminal-native subcommands for every operation. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
+A single Rust binary that gives any AI agent persistent memory via REST API and gRPC — including agent-triggered memory compaction with optional LLM summarization, API key authentication, pluggable storage backends (SQLite, Qdrant, Postgres), terminal-native subcommands for every operation, and an embedded operational dashboard for visual memory exploration and compaction management. Zero external dependencies — download and run. The "Redis of agents" — lightweight, fast, and universally useful for any agent framework or language.
 
 ## Core Value
 
@@ -85,24 +85,12 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ### Active
 
-## Current Milestone: v1.6 Web UI/Dashboard
-
-**Goal:** Embed a lightweight operational dashboard into the mnemonic binary for visual memory exploration, agent/session monitoring, and compaction triggering.
-
-**Target features:**
-- Browse and search stored memories with filtering (agent, session, tags)
-- Agent and session breakdown views (counts, activity)
-- Storage usage and recent activity overview
-- Visual compaction trigger (with dry-run preview)
-- Embedded Preact + Tailwind frontend served at `/ui`, compiled into binary via rust-embed/include_dir
-- Feature-gated behind `dashboard` flag (default binary unchanged)
-- Respects existing API key auth when keys are active
+(No active milestone — planning next)
 
 ### Out of Scope
 
-- Hierarchical summaries (parent-child relationships, traversal) — too complex for v1.1, cluster-and-replace covers 90% of use cases
+- Hierarchical summaries (parent-child relationships, traversal) — cluster-and-replace covers 90% of use cases
 - Automatic background compaction — agent stays in control, no silent data mutation
-- Web UI / dashboard — ~~adds frontend build pipeline, violates single-binary simplicity~~ → Moved to v1.6 scope: embedded at compile time via rust-embed, feature-gated behind `dashboard` flag
 - gRPC support for compaction/keys — hot-path only; compaction and key management stay REST-only to limit interface surface
 - Memory decay / TTL — surprising behavior that silently loses data
 - Multi-node / distributed mode — SQLite not designed for multi-writer distributed use
@@ -112,7 +100,7 @@ Any AI agent can store and semantically search memories out of the box with zero
 - Background daemon mode (--daemon) — platform-specific complexity; systemd/launchd handle this better
 - Multi-format output (--format csv/table/json) — --json + jq covers all machine formats; two modes (human/JSON) not three
 - Automatic model download — model is bundled in binary; clear error better than silent download
-- Cross-backend migration (v1.4 decision) — all backends must be stable first; deferred to future milestone
+- Cross-backend migration — all backends must be stable first; deferred to future milestone
 - Auto-migration on config change — surprising behavior that silently moves data; explicit migration better
 - Multi-backend fan-out (write to multiple) — complexity explosion; single active backend is simpler and sufficient
 - Backend-specific query syntax — leaky abstraction; trait must normalize all operations
@@ -120,14 +108,15 @@ Any AI agent can store and semantically search memories out of the box with zero
 
 ## Context
 
-v1.5 shipped with 29 phases (52 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4 + 7 v1.5). v1.6 adds an embedded web dashboard (Preact + Tailwind) served from the binary at /ui, feature-gated behind `dashboard`.
-Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional), tonic + prost (optional, interface-grpc).
-~12,200 lines of Rust. 292+ tests passing (54 lib + integration), 1 ignored, zero compiler warnings. MIT licensed. Phase 30 complete — dashboard foundation shipped.
+v1.6 shipped with 32 phases across 7 milestones (60 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3 + 9 v1.4 + 7 v1.5 + 8 v1.6).
+Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional), tonic + prost (optional, interface-grpc), rust-embed + axum-embed (optional, dashboard), Preact + TypeScript + Tailwind v4 + Vite (dashboard frontend).
+~7,500 lines of Rust + ~2,100 lines of TypeScript. 292+ tests passing, 1 ignored, zero compiler warnings. MIT licensed.
 Dual-protocol server: REST (axum) on configurable port (default 8080) + gRPC (tonic) on configurable grpc_port (default 50051), started simultaneously via tokio::try_join!.
-10 REST endpoints: POST/GET/DELETE /memories, GET /memories/{id}, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
+11 REST endpoints: POST/GET/DELETE /memories, GET /memories/{id}, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health, GET /stats.
 4 gRPC RPCs: StoreMemory, SearchMemories, ListMemories, DeleteMemory — same semantics as REST, with tonic-health and tonic-reflection for discoverability.
 CLI: 7 subcommands — `serve`, `remember`, `recall`, `search`, `compact`, `keys`, `config` — all with `--json` flag, consistent exit codes, stdout/stderr separation.
 Pluggable storage via StorageBackend trait — SQLite (default), Qdrant, Postgres+pgvector. All backends behind feature flags.
+Embedded dashboard at /ui behind `dashboard` feature flag — Preact SPA with auth gate, memory browsing/search, agent breakdown, and compaction panel.
 Init tiers: DB-only (~50ms) for keys/recall/config, medium (DB+embedding, ~2-3s) for remember/search, full (DB+embedding+LLM) for compact.
 Target users: AI agent developers who need persistent memory across sessions.
 Single-binary distribution — no Python, no Docker, no external services required (SQLite default).
@@ -211,4 +200,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-23 after Phase 32 (Operational Actions) completion*
+*Last updated: 2026-03-23 after v1.6 milestone*

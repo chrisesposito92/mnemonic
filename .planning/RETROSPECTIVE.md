@@ -261,6 +261,56 @@
 
 ---
 
+## Milestone: v1.6 — Web UI/Dashboard
+
+**Shipped:** 2026-03-23
+**Phases:** 3 | **Plans:** 8
+
+### What Was Built
+- Preact+TypeScript+Tailwind v4 SPA embedded into binary at /ui via rust-embed+axum-embed behind `dashboard` Cargo feature gate
+- CI dual-artifact release (slim + dashboard) with regression gate and 6 integration tests
+- Auth-gated dashboard with bearer token login (in-memory only), CSP headers, health-based auth detection
+- Paginated memory browsing with agent/session/tag filters, semantic search with distance bars, per-agent breakdown
+- GET /memories/{id} and GET /stats endpoints with scope-aware auth enforcement across all 3 backends
+- Compact tab with two-step dry-run flow: cluster tree preview before committing compaction
+
+### What Worked
+- Feature-gating pattern from v1.4/v1.5 applied cleanly to dashboard — default binary unchanged, opt-in via `--features dashboard`
+- Hash routing (#/path) avoided SPA hard-reload 404 issues at zero implementation cost
+- Dashboard router merged at top level (outside protected router) prevented auth middleware from blocking asset loads — critical architectural decision made early in Phase 30 research
+- StorageBackend::stats() method added to trait (Phase 31) implemented cleanly across all 3 backends using existing backend patterns
+- Qdrant stats() 10K-page scroll with HashMap aggregation handled collections > 10K points — research upfront identified this edge case
+- Promise.allSettled in CompactTab preview fetches enabled graceful degradation on 403 instead of triggering full re-auth
+- Milestone audit (12/12 requirements, 3/3 phases, 5/5 E2E flows, zero tech debt) confirmed complete coverage
+
+### What Was Inefficient
+- SUMMARY.md one-liner extraction still unreliable — 6 of 8 summaries returned empty or malformed one-liners during milestone complete (manually fixed in MILESTONES.md); this is the 7th consecutive milestone with this issue
+- Phase 31 ROADMAP.md shows "2/4 plans complete" and Phase 32 shows "1/2 plans complete" despite all plans having SUMMARY.md files — a roadmap update gap during parallel execution (plans 31-03, 31-04, 32-02 completed in worktrees and merged without updating ROADMAP plan checkboxes)
+- Nyquist compliance partial for Phases 31-32 — VALIDATION.md files exist but nyquist_compliant/wave_0_complete not set to true; procedural gap, not functional
+
+### Patterns Established
+- rust-embed + axum-embed for compile-time SPA embedding with feature-gated optional dependencies
+- vite-plugin-singlefile after tailwindcss() in Vite plugins array for single-file output
+- map_response() over middleware::from_fn() for response-only middleware (CSP header injection)
+- Discriminated union state machine in Preact (AppState: checking | login | dashboard)
+- __none__ sentinel for blank agent_id disambiguation in frontend dropdowns
+- Preview invalidation via useEffect watching input changes (selectedAgent + threshold)
+- 7-state machine for CompactTab (idle/loading-dry-run/preview/loading-execute/success/empty/error)
+
+### Key Lessons
+1. First cross-language milestone (Rust + TypeScript) worked well because the build pipeline was isolated (npm in dashboard/, cargo at root) with a clean handoff point (dist/index.html)
+2. Dashboard router placement is a critical early decision — inside vs outside protected router determines whether assets load in auth-enabled mode
+3. Single-file output (vite-plugin-singlefile) simplifies rust-embed integration to embedding one file, but plugin ordering matters
+4. Worktree-based parallel execution of plans needs a post-merge roadmap reconciliation step — plan checkbox state drifts when multiple agents merge independently
+5. Frontend state machines (discriminated unions) are the right pattern for multi-phase UI flows — the compiler enforces impossible state elimination
+
+### Cost Observations
+- Model mix: balanced profile throughout
+- Notable: entire v1.6 delivered in under 10 hours (2026-03-22 17:00 → 2026-03-23 02:18) — 3 phases, 8 plans, 77 files modified
+- First milestone with frontend code: ~2,100 lines of TypeScript added alongside Rust backend changes
+
+---
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -273,6 +323,7 @@
 | v1.3 | 6 | 11 | Tiered init helpers for CLI UX; zero new dependencies; global --json consistency |
 | v1.4 | 5 | 9 | Trait-first abstraction; feature-gated optional backends; research phases upfront |
 | v1.5 | 4 | 7 | Dual-protocol serving; Tower auth layer; feature-gated interface; parallel phase execution |
+| v1.6 | 3 | 8 | First cross-language milestone (Rust+TypeScript); embedded SPA via rust-embed; frontend state machines |
 
 ### Cumulative Quality
 
@@ -284,14 +335,17 @@
 | v1.3 | 239 (63 unit + 55+54 integration) | Yes | COMPLIANT |
 | v1.4 | 286 (across default + feature sets) | Yes | COMPLIANT |
 | v1.5 | 286 (91 lib + 54 int + 14 gRPC int) | Yes | COMPLIANT |
+| v1.6 | 292+ (+ 6 dashboard integration) | Yes | PARTIAL (procedural) |
 
 ### Top Lessons (Verified Across Milestones)
 
 1. Milestone audits before shipping catch integration gaps that per-phase verification misses (v1.0, v1.1, v1.2, v1.3, v1.4 — caught postgres_url redaction gap)
 2. Mirror existing trait patterns when adding new engines — consistent architecture and near-zero design friction (v1.0 EmbeddingEngine -> v1.1 SummarizationEngine -> v1.4 StorageBackend)
-3. SUMMARY frontmatter `requirements_completed` field is consistently skipped during execution — recurring debt across all 5 milestones; needs process fix
+3. SUMMARY frontmatter `requirements_completed` field is consistently skipped during execution — recurring debt across all 7 milestones; needs process fix
 4. Init tier design is load-bearing for CLI UX — users feel the difference between 50ms and 3s (v1.3)
 5. Zero new dependencies for an entire milestone is achievable when the foundation is well-designed (v1.3)
 6. Trait-first abstraction design (define contract before implementation) makes subsequent implementations template-driven with near-zero rework (v1.4)
 7. Build-dependency optionality in Rust doesn't work as expected — use env var gates for conditional build-time codegen (v1.5)
-8. Feature-gating pattern (v1.4 backends) transfers cleanly to new domains (v1.5 interface-grpc) — consistent opt-in architecture
+8. Feature-gating pattern (v1.4 backends) transfers cleanly to new domains (v1.5 interface-grpc, v1.6 dashboard) — consistent opt-in architecture
+9. Cross-language build isolation (npm in subdirectory, cargo at root) works cleanly when the handoff point is a single artifact (dist/index.html) — v1.6
+10. Worktree-based parallel plan execution needs post-merge roadmap reconciliation — plan checkbox state drifts when agents merge independently (v1.6)

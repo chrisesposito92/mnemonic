@@ -1,5 +1,34 @@
 # Milestones
 
+## v1.6 Web UI/Dashboard (Shipped: 2026-03-23)
+
+**Phases completed:** 3 phases, 8 plans, 6 tasks
+
+**Key accomplishments:**
+
+- Preact+TypeScript+Tailwind v4 SPA embedded into binary at `/ui` via rust-embed+axum-embed behind `dashboard` Cargo feature gate — single dist/index.html via vite-plugin-singlefile
+- CI dual-artifact release (slim + dashboard) with regression gate ensuring default binary unchanged; 6 integration tests proving /ui is mounted in merged build_router()
+- Auth-gated dashboard with bearer token login (in-memory only, never localStorage), CSP headers on all /ui/ responses, and health-based auth detection
+- Paginated memory browsing with agent/session/tag filters, semantic search with clamped distance bars, and per-agent breakdown table via new GET /stats endpoint
+- Compact tab with two-step dry-run flow: agent selector, threshold input, cluster tree preview (ClusterPreview component), confirm/discard controls
+- GET /memories/{id} endpoint with scope enforcement across all 3 backends; typed API client wrappers (compactMemories, fetchMemoryById)
+
+**Delivered:** Embedded operational dashboard for visual memory exploration, agent monitoring, and compaction triggering — served at /ui, feature-gated behind `dashboard`, zero impact on default binary.
+
+**Stats:**
+
+- Lines of code: ~7,500 Rust + ~2,100 TypeScript (total project: ~9,600)
+- Lines changed: +14,722 / -92
+- Files modified: 77
+- Timeline: 2026-03-22 → 2026-03-23 (1 day)
+- Tests: 292+ passing, zero compiler warnings
+- Requirements: 12/12 satisfied
+- Nyquist: PARTIAL (Phase 30 compliant, Phases 31-32 procedural gap only)
+- Audit: PASSED (12/12 requirements, 3/3 phases, 5/5 E2E flows, zero tech debt)
+- Git range: Phase 30 → Phase 32
+
+---
+
 ## v1.5 gRPC (Shipped: 2026-03-22)
 
 **Phases completed:** 4 phases, 7 plans, 13 tasks
