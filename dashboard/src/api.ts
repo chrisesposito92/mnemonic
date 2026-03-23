@@ -1,14 +1,14 @@
-// dashboard/src/api.ts — Typed API client for mnemonic dashboard
+// dashboard/src/api.ts -- Typed API client for mnemonic dashboard
 // All fetch calls use this module for consistent auth, timeout, abort, and 401 handling.
 
 const API_TIMEOUT_MS = 10_000
 
-// ── Types ──────────────────────────────────────────────────────────────
+// -- Types -----------------------------------------------------------------------
 
 export interface HealthResponse {
   status: string
   backend: string
-  auth_enabled: boolean  // Added by Plan 01 (review concern #2)
+  auth_enabled: boolean
 }
 
 export interface Memory {
@@ -45,7 +45,7 @@ export interface StatsResponse {
   agents: AgentStats[]
 }
 
-// ── Error types ────────────────────────────────────────────────────────
+// -- Error types -----------------------------------------------------------------
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -59,7 +59,7 @@ export class UnauthorizedError extends ApiError {
   }
 }
 
-// ── Core fetch wrapper ─────────────────────────────────────────────────
+// -- Core fetch wrapper ----------------------------------------------------------
 
 /**
  * Fetch wrapper with auth header, timeout, and abort support.
@@ -109,7 +109,7 @@ export async function apiFetch(
   return response
 }
 
-// ── Typed endpoint wrappers ────────────────────────────────────────────
+// -- Typed endpoint wrappers -----------------------------------------------------
 
 /** GET /health -- always public, never needs auth token */
 export async function fetchHealth(signal?: AbortSignal | null): Promise<HealthResponse> {

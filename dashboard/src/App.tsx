@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'preact/hooks'
+import { useState, useEffect, useCallback } from 'preact/hooks'
 import { fetchHealth } from './api'
 import Header from './components/Header'
 import TabBar, { type Tab } from './components/TabBar'
 import LoginScreen from './components/LoginScreen'
 import SkeletonRows from './components/SkeletonRows'
+import MemoriesTab from './components/MemoriesTab'
 
-// ── Hash Router (D-04) ──────────────────────────────────────────────
+// -- Hash Router (D-04) ----------------------------------------------------------
 
 function parseHash(): Tab {
   const hash = window.location.hash
@@ -14,17 +15,14 @@ function parseHash(): Tab {
   return 'memories' // default
 }
 
-// ── App State Machine ───────────────────────────────────────────────
+// -- App State Machine -----------------------------------------------------------
 
 type AppState =
-  | { kind: 'checking' }                           // Initial mount, health probe in flight
-  | { kind: 'login'; error?: string }              // Auth enabled, show login screen
-  | { kind: 'dashboard'; token: string | null }    // Authenticated or open mode
+  | { kind: 'checking' }                        // Initial mount, health probe in flight
+  | { kind: 'login'; error?: string }           // Auth enabled, show login screen
+  | { kind: 'dashboard'; token: string | null } // Authenticated or open mode
 
-// Callback type for downstream tab components (review concern #8)
-export type OnUnauthorized = () => void
-
-// ── App Component ───────────────────────────────────────────────────
+// -- App Component ---------------------------------------------------------------
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>({ kind: 'checking' })
@@ -64,17 +62,12 @@ export default function App() {
     setAppState({ kind: 'dashboard', token })
   }, [])
 
-  // Handle unauthorized response from any protected endpoint (review concern #8).
-  // Stored in ref so Plans 03/04 tab components can receive it via onUnauthorized prop.
-  const handleUnauthorized: OnUnauthorized = useCallback(() => {
+  // Handle unauthorized response from any protected endpoint (review concern #8)
+  const handleUnauthorized = useCallback(() => {
     setAppState({ kind: 'login', error: 'Session expired. Please reconnect.' })
   }, [])
 
-  // Expose handleUnauthorized via ref for Plans 03/04 to wire up
-  const onUnauthorizedRef = useRef<OnUnauthorized>(handleUnauthorized)
-  onUnauthorizedRef.current = handleUnauthorized
-
-  // ── Render ──────────────────────────────────────────────────────
+  // -- Render --------------------------------------------------------------------
 
   if (appState.kind === 'checking') {
     return (
@@ -116,13 +109,8 @@ export default function App() {
       <Header token={token} />
       <TabBar activeTab={activeTab} />
       <div style={{ padding: '32px 24px', flex: 1 }}>
-        {/* Tab content placeholder divs until Plans 03 and 04 create real components.
-            Plans 03/04 will replace these with:
-            <MemoriesTab token={token} onUnauthorized={onUnauthorizedRef.current} /> */}
         {activeTab === 'memories' && (
-          <div style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>
-            Memories tab -- implemented in Plan 03
-          </div>
+          <MemoriesTab token={token} onUnauthorized={handleUnauthorized} />
         )}
         {activeTab === 'agents' && (
           <div style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>

@@ -3,7 +3,7 @@ import { apiFetch, UnauthorizedError } from '../api'
 
 interface LoginScreenProps {
   onLogin: (token: string) => void
-  error?: string  // Pre-populated error (e.g., from session expiry per review concern #8)
+  error?: string
 }
 
 export default function LoginScreen({ onLogin, error: initialError }: LoginScreenProps) {
