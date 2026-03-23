@@ -1,4 +1,4 @@
-export type Tab = 'memories' | 'agents' | 'search'
+export type Tab = 'memories' | 'agents' | 'search' | 'compact'
 
 interface TabBarProps {
   activeTab: Tab
@@ -8,6 +8,7 @@ const TABS: { id: Tab; label: string; href: string }[] = [
   { id: 'memories', label: 'Memories', href: '#/memories' },
   { id: 'agents', label: 'Agents', href: '#/agents' },
   { id: 'search', label: 'Search', href: '#/search' },
+  { id: 'compact', label: 'Compact', href: '#/compact' },
 ]
 
 export default function TabBar({ activeTab }: TabBarProps) {
