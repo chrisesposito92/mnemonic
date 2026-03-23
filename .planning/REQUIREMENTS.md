@@ -15,21 +15,21 @@ Requirements for the embedded web dashboard milestone. Each maps to roadmap phas
 
 ### Data Browsing
 
-- [ ] **BROWSE-01**: User can view a paginated list of memories showing content preview, agent_id, session_id, tags, and created_at
-- [ ] **BROWSE-02**: User can filter memory list by agent_id, session_id, and tag
-- [ ] **BROWSE-03**: User can perform semantic search from the dashboard and see ranked results with distance scores
-- [ ] **BROWSE-04**: User can expand a memory row to see full content and metadata
-- [ ] **BROWSE-05**: User can view per-agent memory counts and last-active timestamps via agent breakdown table (requires new `GET /stats` endpoint)
+- [x] **BROWSE-01**: User can view a paginated list of memories showing content preview, agent_id, session_id, tags, and created_at
+- [x] **BROWSE-02**: User can filter memory list by agent_id, session_id, and tag
+- [x] **BROWSE-03**: User can perform semantic search from the dashboard and see ranked results with distance scores
+- [x] **BROWSE-04**: User can expand a memory row to see full content and metadata
+- [x] **BROWSE-05**: User can view per-agent memory counts and last-active timestamps via agent breakdown table (requires new `GET /stats` endpoint)
 
 ### Operations
 
-- [ ] **OPS-01**: Dashboard header shows health indicator with active storage backend name from `GET /health`
+- [x] **OPS-01**: Dashboard header shows health indicator with active storage backend name from `GET /health`
 - [ ] **OPS-02**: User can trigger compaction with dry-run preview showing before/after memory mapping, then confirm to execute
 
 ### Auth & Security
 
-- [ ] **AUTH-01**: Dashboard detects auth mode via 401 response, prompts for `mnk_...` bearer token, stores in-memory only (never localStorage)
-- [ ] **AUTH-02**: All `/ui/` responses include Content-Security-Policy header to prevent XSS
+- [x] **AUTH-01**: Dashboard detects auth mode via 401 response, prompts for `mnk_...` bearer token, stores in-memory only (never localStorage)
+- [x] **AUTH-02**: All `/ui/` responses include Content-Security-Policy header to prevent XSS
 
 ## v2 Requirements
 
@@ -60,15 +60,15 @@ Deferred to future release. Tracked but not in current roadmap.
 | BUILD-01 | Phase 30 | Complete |
 | BUILD-02 | Phase 30 | Complete |
 | BUILD-03 | Phase 30 | Complete |
-| BROWSE-01 | Phase 31 | Pending |
-| BROWSE-02 | Phase 31 | Pending |
-| BROWSE-03 | Phase 31 | Pending |
-| BROWSE-04 | Phase 31 | Pending |
-| BROWSE-05 | Phase 31 | Pending |
-| OPS-01 | Phase 31 | Pending |
+| BROWSE-01 | Phase 31 | Complete |
+| BROWSE-02 | Phase 31 | Complete |
+| BROWSE-03 | Phase 31 | Complete |
+| BROWSE-04 | Phase 31 | Complete |
+| BROWSE-05 | Phase 31 | Complete |
+| OPS-01 | Phase 31 | Complete |
 | OPS-02 | Phase 32 | Pending |
-| AUTH-01 | Phase 31 | Pending |
-| AUTH-02 | Phase 31 | Pending |
+| AUTH-01 | Phase 31 | Complete |
+| AUTH-02 | Phase 31 | Complete |
 
 **Coverage:**
 - v1.6 requirements: 12 total
