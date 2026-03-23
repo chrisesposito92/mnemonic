@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: Web UI/Dashboard
-status: Ready to plan
-stopped_at: Phase 32 UI-SPEC approved
-last_updated: "2026-03-23T02:25:52.397Z"
+status: Milestone complete
+stopped_at: Completed 32-operational-actions-02-PLAN.md
+last_updated: "2026-03-23T03:34:12.839Z"
 progress:
   total_phases: 3
-  completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
+  completed_phases: 3
+  total_plans: 8
+  completed_plans: 8
 ---
 
 # Project State
@@ -19,7 +19,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Any AI agent can store and semantically search memories out of the box with zero configuration — just download and run
-**Current focus:** Phase 31 — core-ui
+**Current focus:** Phase 32 — operational-actions
 
 ## Current Position
 
@@ -49,6 +49,8 @@ Plan: Not started
 | Phase 31 P02 | 334 | 2 tasks | 7 files |
 | Phase 31-core-ui P04 | 31541581s | 2 tasks | 4 files |
 | Phase 31 P03 | 346s | 2 tasks | 11 files |
+| Phase 32-operational-actions P01 | 334s | 2 tasks | 4 files |
+| Phase 32-operational-actions P02 | 253 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -82,6 +84,11 @@ Recent decisions relevant to v1.6:
 - [Phase 31]: Agent dropdown populated from GET /stats to show all agents regardless of current page (review concern #1)
 - [Phase 31]: AbortController cleanup in both useEffects prevents stale response race conditions on filter/page change (review concern #6)
 - [Phase 31]: Session/tag options accumulated across fetches via Set merge to avoid losing options on page turn
+- [Phase 32-operational-actions]: GET /memories/{id} scope enforcement uses two-step pattern: get_memory_agent_id() lookup first, then get_memory() only if ownership matches (mirrors delete_memory_handler)
+- [Phase 32-operational-actions]: fetchMemoryById JSDoc documents Promise.allSettled pattern for Plan 02 CompactTab preview fetches to degrade gracefully on 403 rather than triggering re-auth
+- [Phase 32-operational-actions]: Preview invalidation on input change: useEffect watching selectedAgent/threshold auto-discards preview state
+- [Phase 32-operational-actions]: __none__ sentinel for blank agent_id: empty string means unselected; '__none__' represents agents with agent_id='' from API
+- [Phase 32-operational-actions]: id_mapping.length used for dry-run compacted count: memories_created is 0 in dry-run mode, id_mapping.length represents clusters/new-memories-to-be-created
 
 ### Pending Todos
 
@@ -94,6 +101,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-23T02:25:52.395Z
-Stopped at: Phase 32 UI-SPEC approved
-Resume file: .planning/phases/32-operational-actions/32-UI-SPEC.md
+Last session: 2026-03-23T03:28:18.760Z
+Stopped at: Completed 32-operational-actions-02-PLAN.md
+Resume file: None

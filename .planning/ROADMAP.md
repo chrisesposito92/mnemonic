@@ -83,7 +83,7 @@
 
 - [x] **Phase 30: Dashboard Foundation** — Build pipeline, rust-embed integration, feature gate, and CI wiring (completed 2026-03-22)
 - [x] **Phase 31: Core UI** — Auth flow, memory browsing, search, agent breakdown, and GET /stats endpoint (completed 2026-03-23)
-- [ ] **Phase 32: Operational Actions** — Compaction panel with dry-run diff preview and UI polish
+- [x] **Phase 32: Operational Actions** — Compaction panel with dry-run diff preview and UI polish (completed 2026-03-23)
 
 ## Phase Details
 
@@ -130,9 +130,9 @@ Plans:
   2. User can confirm the compaction after reviewing the dry-run diff, executing `POST /memories/compact` and seeing the result reflected in the memory list
   3. All dashboard views display appropriate empty states (zero memories, zero agents, zero search results) instead of blank or broken layouts
   4. All async data fetches show loading skeleton states while in flight, and unhandled API errors surface via an error boundary rather than a silent blank panel
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
-- [ ] 32-01-PLAN.md — Backend GET /memories/{id} endpoint + api.ts typed wrappers for compaction and single-memory fetch
+- [x] 32-01-PLAN.md — Backend GET /memories/{id} endpoint + api.ts typed wrappers for compaction and single-memory fetch
 - [ ] 32-02-PLAN.md — CompactTab + ClusterPreview components, TabBar and App.tsx wiring
 **UI hint**: yes
 
@@ -171,4 +171,4 @@ Plans:
 | 29. StorageBackend Routing Fix | v1.5 | 1/1 | Complete | 2026-03-22 |
 | 30. Dashboard Foundation | v1.6 | 2/2 | Complete    | 2026-03-22 |
 | 31. Core UI | v1.6 | 2/4 | Complete    | 2026-03-23 |
-| 32. Operational Actions | v1.6 | 0/2 | Not started | - |
+| 32. Operational Actions | v1.6 | 1/2 | Complete    | 2026-03-23 |
