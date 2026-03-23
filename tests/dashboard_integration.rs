@@ -16,6 +16,14 @@
 //! This is NOT automated in CI because it requires a broken state.
 //! The compile-time guard is inherent to rust-embed's #[derive(RustEmbed)]
 //! without #[allow_missing = true] -- which src/dashboard.rs intentionally omits.
+//!
+//! CROSS-FEATURE BUILD VERIFICATION (review concern #7):
+//! These feature combinations must compile without errors:
+//!   cargo check --features dashboard,backend-qdrant
+//!   cargo check --features dashboard,backend-postgres
+//!   cargo check --features dashboard,backend-qdrant,backend-postgres
+//! Verified by CI matrix. Not automated as #[test] because backend-qdrant and
+//! backend-postgres require external services for full test execution.
 
 #![cfg(feature = "dashboard")]
 
@@ -300,5 +308,160 @@ async fn dashboard_asset_request_returns_valid_response() {
         status == StatusCode::OK || status == StatusCode::NOT_FOUND,
         "asset request must return 200 (fallback) or 404, not a server error, got: {}",
         status
+    );
+}
+
+/// AUTH-02: GET /ui/ response includes Content-Security-Policy header.
+/// Also verifies CSP against SPA fallback path (review concern #9 -- test on actual routes).
+#[tokio::test]
+async fn dashboard_ui_includes_csp_header() {
+    let state = test_state().await;
+    let app = build_router(state);
+
+    // Test on /ui/ (root)
+    let response = app.clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ui/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .expect("response must have content-security-policy header")
+        .to_str()
+        .unwrap();
+
+    assert!(csp.contains("default-src 'self'"), "CSP must contain default-src 'self', got: {}", csp);
+    assert!(csp.contains("script-src 'unsafe-inline'"), "CSP must contain script-src 'unsafe-inline', got: {}", csp);
+    assert!(csp.contains("style-src 'unsafe-inline'"), "CSP must contain style-src 'unsafe-inline', got: {}", csp);
+
+    // Test on SPA fallback path (review concern #9: CSP on all /ui/* routes)
+    let fallback_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/ui/some/deep/path")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let fallback_csp = fallback_resp
+        .headers()
+        .get("content-security-policy")
+        .expect("SPA fallback must also have CSP header");
+
+    assert!(
+        fallback_csp.to_str().unwrap().contains("default-src 'self'"),
+        "SPA fallback CSP must match root CSP"
+    );
+}
+
+/// BROWSE-05: GET /stats returns per-agent breakdown with memory_count and last_active.
+#[tokio::test]
+async fn stats_endpoint_returns_agent_breakdown() {
+    let state = test_state().await;
+    let app = build_router(state);
+
+    // Create memories with different agent_ids
+    let create_body = |agent: &str, content: &str| {
+        serde_json::json!({ "content": content, "agent_id": agent }).to_string()
+    };
+
+    let resp1 = app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body("agent-alpha", "test memory alpha")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp1.status(), StatusCode::CREATED);
+
+    let resp2 = app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/memories")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body("agent-beta", "test memory beta")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::CREATED);
+
+    // GET /stats
+    let stats_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stats_resp.status(), StatusCode::OK, "GET /stats must return 200");
+
+    let body = stats_resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let agents = json["agents"].as_array().expect("response must have agents array");
+    assert!(agents.len() >= 2, "stats must include at least 2 agents, got: {}", agents.len());
+
+    for agent in agents {
+        assert!(agent["agent_id"].is_string(), "agent must have agent_id string");
+        assert!(agent["memory_count"].is_u64() || agent["memory_count"].is_i64(),
+            "agent must have memory_count number");
+        assert!(agent["last_active"].is_string(), "agent must have last_active string");
+    }
+}
+
+/// OPS-01 + AUTH-01: GET /health returns auth_enabled field.
+/// In test environment (no active keys), auth_enabled should be false.
+#[tokio::test]
+async fn health_endpoint_includes_auth_enabled_field() {
+    let state = test_state().await;
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["status"], "ok");
+    assert!(json["backend"].is_string(), "health must have backend field");
+    // auth_enabled must be present as a boolean
+    assert!(
+        json["auth_enabled"].is_boolean(),
+        "health response must have auth_enabled boolean field, got: {}",
+        json
+    );
+    // No active keys in test environment = open mode = auth_enabled: false
+    assert_eq!(
+        json["auth_enabled"].as_bool().unwrap(),
+        false,
+        "auth_enabled must be false when no active keys exist"
     );
 }
