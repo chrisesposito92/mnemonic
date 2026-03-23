@@ -76,9 +76,12 @@ Any AI agent can store and semantically search memories out of the box with zero
 - GET /stats endpoint behind auth middleware with scope-aware filtering for scoped API keys — v1.6
 - GET /health includes auth_enabled boolean field for frontend auth detection — v1.6
 - CSP header middleware on all /ui/ responses (default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline') — v1.6
-- Dashboard SPA with auth gate (auth_enabled detection), hash routing, 3 tabs (Memories/Agents/Search) — v1.6
+- Dashboard SPA with auth gate (auth_enabled detection), hash routing, 4 tabs (Memories/Agents/Search/Compact) — v1.6
 - Paginated memory table with filter controls (agent from /stats, session/tag from response), expandable rows — v1.6
 - Semantic search tab with clamped distance bars and per-agent breakdown table — v1.6
+- GET /memories/{id} endpoint with auth scope enforcement for single-memory fetch — v1.6
+- Compact tab with two-step dry-run flow: agent selector, threshold input, cluster tree preview, confirm/discard controls — v1.6
+- Typed API client wrappers (compactMemories, fetchMemoryById) with CompactParams/CompactResponse/ClusterMapping types — v1.6
 
 ### Active
 
@@ -121,7 +124,7 @@ v1.5 shipped with 29 phases (52 plans total: 11 v1.0 + 6 v1.1 + 8 v1.2 + 11 v1.3
 Tech stack: Rust, axum, SQLite+sqlite-vec, tokio-rusqlite, candle (all-MiniLM-L6-v2), reqwest (LLM HTTP), blake3 + constant_time_eq (auth), clap (CLI), serde_json (--json output), qdrant-client (optional), sqlx + pgvector (optional), tonic + prost (optional, interface-grpc).
 ~12,200 lines of Rust. 292+ tests passing (54 lib + integration), 1 ignored, zero compiler warnings. MIT licensed. Phase 30 complete — dashboard foundation shipped.
 Dual-protocol server: REST (axum) on configurable port (default 8080) + gRPC (tonic) on configurable grpc_port (default 50051), started simultaneously via tokio::try_join!.
-9 REST endpoints: POST/GET/DELETE /memories, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
+10 REST endpoints: POST/GET/DELETE /memories, GET /memories/{id}, GET /memories/search, POST /memories/compact, POST/GET /keys, DELETE /keys/{id}, GET /health.
 4 gRPC RPCs: StoreMemory, SearchMemories, ListMemories, DeleteMemory — same semantics as REST, with tonic-health and tonic-reflection for discoverability.
 CLI: 7 subcommands — `serve`, `remember`, `recall`, `search`, `compact`, `keys`, `config` — all with `--json` flag, consistent exit codes, stdout/stderr separation.
 Pluggable storage via StorageBackend trait — SQLite (default), Qdrant, Postgres+pgvector. All backends behind feature flags.
@@ -208,4 +211,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-23 after Phase 31 (Core UI) completion*
+*Last updated: 2026-03-23 after Phase 32 (Operational Actions) completion*
