@@ -72,6 +72,13 @@ Any AI agent can store and semantically search memories out of the box with zero
 - Dashboard Cargo feature gate with rust-embed + axum-embed serving embedded SPA at /ui — v1.6
 - Preact + TypeScript + Tailwind v4 + Vite frontend compiled to single-file dist/index.html — v1.6
 - CI release workflow produces dual artifacts (slim + dashboard) with regression gate — v1.6
+- StorageBackend::stats() returns per-agent memory counts and last-active timestamps across all 3 backends — v1.6
+- GET /stats endpoint behind auth middleware with scope-aware filtering for scoped API keys — v1.6
+- GET /health includes auth_enabled boolean field for frontend auth detection — v1.6
+- CSP header middleware on all /ui/ responses (default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline') — v1.6
+- Dashboard SPA with auth gate (auth_enabled detection), hash routing, 3 tabs (Memories/Agents/Search) — v1.6
+- Paginated memory table with filter controls (agent from /stats, session/tag from response), expandable rows — v1.6
+- Semantic search tab with clamped distance bars and per-agent breakdown table — v1.6
 
 ### Active
 
@@ -201,4 +208,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-22 after Phase 30 (Dashboard Foundation) completion*
+*Last updated: 2026-03-23 after Phase 31 (Core UI) completion*
