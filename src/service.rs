@@ -83,6 +83,18 @@ pub struct SearchResultItem {
     pub distance: f64,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct AgentStats {
+    pub agent_id: String,
+    pub memory_count: u64,
+    pub last_active: String,  // ISO 8601 UTC, max created_at for that agent
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct StatsResponse {
+    pub agents: Vec<AgentStats>,
+}
+
 impl MemoryService {
     pub async fn create_memory(&self, req: CreateMemoryRequest) -> Result<Memory, ApiError> {
         // 1. Validate
@@ -142,5 +154,18 @@ impl MemoryService {
 
     pub async fn delete_memory(&self, id: String) -> Result<Memory, ApiError> {
         self.backend.delete(&id).await
+    }
+
+    /// Returns per-agent memory counts. Used by GET /stats.
+    pub async fn stats(&self) -> Result<StatsResponse, ApiError> {
+        let agents = self.backend.stats().await?;
+        Ok(StatsResponse { agents })
+    }
+
+    /// Returns stats filtered to a single agent. Used by GET /stats with scoped keys.
+    pub async fn stats_for_agent(&self, agent_id: &str) -> Result<StatsResponse, ApiError> {
+        let all = self.backend.stats().await?;
+        let agents = all.into_iter().filter(|a| a.agent_id == agent_id).collect();
+        Ok(StatsResponse { agents })
     }
 }

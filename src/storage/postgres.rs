@@ -6,7 +6,7 @@ use pgvector::Vector;
 use crate::config::Config;
 use crate::error::{ApiError, MnemonicError, DbError, ConfigError};
 use crate::storage::{StorageBackend, StoreRequest, CandidateRecord, MergedMemoryRequest};
-use crate::service::{Memory, ListResponse, SearchResponse, SearchResultItem, ListParams, SearchParams};
+use crate::service::{Memory, ListResponse, SearchResponse, SearchResultItem, ListParams, SearchParams, AgentStats};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // PostgresBackend struct
@@ -479,6 +479,30 @@ impl StorageBackend for PostgresBackend {
             created_at: req.created_at,
             updated_at: None,
         })
+    }
+
+    async fn stats(&self) -> Result<Vec<AgentStats>, ApiError> {
+        let rows = sqlx::query(
+            "SELECT agent_id, COUNT(*) AS memory_count, \
+             TO_CHAR(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_active \
+             FROM memories GROUP BY agent_id ORDER BY last_active DESC"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ApiError::Internal(MnemonicError::Db(DbError::Query(e.to_string()))))?;
+
+        let agents = rows.into_iter().map(|row| {
+            let agent_id: String = row.try_get("agent_id").map_err(map_db_err)?;
+            let memory_count: i64 = row.try_get("memory_count").map_err(map_db_err)?;
+            let last_active: String = row.try_get("last_active").map_err(map_db_err)?;
+            Ok(AgentStats {
+                agent_id,
+                memory_count: memory_count as u64,
+                last_active,
+            })
+        }).collect::<Result<Vec<_>, ApiError>>()?;
+
+        Ok(agents)
     }
 }
 

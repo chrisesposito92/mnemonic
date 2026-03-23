@@ -14,7 +14,7 @@ pub use postgres::PostgresBackend;
 use async_trait::async_trait;
 use crate::config::Config;
 use crate::error::{ApiError, MnemonicError, ConfigError};
-use crate::service::{Memory, ListResponse, SearchResponse, ListParams, SearchParams};
+use crate::service::{Memory, ListResponse, SearchResponse, ListParams, SearchParams, AgentStats};
 use std::sync::Arc;
 use tokio_rusqlite::Connection;
 
@@ -95,6 +95,9 @@ pub trait StorageBackend: Send + Sync {
     /// This is a single transaction: insert new + delete sources.
     /// MergedMemoryRequest.source_ids carries the IDs to delete in the same transaction.
     async fn write_compaction_result(&self, req: MergedMemoryRequest) -> Result<Memory, ApiError>;
+
+    /// Returns per-agent memory count and last-active timestamp.
+    async fn stats(&self) -> Result<Vec<AgentStats>, ApiError>;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

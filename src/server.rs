@@ -54,6 +54,8 @@ pub fn build_router(state: AppState) -> Router {
         // Key management endpoints (D-18, D-19)
         .route("/keys", post(create_key_handler).get(list_keys_handler))
         .route("/keys/{id}", delete(revoke_key_handler))
+        // Stats endpoint (BROWSE-05): scope-aware per-agent memory breakdown
+        .route("/stats", get(stats_handler))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -101,9 +103,38 @@ fn enforce_scope(
     }
 }
 
-/// GET /health — returns {"status":"ok","backend":"<provider>"} with HTTP 200.
+/// GET /health — returns {"status":"ok","backend":"<provider>","auth_enabled":bool} with HTTP 200.
+///
+/// Stays PUBLIC (not behind auth middleware). The auth_enabled field tells
+/// the dashboard whether to show a login gate (per review concern #2).
 async fn health_handler(State(state): State<AppState>) -> Json<Value> {
-    Json(serde_json::json!({"status": "ok", "backend": state.backend_name}))
+    let auth_enabled = state.key_service.count_active_keys().await
+        .map(|count| count > 0)
+        .unwrap_or(true); // fail-safe: assume auth enabled on DB error
+    Json(serde_json::json!({
+        "status": "ok",
+        "backend": state.backend_name,
+        "auth_enabled": auth_enabled
+    }))
+}
+
+/// GET /stats — returns per-agent memory count and last-active timestamp.
+/// Scope-aware: scoped API keys see only their allowed agent's stats (review concern #3).
+async fn stats_handler(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let response = match auth.as_ref().map(|Extension(ctx)| ctx) {
+        Some(ctx) if ctx.allowed_agent_id.is_some() => {
+            // Scoped key: filter stats to allowed agent only
+            state.service.stats_for_agent(ctx.allowed_agent_id.as_ref().unwrap()).await?
+        }
+        _ => {
+            // Open mode or wildcard key: return all agents
+            state.service.stats().await?
+        }
+    };
+    Ok(Json(serde_json::to_value(response).unwrap()))
 }
 
 /// POST /memories — creates a new memory and returns 201 Created.

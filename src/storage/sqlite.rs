@@ -4,7 +4,7 @@ use rusqlite::OptionalExtension;
 use zerocopy::IntoBytes;
 use async_trait::async_trait;
 use crate::storage::{StorageBackend, StoreRequest, CandidateRecord, MergedMemoryRequest};
-use crate::service::{Memory, ListResponse, SearchResponse, SearchResultItem, ListParams, SearchParams};
+use crate::service::{Memory, ListResponse, SearchResponse, SearchResultItem, ListParams, SearchParams, AgentStats};
 use crate::error::ApiError;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -425,6 +425,23 @@ impl StorageBackend for SqliteBackend {
             created_at,
             updated_at: None,
         })
+    }
+
+    async fn stats(&self) -> Result<Vec<AgentStats>, ApiError> {
+        self.db.call(|c| {
+            let mut stmt = c.prepare(
+                "SELECT agent_id, COUNT(*) AS memory_count, MAX(created_at) AS last_active \
+                 FROM memories GROUP BY agent_id ORDER BY last_active DESC"
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(AgentStats {
+                    agent_id: row.get(0)?,
+                    memory_count: row.get(1)?,
+                    last_active: row.get(2)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()
+        }).await.map_err(|e| ApiError::Internal(crate::error::MnemonicError::Db(crate::error::DbError::Query(e.to_string()))))
     }
 }
 

@@ -14,6 +14,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/health': 'http://localhost:8080',
+      '/memories': 'http://localhost:8080',
+      '/stats': 'http://localhost:8080',
+      '/keys': 'http://localhost:8080',
     },
   },
   build: {

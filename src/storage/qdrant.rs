@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use crate::config::Config;
 use crate::error::{ApiError, MnemonicError, DbError};
 use crate::storage::{StorageBackend, StoreRequest, CandidateRecord, MergedMemoryRequest};
-use crate::service::{Memory, ListResponse, SearchResponse, SearchResultItem, ListParams, SearchParams};
+use crate::service::{Memory, ListResponse, SearchResponse, SearchResultItem, ListParams, SearchParams, AgentStats};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // QdrantBackend struct
@@ -710,6 +710,55 @@ impl StorageBackend for QdrantBackend {
             created_at: req.created_at,
             updated_at: None,
         })
+    }
+
+    async fn stats(&self) -> Result<Vec<AgentStats>, ApiError> {
+        let mut map: HashMap<String, (u64, String)> = HashMap::new();
+        let mut offset: Option<qdrant_client::qdrant::PointId> = None;
+
+        // Paginated scroll to handle collections > 10K points (review concern #4)
+        loop {
+            let mut scroll = ScrollPointsBuilder::new(&self.collection)
+                .limit(10_000)
+                .with_payload(true)
+                .with_vectors(false);
+
+            if let Some(ref ofs) = offset {
+                scroll = scroll.offset(ofs.clone());
+            }
+
+            let result = self.client.scroll(scroll)
+                .await
+                .map_err(|e| ApiError::Internal(MnemonicError::Db(DbError::Query(e.to_string()))))?;
+
+            for point in &result.result {
+                let agent_id = get_payload_string(&point.payload, "agent_id")
+                    .unwrap_or_default();
+                let created_at = get_payload_string(&point.payload, "created_at")
+                    .unwrap_or_default();
+                let entry = map.entry(agent_id).or_insert((0, String::new()));
+                entry.0 += 1;
+                if created_at > entry.1 {
+                    entry.1 = created_at;
+                }
+            }
+
+            // If next_page_offset is present, there are more pages
+            match result.next_page_offset {
+                Some(next) => offset = Some(next),
+                None => break,
+            }
+        }
+
+        let mut agents: Vec<AgentStats> = map.into_iter()
+            .map(|(agent_id, (memory_count, last_active))| AgentStats {
+                agent_id,
+                memory_count,
+                last_active,
+            })
+            .collect();
+        agents.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        Ok(agents)
     }
 }
 
